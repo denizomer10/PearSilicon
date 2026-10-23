@@ -1,0 +1,49 @@
+#!/bin/sh
+# pearsilicon — development wrapper for the CLI built into PearSilicon.
+#
+# The commands live in the app binary so they share the installer, patcher and
+# launcher with the GUI. This script finds a suitable binary and execs it:
+#
+#   1. $PEARSILICON_APP (an .app bundle or a binary)
+#   2. this checkout's SwiftPM build (debug, then release)
+#   3. an installed PearSilicon.app that carries the CLI marker
+#
+# For daily use, symlink the app binary instead of this script:
+#
+#   sudo ln -sf /Applications/PearSilicon.app/Contents/MacOS/PearSilicon \
+#                /usr/local/bin/pearsilicon
+#
+# Note: do not add a SwiftPM product named `pearsilicon`: on a case-insensitive
+# filesystem it collides with the `PearSilicon` app product.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+MARKER=Contents/Resources/pearsilicon-cli
+
+if [ -n "${PEARSILICON_APP:-}" ]; then
+  case "$PEARSILICON_APP" in
+    *.app) BIN="$PEARSILICON_APP/Contents/MacOS/PearSilicon" ;;
+    *) BIN="$PEARSILICON_APP" ;;
+  esac
+  if [ -x "$BIN" ]; then exec "$BIN" "$@"; fi
+  echo "pearsilicon: cannot execute $BIN" >&2
+  exit 126
+fi
+
+for candidate in \
+  "$ROOT/.build/debug/PearSilicon" \
+  "$ROOT/.build/release/PearSilicon" \
+  "$ROOT/build/PearSilicon.app/Contents/MacOS/PearSilicon"
+do
+  if [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
+done
+
+for app in "/Applications/PearSilicon.app" "$HOME/Applications/PearSilicon.app"; do
+  if [ -f "$app/$MARKER" ] && [ -x "$app/Contents/MacOS/PearSilicon" ]; then
+    exec "$app/Contents/MacOS/PearSilicon" "$@"
+  fi
+done
+
+echo "pearsilicon: PearSilicon.app was not found." >&2
+echo "Install it, build it (./scripts/build-app.sh), or set PEARSILICON_APP." >&2
+exit 127

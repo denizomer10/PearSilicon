@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Build output
+/build/
+/.build/
+DerivedData/
+*.app
+
+# Editor / tooling caches
+/runtime/.cache/
+/runtime/compile_commands.json
+
+# Scratch and reverse-engineering work — extracted app bundles and ad-hoc
+# scripts that are not part of the project.
+/build2/
+
+# Local artefacts
+*.log
+*.ipa
+
+# Private status notes (may contain title-specific detail)
+docs/STATUS.md

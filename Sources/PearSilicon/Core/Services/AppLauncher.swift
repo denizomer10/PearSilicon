@@ -1,0 +1,197 @@
+import AppKit
+import Foundation
+
+/// How an app is started.
+enum LaunchMethod: Sendable {
+    /// `posix_spawn` the executable directly.
+    ///
+    /// The process inherits a good environment, but macOS never *activates* it:
+    /// it gets a window and renders, yet the window server does not treat it as
+    /// the foreground app, so UIKit input (mouse/touch) is never delivered.
+    /// Hardware controllers still work, which is a confusing symptom.
+    case direct
+    /// Hand off to LaunchServices, giving a proper, activated GUI session.
+    ///
+    /// The modern `NSWorkspace.openApplication(at:configuration:)` API both
+    /// activates the app and forwards `configuration.environment`; the legacy
+    /// `open --env` CLI does neither reliably. This is the default.
+    case launchServices
+}
+
+/// Launches an app from the library.
+///
+/// Environment always includes the `/System/iOSSupport` dyld search paths and,
+/// when available, the app's keymap (`PEAR_KEYMAP`) and keychain directory
+/// (`PEAR_KEYCHAIN_DIR`). The runtime itself is loaded via an `LC_LOAD_DYLIB`
+/// entry inside the bundle, not through the environment.
+final class AppLauncher: @unchecked Sendable {
+
+    /// Root of the iOS-on-Mac runtime that ships with macOS.
+    private static let iOSSupportRoot = "/System/iOSSupport"
+
+    private let libraryURL: URL
+    private let logDirectory: URL
+    private let fileManager = FileManager.default
+
+    init(libraryURL: URL) {
+        self.libraryURL = libraryURL
+        self.logDirectory = libraryURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("Logs", isDirectory: true)
+    }
+
+    // MARK: - Public API
+
+    func launch(_ app: InstalledApp, keymapURL: URL?, extraEnvironment: [String: String] = [:], method: LaunchMethod = .launchServices) async throws -> NSRunningApplication? {
+        guard fileManager.fileExists(atPath: app.executableURL.path) else {
+            throw PearError.missingExecutable(app.executableName)
+        }
+
+        // Some games need a one-line options change to be usable at all (the
+        // value is read at boot, before the runtime could influence it).
+        GameTweaks.applyBeforeLaunch(
+            bundleID: app.id,
+            supportRoot: libraryURL.deletingLastPathComponent()
+        )
+
+        let env = buildEnvironment(app: app, keymapURL: keymapURL, extra: extraEnvironment)
+
+        switch method {
+        case .direct:
+            try spawnDirect(app, env: env)
+            return nil
+        case .launchServices:
+            return try await openViaLaunchServices(app, env: env)
+        }
+    }
+
+    // MARK: - Environment
+
+    private func buildEnvironment(app: InstalledApp, keymapURL: URL?, extra: [String: String]) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+
+        // Route iOS framework lookups to the system iOS-on-Mac runtime.
+        let frameworks = "\(Self.iOSSupportRoot)/System/Library/Frameworks"
+        let libraries = "\(Self.iOSSupportRoot)/usr/lib"
+        env["DYLD_FRAMEWORK_PATH"] = frameworks
+        env["DYLD_FALLBACK_FRAMEWORK_PATH"] = frameworks
+        env["DYLD_LIBRARY_PATH"] = libraries
+        env["DYLD_FALLBACK_LIBRARY_PATH"] = libraries
+
+        // Where the runtime keeps this app's keychain-backed data.
+        let support = libraryURL.deletingLastPathComponent()
+        env["PEAR_KEYCHAIN_DIR"] = support
+            .appendingPathComponent("Keychain", isDirectory: true)
+            .appendingPathComponent(app.id, isDirectory: true).path
+
+        // The runtime is loaded via an `LC_LOAD_DYLIB` entry, not via the
+        // older environment-variable loading path (which is refused for these
+        // processes). It reads the keymap path to know what to map.
+        if let keymapURL, fileManager.fileExists(atPath: keymapURL.path) {
+            env["PEAR_KEYMAP"] = keymapURL.path
+        }
+        for (key, value) in extra { env[key] = value }
+        return env
+    }
+
+    // MARK: - Direct spawn
+
+    private func spawnDirect(_ app: InstalledApp, env: [String: String]) throws {
+        let process = Process()
+        process.executableURL = app.executableURL
+        process.arguments = []
+        process.currentDirectoryURL = app.bundleURL
+        process.environment = env
+
+        // Redirect output to a log file. Never leave it on an undrained pipe:
+        // once the pipe buffer fills the child blocks on write and the app
+        // appears to hang (a white screen).
+        try? fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        let logURL = logDirectory.appendingPathComponent("\(app.id).log")
+        fileManager.createFile(atPath: logURL.path, contents: nil)
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            process.standardOutput = handle
+            process.standardError = handle
+        } else {
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        }
+
+        try process.run()
+    }
+
+    // MARK: - LaunchServices
+
+    /// Launches through LaunchServices. This is what makes the app behave like a
+    /// real foreground app: the window server delivers UIKit input to it and
+    /// system UI (sign-in sheets, game overlays) can be
+    /// presented. A plain `posix_spawn` produces a window that renders but never
+    /// receives mouse/touch events.
+    ///
+    /// `openApplication` calls its completion handler on the main queue, so this
+    /// must not block the main thread while waiting for it.
+    @MainActor
+    private func openViaLaunchServices(_ app: InstalledApp, env: [String: String]) async throws -> NSRunningApplication? {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        configuration.activates = true
+        configuration.environment = env
+
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NSRunningApplication?, Error>) in
+            NSWorkspace.shared.openApplication(at: app.bundleURL, configuration: configuration) { running, error in
+                if let error {
+                    continuation.resume(throwing: PearError.launchFailed(error.localizedDescription))
+                } else {
+                    continuation.resume(returning: running)
+                }
+            }
+        }
+    }
+
+    // MARK: - Runtime lookup
+
+    /// Locates the runtime dylib. Looked up in order:
+    ///   1. `PEARSILICON_RUNTIME` (explicit override)
+    ///   2. the PearSilicon app bundle's Resources
+    ///   3. next to the running executable
+    ///   4. a repo checkout next to a SwiftPM build product
+    ///   5. an installed PearSilicon.app
+    ///   6. the shared Application Support directory
+    static func runtimeLibraryURL() -> URL? {
+        let fileManager = FileManager.default
+        var candidates: [URL] = []
+
+        if let override = ProcessInfo.processInfo.environment["PEARSILICON_RUNTIME"],
+           !override.isEmpty {
+            candidates.append(URL(fileURLWithPath: override))
+        }
+        if let resources = Bundle.main.resourceURL {
+            candidates.append(resources.appendingPathComponent("libPearRuntime.dylib"))
+        }
+        let exeDir = Bundle.main.executableURL?.deletingLastPathComponent()
+        if let exeDir {
+            candidates.append(exeDir.appendingPathComponent("libPearRuntime.dylib"))
+        }
+
+        let home = fileManager.homeDirectoryForCurrentUser
+
+        // `.build/<config>/PearSilicon` → repo root → build/libPearRuntime.dylib.
+        // Preferred over an installed app so a development build uses its own
+        // freshly built runtime.
+        if let exeDir {
+            candidates.append(exeDir
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("build/libPearRuntime.dylib"))
+        }
+
+        for app in ["/Applications/PearSilicon.app", "\(home.path)/Applications/PearSilicon.app"] {
+            candidates.append(URL(fileURLWithPath: app)
+                .appendingPathComponent("Contents/Resources/libPearRuntime.dylib"))
+        }
+
+        candidates.append(AppPaths.supportRoot.appendingPathComponent("libPearRuntime.dylib"))
+
+        return candidates.first { fileManager.fileExists(atPath: $0.path) }
+    }
+}
