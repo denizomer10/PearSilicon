@@ -272,43 +272,13 @@ debugging).
 
 ## Clean-room
 
-This project is written from scratch as an interoperability layer:
+PearSilicon is an independent implementation written from scratch. It contains
+no copied platform or application code, and it redistributes no platform
+headers, frameworks, or binaries.
 
-- **No platform-vendor code.** No source, header or binary from the platform
-  vendor is copied or redistributed. The runtime reaches the platform through
-  its runtime *interfaces* — `dlsym` for private symbols, Objective-C message
-  sends, method swizzling and `__DATA,__interpose` — the same technique used by
-  any compatibility shim. A few private symbol names and numeric event/field
-  constants are referenced; those are interface facts, not implementation.
-- **No SDK redistribution.** The build compiles against the installed
-  toolchain's headers and links system frameworks at runtime. The app bundle
-  and release archive contain only PearSilicon's own executables and libraries;
-  no platform framework, header or binary is copied into the repository or the
-  archive.
-- **Interface names, not implementation.** A small number of system selectors
-  and Swift symbol names are referenced because the runtime resolves calls by
-  name. Those names are interface facts; the implementations here are
-  independent.
-- **No application code.** Nothing is copied from or derived from application
-  binaries. Behaviour was learned from the outside (observing what the system
-  does for a real touch, a real launch, a real frame) and reimplemented here.
-- **No titles named in the repository.** Shims match the SDK's own metadata and
-  discover assemblies through the platform's runtime API. Title-specific detail
-  lives in per-app settings, never in `runtime/` or the repository docs.
-- **Local cloud only.** CloudKit and GameKit entry points are answered from the
-  app's own container. No account, token, remote session or credential is
-  created, and no request leaves the machine on the shim's behalf.
-- **A compatibility layer, not a patch.** `LC_LOAD_DYLIB` is used only so the
-  dynamic linker loads the runtime. The runtime supplies clean-room
-  implementations of system surfaces (CFNetwork, UIKit, device APIs); it does
-  not modify the app's internal logic, memory, or protection systems.
-- **Respect for platform protections.** Applications that need a protection
-  system modified to run are out of scope and are intentionally left unhandled.
-
-Using private platform interfaces may be restricted by the platform vendor's
-terms for signed/store software; that is a separate question from the origin of
-this code. This section is a technical statement about provenance, not legal
-advice.
+The compatibility layer is original work, intended only for applications you
+legally own and prepare yourself. It is provided for interoperability and
+educational use.
 
 ## Scope and limitations
 
