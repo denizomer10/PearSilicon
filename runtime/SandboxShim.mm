@@ -16,6 +16,8 @@
 #import <unistd.h>
 #import <fcntl.h>
 #import <sys/stat.h>
+#import <errno.h>
+#import <dirent.h>
 #import "PearRuntime.h"
 
 typedef int (*PearSandboxInitFn)(const char *, uint64_t, char **);
@@ -101,6 +103,88 @@ extern "C" int PearSandboxAccess(const char *path, int mode) {
     }
 
     struct stat info;
-    if (stat(path, &info) != 0) return -1;
+    if (stat(path, &info) != 0) {
+        if (errno == EPERM || errno == EACCES) errno = ENOENT;
+        return -1;
+    }
     return original(path, mode);
+}
+
+// The sandbox reports a denial as EPERM. An iOS-like view should make a hidden
+// path look absent instead, so callers do not mistake the sandbox itself for an
+// integrity problem.
+extern "C" int PearSandboxStat(const char *path, struct stat *info);
+extern "C" int PearSandboxLstat(const char *path, struct stat *info);
+extern "C" ssize_t PearSandboxReadlink(const char *path, char *buffer, size_t size);
+extern "C" DIR *PearSandboxOpendir(const char *path);
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeStat
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearSandboxStat,
+        (const void *)(uintptr_t)&stat
+    };
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeLstat
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearSandboxLstat,
+        (const void *)(uintptr_t)&lstat
+    };
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeReadlink
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearSandboxReadlink,
+        (const void *)(uintptr_t)&readlink
+    };
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeOpendir
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearSandboxOpendir,
+        (const void *)(uintptr_t)&opendir
+    };
+
+static void PearMapSandboxError(void) {
+    if (PearSandboxEnabled() && (errno == EPERM || errno == EACCES)) errno = ENOENT;
+}
+
+extern "C" int PearSandboxStat(const char *path, struct stat *info) {
+    int (*original)(const char *, struct stat *) =
+        (int (*)(const char *, struct stat *))kInterposeStat.replacee;
+    int result = original ? original(path, info) : -1;
+    if (result != 0) PearMapSandboxError();
+    return result;
+}
+
+extern "C" int PearSandboxLstat(const char *path, struct stat *info) {
+    int (*original)(const char *, struct stat *) =
+        (int (*)(const char *, struct stat *))kInterposeLstat.replacee;
+    int result = original ? original(path, info) : -1;
+    if (result != 0) PearMapSandboxError();
+    return result;
+}
+
+extern "C" ssize_t PearSandboxReadlink(const char *path, char *buffer, size_t size) {
+    ssize_t (*original)(const char *, char *, size_t) =
+        (ssize_t (*)(const char *, char *, size_t))kInterposeReadlink.replacee;
+    ssize_t result = original ? original(path, buffer, size) : -1;
+    if (result < 0) PearMapSandboxError();
+    return result;
+}
+
+extern "C" DIR *PearSandboxOpendir(const char *path) {
+    DIR *(*original)(const char *) = (DIR *(*)(const char *))kInterposeOpendir.replacee;
+    DIR *result = original ? original(path) : NULL;
+    if (!result) PearMapSandboxError();
+    return result;
 }
