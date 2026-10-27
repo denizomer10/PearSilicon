@@ -89,8 +89,8 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.5</string>
-  <key>CFBundleVersion</key><string>6</string>
+  <key>CFBundleShortVersionString</key><string>0.1.6</string>
+  <key>CFBundleVersion</key><string>7</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
