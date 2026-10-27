@@ -132,8 +132,22 @@ static BOOL Matches(NSDictionary *item, NSDictionary *query) {
         if (![item[@"__persistentRef"] isEqual:wantPersistent]) return NO;
     }
 
+    id synchronizableKey = (__bridge id)kSecAttrSynchronizable;
+    id wantSynchronizable = query[synchronizableKey];
+    BOOL wantAnySynchronizable = wantSynchronizable &&
+        [wantSynchronizable isEqual:(__bridge id)kSecAttrSynchronizableAny];
+
     for (id key in query) {
         if (IsControlKey(key)) continue;
+        if ([key isEqual:synchronizableKey]) {
+            // `Any` asks for both local and synchronized items; it is a query
+            // selector, not a stored value.
+            if (wantAnySynchronizable) continue;
+            BOOL want = [query[key] boolValue];
+            BOOL have = [item[key] boolValue];
+            if (want != have) return NO;
+            continue;
+        }
         id want = query[key];
         id have = item[key];
         if (have == nil) {

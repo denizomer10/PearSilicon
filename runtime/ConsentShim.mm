@@ -761,6 +761,36 @@ static void PearScheduleConsentShim(void) {
 __attribute__((constructor))
 static void PearConsentShimInit(void) {
     @autoreleasepool {
-        PearScheduleConsentShim();
+        // Walking the IL2CPP class table is only safe for an app that actually
+        // ships the consent module. Check the app's own binaries first so a
+        // title without it never starts the polling scan.
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            @autoreleasepool {
+                NSString *executable = NSBundle.mainBundle.executablePath;
+                NSString *unity = [NSBundle.mainBundle.bundlePath
+                    stringByAppendingPathComponent:@"Frameworks/UnityFramework.framework/UnityFramework"];
+                NSString *metadata = [NSBundle.mainBundle.bundlePath
+                    stringByAppendingPathComponent:@"Data/Managed/Metadata/global-metadata.dat"];
+                NSData *marker = [@"CreateUsercentricsObject" dataUsingEncoding:NSUTF8StringEncoding];
+                BOOL found = NO;
+                for (NSString *path in @[ executable ?: @"", unity, metadata ]) {
+                    if (path.length == 0) continue;
+                    NSData *data = [NSData dataWithContentsOfFile:path
+                                                         options:NSDataReadingMappedIfSafe
+                                                           error:NULL];
+                    if (!data || marker.length == 0) continue;
+                    if ([data rangeOfData:marker options:0
+                                    range:NSMakeRange(0, data.length)].location != NSNotFound) {
+                        found = YES;
+                        break;
+                    }
+                }
+                if (!found) {
+                    PearLog(@"[PearRuntime][consent] module not present; shim skipped");
+                    return;
+                }
+                PearScheduleConsentShim();
+            }
+        });
     }
 }
