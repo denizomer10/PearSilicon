@@ -28,8 +28,24 @@ static UIWindow *PearMainWindow(void) {
     return first;
 }
 
+/// A legacy GL surface can be larger than its window. When the GL shim fits it,
+/// it publishes that logical size here so UIScreen and the view agree; touch
+/// hit-testing then uses the same coordinate space as the rendered frame.
+static CGSize gReportedOverride = {0, 0};
+
+void PearSetScreenOverride(CGSize size) {
+    gReportedOverride = size;
+}
+
+void PearClearScreenOverride(void) {
+    gReportedOverride = CGSizeZero;
+}
+
 /// The screen geometry to report: the window's bounds, with the display's scale.
 static CGRect PearReportedBounds(void) {
+    if (gReportedOverride.width > 0 && gReportedOverride.height > 0) {
+        return CGRectMake(0, 0, gReportedOverride.width, gReportedOverride.height);
+    }
     UIWindow *window = PearMainWindow();
     if (window && window.bounds.size.width > 0 && window.bounds.size.height > 0) {
         return window.bounds;

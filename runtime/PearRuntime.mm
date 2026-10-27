@@ -394,11 +394,15 @@ static void HandleKeyPress(GCKeyCode keyCode, BOOL pressed) {
     // Input rate guard: drop implausibly fast repeat presses.
     if (pressed && !InputRateAllows(keyCode)) return;
 
-    // W/A/S/D feed the virtual joystick rather than a point tap.
-    if ([key isEqualToString:@"w"]) { gJoyUp = pressed; UpdateJoystick(); return; }
-    if ([key isEqualToString:@"a"]) { gJoyLeft = pressed; UpdateJoystick(); return; }
-    if ([key isEqualToString:@"s"]) { gJoyDown = pressed; UpdateJoystick(); return; }
-    if ([key isEqualToString:@"d"]) { gJoyRight = pressed; UpdateJoystick(); return; }
+    // W/A/S/D feed the virtual joystick rather than a point tap, but only
+    // while a joystick binding exists. Without it they are ordinary keys and
+    // can be bound to taps or holds.
+    if (gJoystickBinding) {
+        if ([key isEqualToString:@"w"]) { gJoyUp = pressed; UpdateJoystick(); return; }
+        if ([key isEqualToString:@"a"]) { gJoyLeft = pressed; UpdateJoystick(); return; }
+        if ([key isEqualToString:@"s"]) { gJoyDown = pressed; UpdateJoystick(); return; }
+        if ([key isEqualToString:@"d"]) { gJoyRight = pressed; UpdateJoystick(); return; }
+    }
 
     PearBinding *binding = BindingForKey(key);
     if (!binding) return;
@@ -544,9 +548,8 @@ static void InstallMouse(void) {
 
 /// Maps a GameController key code to our keymap's key names.
 ///
-/// `GCKeyCode` values are USB HID usage ids, in the standard order: letters
-/// a–z (0x04…0x1D) and digits 1–9 then 0 (0x1E…0x27). Where a run is
-/// contiguous we derive the name from the offset; the rest are spelled out.
+/// `GCKeyCode` values are USB HID usage ids. Letters, digits and the keypad
+/// share the familiar names used by the editor; special keys are spelled out.
 /// Returning nil means "no binding can name this key".
 static NSString *KeyNameForCode(GCKeyCode code) {
     if (code >= GCKeyCodeKeyA && code <= GCKeyCodeKeyZ) {
@@ -557,17 +560,84 @@ static NSString *KeyNameForCode(GCKeyCode code) {
     }
     if (code == GCKeyCodeZero) return @"0";
 
-    if (code == GCKeyCodeSpacebar) return @"space";
-    if (code == GCKeyCodeLeftShift || code == GCKeyCodeRightShift) return @"shift";
-    if (code == GCKeyCodeLeftControl || code == GCKeyCodeRightControl) return @"control";
-    if (code == GCKeyCodeLeftAlt || code == GCKeyCodeRightAlt) return @"option";
+    // Editing and navigation keys.
+    if (code == GCKeyCodeReturnOrEnter || code == GCKeyCodeKeypadEnter) return @"enter";
     if (code == GCKeyCodeEscape) return @"escape";
+    if (code == GCKeyCodeDeleteOrBackspace) return @"backspace";
+    if (code == GCKeyCodeDeleteForward) return @"delete";
     if (code == GCKeyCodeTab) return @"tab";
-    if (code == GCKeyCodeReturnOrEnter) return @"enter";
+    if (code == GCKeyCodeSpacebar) return @"space";
+    if (code == GCKeyCodeInsert) return @"insert";
+    if (code == GCKeyCodeHome) return @"home";
+    if (code == GCKeyCodeEnd) return @"end";
+    if (code == GCKeyCodePageUp) return @"pageup";
+    if (code == GCKeyCodePageDown) return @"pagedown";
     if (code == GCKeyCodeLeftArrow) return @"left";
     if (code == GCKeyCodeRightArrow) return @"right";
     if (code == GCKeyCodeUpArrow) return @"up";
     if (code == GCKeyCodeDownArrow) return @"down";
+
+    // Punctuation.
+    if (code == GCKeyCodeHyphen) return @"minus";
+    if (code == GCKeyCodeEqualSign) return @"equal";
+    if (code == GCKeyCodeOpenBracket) return @"openbracket";
+    if (code == GCKeyCodeCloseBracket) return @"closebracket";
+    if (code == GCKeyCodeBackslash) return @"backslash";
+    if (code == GCKeyCodeSemicolon) return @"semicolon";
+    if (code == GCKeyCodeQuote) return @"quote";
+    if (code == GCKeyCodeGraveAccentAndTilde) return @"grave";
+    if (code == GCKeyCodeComma) return @"comma";
+    if (code == GCKeyCodePeriod) return @"period";
+    if (code == GCKeyCodeSlash) return @"slash";
+    if (code == GCKeyCodeNonUSBackslash) return @"backslash";
+    if (code == GCKeyCodeNonUSPound) return @"backslash";
+
+    // Modifiers. Left and right share a name so a binding works with either.
+    if (code == GCKeyCodeLeftShift || code == GCKeyCodeRightShift) return @"shift";
+    if (code == GCKeyCodeLeftControl || code == GCKeyCodeRightControl) return @"control";
+    if (code == GCKeyCodeLeftAlt || code == GCKeyCodeRightAlt) return @"option";
+    if (code == GCKeyCodeLeftGUI || code == GCKeyCodeRightGUI) return @"command";
+    if (code == GCKeyCodeCapsLock) return @"capslock";
+
+    // Function keys.
+    if (code == GCKeyCodeF1) return @"f1";
+    if (code == GCKeyCodeF2) return @"f2";
+    if (code == GCKeyCodeF3) return @"f3";
+    if (code == GCKeyCodeF4) return @"f4";
+    if (code == GCKeyCodeF5) return @"f5";
+    if (code == GCKeyCodeF6) return @"f6";
+    if (code == GCKeyCodeF7) return @"f7";
+    if (code == GCKeyCodeF8) return @"f8";
+    if (code == GCKeyCodeF9) return @"f9";
+    if (code == GCKeyCodeF10) return @"f10";
+    if (code == GCKeyCodeF11) return @"f11";
+    if (code == GCKeyCodeF12) return @"f12";
+    if (code == GCKeyCodeF13) return @"f13";
+    if (code == GCKeyCodeF14) return @"f14";
+    if (code == GCKeyCodeF15) return @"f15";
+    if (code == GCKeyCodeF16) return @"f16";
+    if (code == GCKeyCodeF17) return @"f17";
+    if (code == GCKeyCodeF18) return @"f18";
+    if (code == GCKeyCodeF19) return @"f19";
+    if (code == GCKeyCodeF20) return @"f20";
+
+    // Keypad keys use a separate namespace so they can differ from the digits.
+    if (code == GCKeyCodeKeypad0) return @"keypad0";
+    if (code == GCKeyCodeKeypad1) return @"keypad1";
+    if (code == GCKeyCodeKeypad2) return @"keypad2";
+    if (code == GCKeyCodeKeypad3) return @"keypad3";
+    if (code == GCKeyCodeKeypad4) return @"keypad4";
+    if (code == GCKeyCodeKeypad5) return @"keypad5";
+    if (code == GCKeyCodeKeypad6) return @"keypad6";
+    if (code == GCKeyCodeKeypad7) return @"keypad7";
+    if (code == GCKeyCodeKeypad8) return @"keypad8";
+    if (code == GCKeyCodeKeypad9) return @"keypad9";
+    if (code == GCKeyCodeKeypadPeriod) return @"keypadperiod";
+    if (code == GCKeyCodeKeypadAsterisk) return @"keypadasterisk";
+    if (code == GCKeyCodeKeypadPlus) return @"keypadplus";
+    if (code == GCKeyCodeKeypadHyphen) return @"keypadminus";
+    if (code == GCKeyCodeKeypadSlash) return @"keypadslash";
+    if (code == GCKeyCodeKeypadEqualSign) return @"keypadequal";
     return nil;
 }
 

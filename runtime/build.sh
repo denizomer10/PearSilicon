@@ -8,9 +8,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="$ROOT/build"
 OUT="$OUT_DIR/libPearRuntime.dylib"
+SWIFT_OVERLAY="$OUT_DIR/libswiftUIKit.dylib"
 
 if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
-  echo "ERROR: iOS SDK not found. Is Xcode installed?"
+  echo "ERROR: the target SDK was not found. Is the full development toolchain installed?"
   exit 1
 fi
 
@@ -51,8 +52,8 @@ cat > "$ROOT/runtime/compile_commands.json" <<JSON
   },
   {
     "directory": "$ROOT/runtime",
-    "file": "$ROOT/runtime/UsercentricsShim.mm",
-    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c UsercentricsShim.mm"
+    "file": "$ROOT/runtime/ConsentShim.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c ConsentShim.mm"
   },
   {
     "directory": "$ROOT/runtime",
@@ -76,6 +77,7 @@ xcrun --sdk macosx clang++ \
   -include PearRuntime.h \
   -std=c++17 \
   -dynamiclib \
+  -Wl,-undefined,dynamic_lookup \
   -fobjc-arc \
   -framework Foundation \
   -framework UIKit \
@@ -89,7 +91,8 @@ xcrun --sdk macosx clang++ \
   -o "$OUT" \
   "$ROOT/runtime/PearRuntime.mm" \
   "$ROOT/runtime/KeychainShim.mm" \
-  "$ROOT/runtime/CloudKitShim.mm" \
+  "$ROOT/runtime/CloudShim.mm" \
+  "$ROOT/runtime/CredentialShim.mm" \
   "$ROOT/runtime/DeviceShim.mm" \
   "$ROOT/runtime/ScreenShim.mm" \
   "$ROOT/runtime/PathShim.mm" \
@@ -98,9 +101,29 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/PointerLockShim.mm" \
   "$ROOT/runtime/BeepShim.mm" \
   "$ROOT/runtime/ODRShim.mm" \
-  "$ROOT/runtime/UsercentricsShim.mm" \
+  "$ROOT/runtime/ConsentShim.mm" \
   "$ROOT/runtime/NetworkShim.mm" \
   "$ROOT/runtime/GLShim.mm"
 
 echo ">> Done: $OUT"
 file "$OUT"
+
+# Some Swift SDKs link against the UIKit Swift overlay, which the Mac Catalyst
+# host runtime does not ship. Build the small clean-room overlay used by the
+# installer. It contains only public API bridges from runtime/swift/.
+echo ">> Building $SWIFT_OVERLAY (Swift UIKit compatibility)"
+CLANG_TARGET="arm64-apple-ios15.0-macabi"
+CLANG="$(xcrun --find clang)"
+SWIFTC="$(xcrun --find swiftc)"
+IOS_FRAMEWORKS="$SDK/System/iOSSupport/System/Library/Frameworks"
+"$CLANG" -c -target "$CLANG_TARGET" -isysroot "$SDK" \
+  "$ROOT/runtime/swift/PearSwiftUIKitSupport.c" \
+  -o "$OUT_DIR/PearSwiftUIKitSupport.o"
+"$SWIFTC" -target "$CLANG_TARGET" -sdk "$SDK" -F "$IOS_FRAMEWORKS" \
+  -emit-library -module-name PearSwiftUIKit \
+  -Xlinker -install_name -Xlinker @rpath/libswiftUIKit.dylib \
+  -Xlinker -undefined -Xlinker dynamic_lookup \
+  -o "$SWIFT_OVERLAY" \
+  "$ROOT/runtime/swift/PearSwiftUIKit.swift" \
+  "$OUT_DIR/PearSwiftUIKitSupport.o"
+file "$SWIFT_OVERLAY"

@@ -62,7 +62,7 @@ enum Shell {
     }
 
     /// Runs a tool with its output going straight to our stderr, for long
-    /// commands (xcodebuild) where the user should see progress live.
+    /// commands that stream project-build progress where the user can see it.
     static func runStreaming(
         _ launchPath: String,
         _ arguments: [String],

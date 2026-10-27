@@ -31,7 +31,7 @@ struct ContentView: View {
         ) { result in
             switch result {
             case .success(let urls):
-                Task { await state.install(ipaURLs: urls) }
+                Task { await state.install(packageURLs: urls) }
             case .failure(let error):
                 state.statusMessage = L10n.error(error.localizedDescription)
             }
@@ -112,7 +112,7 @@ struct ContentView: View {
             }
         }
         if !urls.isEmpty {
-            await state.install(ipaURLs: urls)
+            await state.install(packageURLs: urls)
         }
     }
 }

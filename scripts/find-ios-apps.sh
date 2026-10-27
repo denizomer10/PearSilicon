@@ -1,6 +1,6 @@
 #!/bin/bash
 # Scans app bundles on this Mac and reports those whose main executable is an
-# iOS binary (i.e. how Apple ships "Designed for iPad" apps).
+# iOS binary (the platform's iPad-app packaging).
 set -u
 
 for dir in /Applications "$HOME/Applications" /System/Applications /System/Applications/Utilities; do

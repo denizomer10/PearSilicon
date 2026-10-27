@@ -46,7 +46,7 @@ final class AppState: ObservableObject {
 
     // MARK: - Services
 
-    let ipaInstaller: IPAInstaller
+    let packageInstaller: PackageInstaller
     let launcher: AppLauncher
     let keymapStore: KeymapStore
 
@@ -69,7 +69,7 @@ final class AppState: ObservableObject {
         let keymaps = base.appendingPathComponent("Keymaps", isDirectory: true)
 
         self.libraryURL = library
-        self.ipaInstaller = IPAInstaller(libraryURL: library)
+        self.packageInstaller = PackageInstaller(libraryURL: library)
         self.launcher = AppLauncher(libraryURL: library)
         self.keymapStore = KeymapStore(baseURL: keymaps)
 
@@ -171,7 +171,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshLibrary() async throws {
-        let apps = try ipaInstaller.scanLibrary()
+        let apps = try packageInstaller.scanLibrary()
         self.installedApps = apps.sorted {
             $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
         }
@@ -258,23 +258,23 @@ final class AppState: ObservableObject {
 
     // MARK: - Install
 
-    func install(ipaURLs: [URL]) async {
+    func install(packageURLs: [URL]) async {
         isBusy = true
         defer { isBusy = false }
 
-        for url in ipaURLs {
+        for url in packageURLs {
             do {
                 statusMessage = L10n.installing(url.lastPathComponent)
-                let app = try await ipaInstaller.install(ipaAt: url)
+                let app = try await packageInstaller.install(packageAt: url)
 
                 // Auto-generate a starting keymap if the app has none yet.
                 if try keymapStore.load(for: app.id) == nil {
                     try keymapStore.save(KeymapGenerator.generate(for: app))
                 }
 
-                if !ipaInstaller.corruptedFiles.isEmpty {
-                    statusMessage = L10n.installedCorrupted(app.displayName, files: ipaInstaller.corruptedFiles)
-                } else if ipaInstaller.unpreparedBinaries.isEmpty {
+                if !packageInstaller.corruptedFiles.isEmpty {
+                    statusMessage = L10n.installedCorrupted(app.displayName, files: packageInstaller.corruptedFiles)
+                } else if packageInstaller.unpreparedBinaries.isEmpty {
                     statusMessage = L10n.installed(app.displayName)
                 } else {
                     statusMessage = L10n.installedUnprepared(app.displayName)
@@ -323,7 +323,7 @@ final class AppState: ObservableObject {
         do {
             overlays[app.id]?.detach()
             overlays[app.id] = nil
-            try ipaInstaller.uninstall(app)
+            try packageInstaller.uninstall(app)
             try? keymapStore.delete(for: app.id)
             installedApps.removeAll { $0.id == app.id }
             if selection == app.id {

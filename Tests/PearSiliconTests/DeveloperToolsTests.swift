@@ -3,35 +3,38 @@ import XCTest
 
 final class DeveloperToolsTests: XCTestCase {
 
+    private let toolchain = "/Applications/Developer.app"
+    private let commandLineTools = "/Library/Developer/CommandLineTools"
+
     func testSelectCommandUsesContentsDeveloper() {
-        let command = DeveloperTools.selectCommand(for: "/Applications/Xcode.app")
+        let command = DeveloperTools.selectCommand(for: toolchain)
         XCTAssertEqual(
             command,
-            "sudo xcode-select -s \"/Applications/Xcode.app/Contents/Developer\""
+            "sudo xcode-select -s \"/Applications/Developer.app/Contents/Developer\""
         )
     }
 
-    func testXcodeStatusEquatable() {
-        XCTAssertTrue(DeveloperTools.XcodeStatus.ready.isReady)
-        XCTAssertFalse(DeveloperTools.XcodeStatus.missing.isReady)
+    func testToolchainStatusEquatable() {
+        XCTAssertTrue(DeveloperTools.ToolchainStatus.ready.isReady)
+        XCTAssertFalse(DeveloperTools.ToolchainStatus.missing.isReady)
         XCTAssertFalse(
-            DeveloperTools.XcodeStatus
-                .installedButNotSelected(xcodePath: "/Applications/Xcode.app", activePath: nil)
+            DeveloperTools.ToolchainStatus
+                .installedButNotSelected(toolchainPath: toolchain, activePath: nil)
                 .isReady
         )
     }
 
-    func testStatusReadyWhenXcodeIsSelected() {
+    func testStatusReadyWhenToolchainIsSelected() {
         let status = DeveloperTools.status(
-            activePath: "/Applications/Xcode.app/Contents/Developer",
-            installedPath: "/Applications/Xcode.app"
+            activePath: "/Applications/Developer.app/Contents/Developer",
+            installedPath: toolchain
         )
         XCTAssertEqual(status, .ready)
     }
 
-    func testStatusMissingWithoutXcode() {
+    func testStatusMissingWithoutToolchain() {
         let status = DeveloperTools.status(
-            activePath: "/Library/Developer/CommandLineTools",
+            activePath: commandLineTools,
             installedPath: nil
         )
         XCTAssertEqual(status, .missing)
@@ -39,23 +42,20 @@ final class DeveloperToolsTests: XCTestCase {
 
     func testStatusInstalledButNotSelected() {
         let status = DeveloperTools.status(
-            activePath: "/Library/Developer/CommandLineTools",
-            installedPath: "/Applications/Xcode.app"
+            activePath: commandLineTools,
+            installedPath: toolchain
         )
         XCTAssertEqual(
             status,
-            .installedButNotSelected(
-                xcodePath: "/Applications/Xcode.app",
-                activePath: "/Library/Developer/CommandLineTools"
-            )
+            .installedButNotSelected(toolchainPath: toolchain, activePath: commandLineTools)
         )
     }
 
     func testStatusInstalledButNothingSelected() {
-        let status = DeveloperTools.status(activePath: nil, installedPath: "/Applications/Xcode.app")
+        let status = DeveloperTools.status(activePath: nil, installedPath: toolchain)
         XCTAssertEqual(
             status,
-            .installedButNotSelected(xcodePath: "/Applications/Xcode.app", activePath: nil)
+            .installedButNotSelected(toolchainPath: toolchain, activePath: nil)
         )
     }
 }

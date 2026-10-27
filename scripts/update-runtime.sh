@@ -11,6 +11,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIBRARY="$HOME/Library/Application Support/PearSilicon/Applications"
 RUNTIME="$ROOT/build/libPearRuntime.dylib"
+SWIFT_OVERLAY="$ROOT/build/libswiftUIKit.dylib"
 ENT="$HOME/Library/Application Support/PearSilicon/Work/entitlements.plist"
 
 [[ -f "$RUNTIME" ]] || { echo "runtime not built: $RUNTIME"; exit 1; }
@@ -29,6 +30,9 @@ for APP in "$LIBRARY"/*.app; do
 
   mkdir -p "$APP/Frameworks"
   cp "$RUNTIME" "$APP/Frameworks/libPearRuntime.dylib"
+  if [[ -f "$SWIFT_OVERLAY" ]]; then
+    cp "$SWIFT_OVERLAY" "$APP/Frameworks/libswiftUIKit.dylib"
+  fi
 
   # inside-out signing: nested code first, then the executable, then the bundle
   for fw in "$APP"/Frameworks/*.framework; do

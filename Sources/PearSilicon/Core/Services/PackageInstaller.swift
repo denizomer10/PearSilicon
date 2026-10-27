@@ -14,7 +14,7 @@ import Foundation
 /// Steps 4–5 are what allows an arm64 iOS binary to be loaded by macOS via the
 /// `/System/iOSSupport` runtime. This is interoperability work only: it adapts
 /// the binary's declared platform and leaves all application logic untouched.
-final class IPAInstaller: @unchecked Sendable {
+final class PackageInstaller: @unchecked Sendable {
 
     private let fileManager = FileManager.default
     private let libraryURL: URL
@@ -53,9 +53,9 @@ final class IPAInstaller: @unchecked Sendable {
 
     // MARK: - Install
 
-    func install(ipaAt url: URL) async throws -> InstalledApp {
+    func install(packageAt url: URL) async throws -> InstalledApp {
         guard fileManager.fileExists(atPath: url.path) else {
-            throw PearError.ipaNotFound(url.lastPathComponent)
+            throw PearError.packageNotFound(url.lastPathComponent)
         }
 
         let tempDir = workRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -100,7 +100,7 @@ final class IPAInstaller: @unchecked Sendable {
         guard let app = try fileManager.contentsOfDirectory(
             at: payload, includingPropertiesForKeys: nil
         ).first(where: { $0.pathExtension == "app" }) else {
-            throw PearError.invalidIPA("no .app inside Payload")
+            throw PearError.invalidPackage("no .app inside Payload")
         }
 
         let probe = try makeInstalledApp(fromBundleAt: app)
@@ -118,8 +118,8 @@ final class IPAInstaller: @unchecked Sendable {
         return try makeInstalledApp(fromBundleAt: destination)
     }
 
-    /// Installs an already-built `.app` bundle (for example the product of an
-    /// Xcode build) instead of a package. The bundle is copied as-is (ditto, so
+    /// Installs an already-built `.app` bundle (for example the product of a
+    /// toolchain build) instead of a package. The bundle is copied as-is (ditto, so
     /// symlinks and extended attributes survive), then prepared and signed the
     /// same way an app package is.
     ///
@@ -131,12 +131,12 @@ final class IPAInstaller: @unchecked Sendable {
         // report that app package's damaged files against this bundle.
         corruptedFiles = []
         guard fileManager.fileExists(atPath: sourceURL.path) else {
-            throw PearError.ipaNotFound(sourceURL.lastPathComponent)
+            throw PearError.packageNotFound(sourceURL.lastPathComponent)
         }
         if isSimulatorBuild(at: sourceURL) {
-            throw PearError.invalidIPA(
+            throw PearError.invalidPackage(
                 "\(sourceURL.lastPathComponent) is a simulator build. "
-                + "Build for a device (destination generic/platform=iOS) or run \"pearsilicon xcode\" instead."
+                + "Build for a device (destination generic/platform=iOS) or run \"pearsilicon build\" instead."
             )
         }
 
@@ -225,10 +225,33 @@ final class IPAInstaller: @unchecked Sendable {
         }
         try fileManager.copyItem(at: runtime, to: destination)
 
+        // The host does not provide the Swift UIKit overlay. Ship our small
+        // clean-room bridge next to the runtime, for frameworks that link it.
+        let swiftOverlay = runtime.deletingLastPathComponent()
+            .appendingPathComponent("libswiftUIKit.dylib")
+        if fileManager.fileExists(atPath: swiftOverlay.path) {
+            let overlayDestination = frameworks.appendingPathComponent("libswiftUIKit.dylib")
+            if fileManager.fileExists(atPath: overlayDestination.path) {
+                try fileManager.removeItem(at: overlayDestination)
+            }
+            try fileManager.copyItem(at: swiftOverlay, to: overlayDestination)
+        }
+
         if let app = try? makeInstalledApp(fromBundleAt: bundleURL) {
+            // Use an absolute load path: some store binaries run under a
+            // security policy that refuses `@` expansion for their dylib load
+            // commands. The library is inside the installed bundle, so the path
+            // is stable for that installation.
             try BinaryPatcher.addLoadDylib(
                 at: app.executableURL,
-                path: "@executable_path/Frameworks/libPearRuntime.dylib"
+                path: destination.path
+            )
+            // Store builds commonly reference `@rpath/Foo.framework/Foo` but
+            // omit the matching run-path command. Without it dyld stops before
+            // the app's entry point with "Library not loaded".
+            try BinaryPatcher.addRPath(
+                at: app.executableURL,
+                path: frameworks.path
             )
         }
     }
@@ -237,7 +260,7 @@ final class IPAInstaller: @unchecked Sendable {
         let infoURL = bundleURL.appendingPathComponent("Info.plist")
         guard let info = NSMutableDictionary(contentsOf: infoURL),
               let mutable = info as? [String: Any] else {
-            throw PearError.invalidIPA("Info.plist could not be read")
+            throw PearError.invalidPackage("Info.plist could not be read")
         }
         var updated = mutable
         updated["CFBundleSupportedPlatforms"] = ["MacOSX"]
@@ -321,7 +344,7 @@ final class IPAInstaller: @unchecked Sendable {
     func makeInstalledApp(fromBundleAt bundleURL: URL) throws -> InstalledApp {
         let infoURL = bundleURL.appendingPathComponent("Info.plist")
         guard let info = NSDictionary(contentsOf: infoURL) as? [String: Any] else {
-            throw PearError.invalidIPA("Info.plist could not be read: \(bundleURL.lastPathComponent)")
+            throw PearError.invalidPackage("Info.plist could not be read: \(bundleURL.lastPathComponent)")
         }
         guard let bundleID = info["CFBundleIdentifier"] as? String else {
             throw PearError.missingBundleIdentifier

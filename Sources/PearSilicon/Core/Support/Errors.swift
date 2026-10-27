@@ -1,8 +1,8 @@
 import Foundation
 
 enum PearError: LocalizedError {
-    case ipaNotFound(String)
-    case invalidIPA(String)
+    case packageNotFound(String)
+    case invalidPackage(String)
     case missingBundleIdentifier
     case missingExecutable(String)
     case commandFailed(tool: String, status: Int32, output: String)
@@ -11,9 +11,9 @@ enum PearError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .ipaNotFound(let name):
+        case .packageNotFound(let name):
             return "Paket bulunamadı: \(name)"
-        case .invalidIPA(let reason):
+        case .invalidPackage(let reason):
             return "Geçersiz paket: \(reason)"
         case .missingBundleIdentifier:
             return "Info.plist içinde CFBundleIdentifier yok."

@@ -42,6 +42,9 @@ enum BinaryPatcher {
     enum LoadCommand {
         static let segment64: UInt32 = 0x19
         static let loadDylib: UInt32 = 0x0C
+        static let loadWeakDylib: UInt32 = 0x8000_0018
+        static let reexportDylib: UInt32 = 0x8000_001F
+        static let rpath: UInt32 = 0x8000_001C
         static let versionMinMacOSX: UInt32 = 0x24
         static let versionMinIPhoneOS: UInt32 = 0x25
         static let legacyGuard32: UInt32 = 0x21
@@ -155,7 +158,7 @@ enum BinaryPatcher {
         platform: UInt32
     ) throws -> Bool {
         guard base + MachO.headerSize <= data.count else {
-            throw PearError.invalidIPA("truncated Mach-O header")
+            throw PearError.invalidPackage("truncated Mach-O header")
         }
 
         let ncmds = Int(readU32(data, base + 16))
@@ -268,6 +271,50 @@ enum BinaryPatcher {
         writeU32(&data, base + 16, UInt32(ncmds + 1))
         writeU32(&data, base + 20, UInt32(sizeofcmds + size))
         return endCommands
+    }
+
+    /// Inserts a load command before the first library dependency. Dyld resolves
+    /// an `@rpath/...` dependency while walking the commands, so an `LC_RPATH`
+    /// appended after it is seen too late. The platform linker emits run paths
+    /// before the dylib commands; this reproduces that order without changing
+    /// section offsets.
+    private static func insertLoadCommandBeforeDependencies(_ data: inout Data,
+                                                              base: Int,
+                                                              size: Int) -> Int? {
+        let ncmds = Int(readU32(data, base + 16))
+        let sizeofcmds = Int(readU32(data, base + 20))
+        let endCommands = base + MachO.headerSize + sizeofcmds
+        let firstSection = firstSectionOffset(data, base: base, ncmds: ncmds)
+        guard endCommands + size <= firstSection else { return nil }
+
+        var offset = base + MachO.headerSize
+        var insertion = endCommands
+        for _ in 0..<ncmds {
+            guard offset + 8 <= endCommands else { break }
+            let cmd = readU32(data, offset)
+            let cmdsize = Int(readU32(data, offset + 4))
+            guard cmdsize >= 8, offset + cmdsize <= endCommands else { break }
+            if cmd == LoadCommand.loadDylib
+                || cmd == LoadCommand.loadWeakDylib
+                || cmd == LoadCommand.reexportDylib {
+                insertion = offset
+                break
+            }
+            offset += cmdsize
+        }
+
+        let tailCount = endCommands - insertion
+        if tailCount > 0 {
+            var i = tailCount - 1
+            while i >= 0 {
+                data[insertion + size + i] = data[insertion + i]
+                i -= 1
+            }
+        }
+
+        writeU32(&data, base + 16, UInt32(ncmds + 1))
+        writeU32(&data, base + 20, UInt32(sizeofcmds + size))
+        return insertion
     }
 
     /// Patches the Mach-O file at `url` in place, preserving file permissions.
@@ -396,7 +443,69 @@ enum BinaryPatcher {
         return true
     }
 
+    /// Adds an `LC_RPATH` command to every 64-bit Mach-O image in the file.
+    ///
+    /// A package prepared from a store build often has dependencies written as
+    /// `@rpath/Foo.framework/Foo` but no matching run-path command. The
+    /// dynamic linker then searches only the system fallback and fails with
+    /// "Library not loaded" before the app's main function runs. Adding the
+    /// bundle's own Frameworks directory restores the layout the build
+    /// expected.
+    @discardableResult
+    static func addRPath(at url: URL, path rpath: String) throws -> Bool {
+        let fileManager = FileManager.default
+        _ = try thinToARM64(at: url)
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+        let permissions = attributes?[.posixPermissions] as? NSNumber
+
+        var data = try Data(contentsOf: url)
+        let bases = machO64Offsets(data)
+        guard !bases.isEmpty else { return false }
+
+        var changed = false
+        for base in bases {
+            if addRPath(&data, base: base, path: rpath) {
+                changed = true
+            }
+        }
+        guard changed else { return false }
+
+        try data.write(to: url)
+        if let permissions {
+            try? fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
+        }
+        return true
+    }
+
+    private static func addRPath(_ data: inout Data, base: Int, path rpath: String) -> Bool {
+        let ncmds = Int(readU32(data, base + 16))
+        if containsCommandPath(data, base: base, ncmds: ncmds,
+                              command: LoadCommand.rpath, path: rpath) {
+            return false
+        }
+
+        let pathBytes = Array(rpath.utf8) + [0]
+        var cmdsize = 12 + pathBytes.count
+        cmdsize = (cmdsize + 7) & ~7
+
+        guard let at = insertLoadCommandBeforeDependencies(&data, base: base, size: cmdsize) else {
+            return false
+        }
+
+        writeU32(&data, at + 0, LoadCommand.rpath)
+        writeU32(&data, at + 4, UInt32(cmdsize))
+        writeU32(&data, at + 8, 12) // path offset
+        for (i, byte) in pathBytes.enumerated() { data[at + 12 + i] = byte }
+        return true
+    }
+
     private static func containsLoadDylib(_ data: Data, base: Int, ncmds: Int, path: String) -> Bool {
+        containsCommandPath(data, base: base, ncmds: ncmds,
+                            command: LoadCommand.loadDylib, path: path)
+    }
+
+    private static func containsCommandPath(_ data: Data, base: Int, ncmds: Int,
+                                            command: UInt32, path: String) -> Bool {
         var offset = base + MachO.headerSize
         for _ in 0..<ncmds {
             guard offset + 8 <= data.count else { break }
@@ -404,8 +513,12 @@ enum BinaryPatcher {
             let cmdsize = Int(readU32(data, offset + 4))
             guard cmdsize >= 8, offset + cmdsize <= data.count else { break }
 
-            if cmd == LoadCommand.loadDylib {
+            if cmd == command {
                 let nameOffset = Int(readU32(data, offset + 8))
+                guard nameOffset >= 8, nameOffset < cmdsize else {
+                    offset += cmdsize
+                    continue
+                }
                 var name = ""
                 var i = offset + nameOffset
                 while i < offset + cmdsize, data[i] != 0 {

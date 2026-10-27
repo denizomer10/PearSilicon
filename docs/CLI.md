@@ -7,8 +7,8 @@ does the same way.
 
 It is designed for two workflows:
 
-- **installing** an app package (or an Xcode-built `.app`) and launching it;
-- **developing** an iOS app in Xcode and running it natively on the Mac, with no
+installing** an app package (or a toolchain-built `.app`) and launching it;
+- **developing** an iOS app in a project toolchain and running it natively on the Mac, with no
   simulator, with logs and LLDB.
 
 ---
@@ -51,7 +51,7 @@ app target (`Sources/PearSilicon/App/CLI.swift`).
 ## Commands
 
 ```
-pearsilicon install <package|app>   Prepare and install an app package or an Xcode-built .app
+pearsilicon install <package|app>   Prepare and install an app package or a toolchain-built .app
 pearsilicon run <package|app>       install + launch (--no-launch to stop after install)
 pearsilicon launch <id|name>    Launch an installed app
 pearsilicon debug <id|name>     Launch with touch logging and follow the log
@@ -65,9 +65,9 @@ pearsilicon hud <id|name> [on|off]   Print or set the Metal HUD/FPS overlay
 pearsilicon pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
 pearsilicon logs <id|name>      Print or follow the log (--follow, --system)
 pearsilicon paths               Show the Application Support layout
-pearsilicon doctor              Check Xcode, runtime and library readiness
+pearsilicon doctor              Check the development toolchain, runtime and library readiness
 pearsilicon link                Symlink this binary to /usr/local/bin
-pearsilicon xcode <project>     Build a scheme for a device, install, launch
+pearsilicon build <project>     Build a scheme for a device, install, launch
 ```
 
 `<id|name>` accepts either the bundle identifier or the display name. An
@@ -108,10 +108,9 @@ pearsilicon list --json
 pearsilicon doctor
 ```
 
-`doctor` prints the macOS/arch, whether a full Xcode is installed *and selected*,
-the runtime dylib it would load, and the library location. If Xcode is
-missing, `pearsilicon xcode` refuses with the same instructions instead of
-letting `xcodebuild` fail cryptically.
+`doctor` prints the macOS/arch, whether a full development toolchain is installed *and selected*,
+the runtime dylib it would load, and the library location. If the development toolchain ismissing, `pearsilicon build` refuses with the same instructions instead of
+letting the project builder fail cryptically.
 
 ---
 
@@ -120,7 +119,7 @@ letting `xcodebuild` fail cryptically.
 `install` accepts two shapes:
 
 - **package** — unzipped, the `Payload/*.app` is prepared and signed;
-- **`.app`** — a bundle produced by an Xcode device build (or any iOS `.app`).
+- **`.app`** — a bundle produced by a device build (or any iOS `.app`).
 
 The pipeline is the same as the GUI: `Info.plist` rewrite → legacy metadata
 removal → Mach-O platform patch (iOS → Mac Catalyst, arm64) → loading the
@@ -128,7 +127,7 @@ runtime with `LC_LOAD_DYLIB` → inside-out ad-hoc signing with the loader entit
 
 **Simulator builds are rejected** at install time. Their binaries target the
 simulator runtime and cannot be turned into Catalyst binaries; build for a
-device (`generic/platform=iOS`) instead. `pearsilicon xcode` does that for you.
+device (`generic/platform=iOS`) instead. `pearsilicon build` does that for you.
 
 A starter keymap is generated if the app has none (disable with `--no-keymap`).
 The keymapper itself stays opt-in: pass `--keys`, or enable it for the app in
@@ -137,20 +136,20 @@ handlers at all.
 
 ---
 
-## Xcode integration
+## Project build integration
 
-### Option 1 — let the CLI build
+### Option 1 — let the CLI build the project
 
 ```sh
-pearsilicon xcode ~/Code/MyApp/MyApp.xcodeproj --scheme MyApp
+pearsilicon build ~/Code/MyApp/MyApp.xcodeproj --scheme MyApp
 # workspace:
-pearsilicon xcode ~/Code/MyApp/MyApp.xcworkspace --scheme MyApp
+pearsilicon build ~/Code/MyApp/MyApp.xcworkspace --scheme MyApp
 ```
 
-This runs `xcodebuild` for `generic/platform=iOS` with code signing disabled
+This runs the project builder for `generic/platform=iOS` with code signing disabled
 (PearSilicon signs the bundle itself), reads `BUILT_PRODUCTS_DIR` /
 `FULL_PRODUCT_NAME` from the build settings, installs the product and launches
-it. If no full Xcode is selected it stops with the `xcode-select` command to run
+it. If no full development toolchain is selected it stops with the toolchain selector command to run
 (see `pearsilicon doctor`). Options:
 
 | Option | Default |
@@ -162,10 +161,10 @@ it. If no full Xcode is selected it stops with the `xcode-select` command to run
 | `--keys` / `--no-keys`, `--log`, `--env` | as usual |
 
 Derived data is kept under
-`~/Library/Application Support/PearSilicon/Work/XcodeDerivedData`, so rebuilds
+`~/Library/Application Support/PearSilicon/Work/ProjectBuildData`, so rebuilds
 are incremental.
 
-### Option 2 — keep Xcode's Run button
+### Option 2 — keep the IDE Run action
 
 Point the scheme's Run action at the PearSilicon binary and pass the built
 product as an argument:
@@ -176,11 +175,11 @@ product as an argument:
 3. **Arguments:** `run "$(BUILT_PRODUCTS_DIR)/$(FULL_PRODUCT_NAME)" --log`
 4. Set the destination to a **device** (not a simulator) before building.
 
-Xcode expands the build settings in scheme arguments. The command installs the
+The IDE expands the build settings in scheme arguments. The command installs the
 just-built bundle, launches it and follows the log; when the app exits, the CLI
 exits, so the Run session ends cleanly.
 
-If Xcode insists on a simulator destination for a custom executable, use Option
+If the IDE insists on a simulator destination for a custom executable, use Option
 1 (or a *Run Script* phase that calls `pearsilicon run …`) instead.
 
 ---
@@ -231,7 +230,7 @@ skipped so that it cannot open the GUI by accident.
   Applications/<bundleID>.app
   Keymaps/<bundleID>.json
   Logs/<bundleID>.log
-  Work/XcodeDerivedData/          (pearsilicon xcode)
+  Work/ProjectBuildData/          (pearsilicon build)
 ```
 
 The GUI listens for `com.pearsilicon.libraryChanged` and refreshes its library

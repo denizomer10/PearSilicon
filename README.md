@@ -14,17 +14,16 @@
 > **clean-room engineering**. It translates system APIs so that legally owned
 > iOS applications can run natively on macOS.
 >
-> - **No DRM / anti-cheat bypass.** We do not circumvent, patch, or bypass any
->   digital rights management or anti-cheat protections. If an application
->   requires a DRM or anti-cheat bypass to run, it is out of scope and is
+> - **Respect for platform protections.** We do not modify or patch platform
+>   or application protection systems, and we do not alter how an application
+>   enforces them. An application that needs this is out of scope and is
 >   intentionally left unhandled.
 > - **Fair play guaranteed.** An anti-macro guard is hard-coded and always on.
 >   It cannot be disabled by the user. The keymapper refuses synthetic input or
 >   turbo/macro speeds that exceed human capability, keeping multiplayer
 >   environments fair.
-> - **API translation only.** We do not add malicious payloads, decompile
->   application logic, or alter an application's core binaries beyond declaring
->   platform compatibility.
+> - **API translation only.** We do not add code to an application or alter its
+>   logic or core binaries beyond declaring platform compatibility.
 >
 > Use this tool only with applications you have legally purchased and prepared
 > from your own devices.
@@ -36,8 +35,9 @@
 - **One-click install** — unzip an app package, prepare it for macOS, sign it.
 - **Launch** through LaunchServices on the `/System/iOSSupport` runtime, so the
   app behaves like a real foreground app.
-- **Keymapper**, opt-in per app and **off by default** — map keys to taps,
-  holds, a virtual joystick, mouse-look and swipes.
+- **Keymapper**, opt-in per app and **off by default** — map physical keys to
+  taps, holds, a virtual joystick, mouse-look and swipes. The editor can record
+  the next key press, add a binding by gesture type, and clear all bindings.
 - **Real multi-touch** — genuine, simultaneous touches through the platform's
   own virtual-touch machinery. No special permissions, no pointer lock: the
   cursor stays visible and can always leave the window.
@@ -122,7 +122,7 @@ Full command reference: [docs/CLI.md](docs/CLI.md).
    loads `libPearRuntime.dylib` alongside the app. The runtime is a clean-room
    API compatibility layer for system surfaces such as CFNetwork, UIKit and
    device APIs. It does not modify the app's internal logic, memory, or
-   anti-cheat systems. The older environment-variable loading path is refused
+   protection systems. The older environment-variable loading path is refused
    for these processes; a real load command is honored. Sign inside-out.
 4. **Launch** — spawn through LaunchServices with the `/System/iOSSupport` dyld
    search paths. A plain `posix_spawn` renders but is never *activated*, so the
@@ -156,16 +156,18 @@ target's first).
 | --- | --- |
 | `KeychainShim` | clean-room keychain store behind `SecItem*`/`SecKey`, with a synthetic access group for SDKs that read it back |
 | `ScreenShim` | make `UIScreen` follow the key window instead of the whole display |
-| `MetalLayerShim` | give a `CAMetalLayer` with no device the system default device |
-| `GLShim` | define the missing `EAGLGetProcAddress` over `dlsym` for OpenGL ES titles |
-| `CloudKitShim` | make `CKContainer` report unavailable instead of crashing |
-| `DeviceShim` | report an iPhone model from `sysctl hw.machine` |
+| `MetalLayerShim` | give a `CAMetalLayer` a device and a usable drawable, and recover a key window |
+| `GLShim` | define `EAGLGetProcAddress` and aspect-fit oversized legacy OpenGL drawables |
+| `CredentialShim` | return nil for a client credential that has no identity instead of trapping in CFNetwork |
+| `CloudShim` | local-only account surface: key-value storage, ubiquity container, GameKit player IDs and CloudKit status; no remote account or credentials |
+| `DeviceShim` | keep hardware and UIKit identity values coherent for device-profile selection |
 | `PathShim` | keep the app's data inside its own container |
-| `PointerLockShim` | per-app pointer-lock control |
+| `PointerLockShim` | per-app pointer-lock control, applied only to the live controller hierarchy |
 | `ODRShim` | resolve on-demand resource requests to the bundles present in the package |
-| `UsercentricsShim` | replace a consent SDK's UI entry points and report "no consent required" |
+| `ConsentShim` | replace a consent SDK's UI entry points and report "no consent required" |
 | `NetworkShim` | iOS-style `User-Agent` and device headers, HTTP/2 instead of QUIC |
 | `BeepShim` | silence the AppKit alert beep for unhandled key presses |
+| `libswiftUIKit` bridge | source-built compatibility overlay for the small set of Swift UIKit conveniences missing from the host runtime |
 
 Each can be disabled with its `PEAR_NO_*` variable (see Diagnostics).
 
@@ -197,6 +199,11 @@ Repeat-rate protection is not a switch: it is always on.
 
 - **Opt-in toggle** (per app, default off) — when off, no keymap is passed and
   the runtime installs no input handlers at all.
+- **Key recording** — the keyboard button records the next physical key, so the
+  binding follows that key rather than the current layout's character.
+- **Gesture picker** — the add menu creates a tap, hold, joystick, mouse-look or
+  swipe binding directly; changing the picker later keeps the marker position.
+- **Clear all** — removes every binding for the app after confirmation.
 - **Repeat-rate protection** — always on, not configurable. It drops presses
   faster than a human hand, per key and across all keys. Releases are never
   blocked.
@@ -237,13 +244,18 @@ debugging).
 | `PEAR_DEBUG_TOUCH` | log input translation and touches |
 | `PEAR_DEBUG_SCREEN` / `PEAR_DEBUG_VIEWS` | dump screen metrics / the view and layer trees |
 | `PEAR_DEBUG_GL` | dump how the app sizes its GL surface |
-| `PEAR_NO_SCREEN_SHIM`, `PEAR_NO_METAL_FIX`, `PEAR_NO_CLOUDKIT_STUB`, `PEAR_NO_PATH_SHIM`, `PEAR_NO_ODR_SHIM`, `PEAR_NO_USERCENTRICS_SHIM`, `PEAR_NO_NETWORK_SHIM` | disable a shim |
+| `PEAR_NO_SCREEN_SHIM`, `PEAR_NO_METAL_FIX`, `PEAR_NO_CLOUD_SHIM`, `PEAR_NO_DEVICE_SHIM`, `PEAR_NO_CREDENTIAL_SHIM`, `PEAR_NO_PATH_SHIM`, `PEAR_NO_ODR_SHIM`, `PEAR_NO_CONSENT_SHIM`, `PEAR_NO_NETWORK_SHIM` | disable a shim |
+| `PEAR_NO_GL_FIT` | leave an oversized legacy OpenGL drawable untouched |
 | `PEAR_NETWORK_KEEP_UA` | keep an app-supplied non-Mac `User-Agent` instead of replacing it |
-| `PEAR_FAKE_IOS_VERSION`, `PEAR_DEVICE_MODEL` | values reported in the iOS network headers (default `16.0`, `iPhone15,2`) |
+| `PEAR_FAKE_IOS_VERSION`, `PEAR_DEVICE_MODEL` | values reported in the device and network headers (default `16.0`, `iPhone15,2`) |
+| `PEAR_DEVICE_NAME`, `PEAR_DEVICE_IDIOM` | user-visible model name and `phone`/`pad` idiom |
+| `PEAR_DEVICE_KERNEL`, `PEAR_DEVICE_UNAME` | opt in to kernel-release and `uname` identity overrides |
+| `PEAR_DEVICE_UI_DETAILS` | opt in to vendor-token and layout-idiom overrides |
+| `PEAR_DEBUG_CLOUD` / `PEAR_DEBUG_METAL` | log cloud compatibility and Metal-layer recovery |
 | `PEAR_ALLOW_POINTER_LOCK` | let the target keep the pointer locked (pointer-lock shim off) |
 | `PEAR_KEEP_BEEP` | keep the platform alert beep for unhandled key presses |
 | `PEAR_DEBUG_BEEP` | log the beep hook that was installed |
-| `PEAR_DEBUG_USERCENTRICS` | log the consent classes found and each method's return-type kind |
+| `PEAR_DEBUG_CONSENT` | log the consent classes found and each method's return-type kind |
 | `PEAR_NO_GAME_TWEAKS` | skip the user-provided `tweaks.json` option fixes applied before launch |
 | `PEAR_MOUSE_CAPTURE=1` | opt in to keeping the cursor inside the window during mouse look |
 | `PEAR_DEBUG_POINTER` | log which classes had pointer lock disabled |
@@ -262,18 +274,18 @@ This project is written from scratch as an interoperability layer:
   sends, method swizzling and `__DATA,__interpose` — the same technique used by
   any compatibility shim. A few private symbol names and numeric event/field
   constants are referenced; those are interface facts, not implementation.
-- **No application code.** Nothing is decompiled. Behaviour was learned from the
-  outside (observing what the system does for a real touch, a real launch, a
-  real frame) and reimplemented here.
+- **No application code.** Nothing is copied from or derived from application
+  binaries. Behaviour was learned from the outside (observing what the system
+  does for a real touch, a real launch, a real frame) and reimplemented here.
 - **No titles named in the repository.** Shims match the SDK's own metadata and
   discover assemblies through the platform's runtime API. Title-specific detail
   lives in per-app settings, never in `runtime/` or the repository docs.
 - **A compatibility layer, not a patch.** `LC_LOAD_DYLIB` is used only so the
   dynamic linker loads the runtime. The runtime supplies clean-room
   implementations of system surfaces (CFNetwork, UIKit, device APIs); it does
-  not modify the app's internal logic, memory, or anti-cheat systems.
-- **No DRM or anti-cheat bypass.** Applications that require such a bypass are
-  out of scope and are intentionally left unhandled.
+  not modify the app's internal logic, memory, or protection systems.
+- **Respect for platform protections.** Applications that need a protection
+  system modified to run are out of scope and are intentionally left unhandled.
 
 Using private platform interfaces may be restricted by the platform vendor's
 terms for signed/store software; that is a separate question from the origin of
@@ -281,8 +293,9 @@ this code.
 
 ## Scope and limitations
 
-- **Some older titles cap their own rendering** to a fixed size, leaving black
-  bars when the window is larger — that is the app's behaviour, not the loader's.
+- **Legacy OpenGL titles** can create a drawable larger than their window before
+  the scene is attached. `GLShim` aspect-fits that drawable and keeps its native
+  renderbuffer so the whole frame stays visible; use `PEAR_NO_GL_FIT` to opt out.
 - **On-demand resources cannot be downloaded on a Mac.** Some titles keep most
   of their content in store-delivered packs that a packaged archive may not
   contain. `ODRShim` makes the request succeed and logs which tag is missing,

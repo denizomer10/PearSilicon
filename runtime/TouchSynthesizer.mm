@@ -243,7 +243,7 @@ void PearSynthesizeTouch(BOOL down, CGFloat nx, CGFloat ny) {
     // Sink: PEAR_TOUCH_SINK picks explicitly.
     //   handle   _handleHIDEvent:                       (UIKit's HID entry point)
     //   enqueue  _enqueueHIDEvent:                      (HID system's entry point)
-    //   bypass   _handleHIDEventBypassingUIEvent:
+    //   direct   _handleHIDEventBypassingUIEvent:
     //   dispatch IOHIDEventSystemClientDispatchEvent    (send into the HID system,
     //            so UIKit's own observer receives it — no private method call)
     const char *sinkName = getenv("PEAR_TOUCH_SINK");
@@ -263,7 +263,7 @@ void PearSynthesizeTouch(BOOL down, CGFloat nx, CGFloat ny) {
 
     SEL sink = NSSelectorFromString(@"_handleHIDEvent:");
     if (sinkName && strcmp(sinkName, "enqueue") == 0) sink = gEnqueueSelector;
-    else if (sinkName && strcmp(sinkName, "bypass") == 0) sink = NSSelectorFromString(@"_handleHIDEventBypassingUIEvent:");
+    else if (sinkName && strcmp(sinkName, "direct") == 0) sink = NSSelectorFromString(@"_handleHIDEventBypassingUIEvent:");
     if (![app respondsToSelector:sink]) sink = gEnqueueSelector;
     [app performSelector:sink withObject:(__bridge id)root];
 
@@ -600,8 +600,11 @@ static void PearTouchSynthesizerInit(void) {
             NSSet *touches = [event allTouches];
             for (UITouch *touch in touches) {
                 CGPoint p = [touch locationInView:self];
-                PearLog(@"[PearRuntime][touch] DELIVERED phase=%ld x=%.0f y=%.0f",
-                      (long)touch.phase, p.x, p.y);
+                UIView *target = touch.view;
+                CGPoint local = target ? [touch locationInView:target] : CGPointZero;
+                PearLog(@"[PearRuntime][touch] DELIVERED phase=%ld window=(%.0f,%.0f) view=%@ local=(%.0f,%.0f)",
+                      (long)touch.phase, p.x, p.y,
+                      target ? NSStringFromClass(target.class) : @"nil", local.x, local.y);
             }
             // Dump the underlying HID event, so a real delivered event can be
             // compared field-for-field against our synthesized one.

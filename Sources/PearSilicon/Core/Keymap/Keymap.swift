@@ -16,6 +16,39 @@ struct NormalizedRect: Codable, Hashable, Sendable {
     static let full = NormalizedRect(x: 0, y: 0, width: 1, height: 1)
 }
 
+/// The kind of gesture a binding produces. Kept separate from the associated
+/// values so the editor can offer a stable picker and preserve the marker
+/// position when the kind changes.
+enum KeymapActionKind: String, CaseIterable, Codable, Identifiable, Sendable {
+    case tap
+    case hold
+    case joystick
+    case mouseLook
+    case swipe
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .tap: return "Tap"
+        case .hold: return "Hold"
+        case .joystick: return "Joystick"
+        case .mouseLook: return "Mouse Look"
+        case .swipe: return "Swipe"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .tap: return "hand.tap"
+        case .hold: return "hand.point.up.left.fill"
+        case .joystick: return "circle.grid.cross"
+        case .mouseLook: return "computermouse"
+        case .swipe: return "hand.draw"
+        }
+    }
+}
+
 /// A single mapping action performed by a synthesized touch event.
 enum KeymapAction: Codable, Hashable, Sendable {
     /// A quick tap at a fixed point.
@@ -28,6 +61,59 @@ enum KeymapAction: Codable, Hashable, Sendable {
     case mouseLook(region: NormalizedRect, sensitivity: Double)
     /// A drag/swipe between two points over `duration` seconds.
     case swipe(from: NormalizedPoint, to: NormalizedPoint, duration: Double)
+
+    var kind: KeymapActionKind {
+        switch self {
+        case .tap: return .tap
+        case .hold: return .hold
+        case .joystick: return .joystick
+        case .mouseLook: return .mouseLook
+        case .swipe: return .swipe
+        }
+    }
+
+    /// The marker position this action uses on the canvas.
+    var marker: NormalizedPoint {
+        switch self {
+        case .tap(let point), .hold(let point):
+            return point
+        case .joystick(let center, _):
+            return center
+        case .mouseLook(let region, _):
+            return NormalizedPoint(region.x + region.width / 2,
+                                   region.y + region.height / 2)
+        case .swipe(let from, _, _):
+            return from
+        }
+    }
+
+    /// Builds an action of `kind` at `point`, keeping the defaults sensible for
+    /// a newly added binding.
+    static func make(_ kind: KeymapActionKind, at point: NormalizedPoint = NormalizedPoint(0.5, 0.5)) -> KeymapAction {
+        switch kind {
+        case .tap:
+            return .tap(point)
+        case .hold:
+            return .hold(point)
+        case .joystick:
+            return .joystick(center: point, radius: 0.10)
+        case .mouseLook:
+            let region = NormalizedRect(x: max(0, point.x - 0.30),
+                                        y: max(0, point.y - 0.40),
+                                        width: 0.60,
+                                        height: 0.80)
+            return .mouseLook(region: region, sensitivity: 1.0)
+        case .swipe:
+            return .swipe(from: point,
+                          to: NormalizedPoint(min(1, point.x + 0.25), point.y),
+                          duration: 0.25)
+        }
+    }
+
+    /// Converts an existing action to another kind while keeping its location.
+    func converted(to kind: KeymapActionKind) -> KeymapAction {
+        Self.make(kind, at: marker)
+    }
 }
 
 /// One key -> action binding.
@@ -37,16 +123,16 @@ struct KeymapBinding: Codable, Identifiable, Hashable, Sendable {
     var key: String
     var action: KeymapAction
 
-    var displayKey: String { key.uppercased() }
+    var displayKey: String { KeyNames.display(key) }
 
-    var actionKind: String {
-        switch action {
-        case .tap: return "Tap"
-        case .hold: return "Hold"
-        case .joystick: return "Joystick"
-        case .mouseLook: return "Mouse Look"
-        case .swipe: return "Swipe"
-        }
+    var actionKind: String { action.kind.displayName }
+
+    /// A joystick consumes W/A/S/D as one unit; a mouse-look binding consumes
+    /// pointer movement. Both names are reserved so a second binding cannot
+    /// silently compete for the same input.
+    var usesReservedInput: Bool {
+        let normalized = key.lowercased()
+        return normalized == "wasd" || normalized == "mouse"
     }
 }
 

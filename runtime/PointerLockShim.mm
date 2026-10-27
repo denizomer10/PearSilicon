@@ -12,12 +12,18 @@ static BOOL PearPointerDebug(void) {
     return NSProcessInfo.processInfo.environment[@"PEAR_DEBUG_POINTER"] != nil;
 }
 
-/// Returns NO for every class that implements `prefersPointerLocked`.
-static NSMutableSet<NSString *> *gHandledPointerLockClasses = nil;
+/// Returns NO for every view-controller class in the live hierarchy that
+/// implements `prefersPointerLocked`.
+///
+/// Deliberately does not call `objc_copyClassList`: some engines have class
+/// metadata that can only be realized after their own launch path, and walking
+/// the whole list during startup crashes inside the Objective-C runtime. The
+/// live controller chain is the only place the preference matters.
+static NSMutableSet<NSValue *> *gHandledPointerLockMethods = nil;
 
 static NSUInteger PearDisablePointerLock(void) {
     if (NSProcessInfo.processInfo.environment[@"PEAR_ALLOW_POINTER_LOCK"]) return 0;
-    if (!gHandledPointerLockClasses) gHandledPointerLockClasses = [NSMutableSet set];
+    if (!gHandledPointerLockMethods) gHandledPointerLockMethods = [NSMutableSet set];
 
     SEL selector = NSSelectorFromString(@"prefersPointerLocked");
     IMP replacement = imp_implementationWithBlock(^BOOL(id self) {
@@ -25,33 +31,37 @@ static NSUInteger PearDisablePointerLock(void) {
         return NO;
     });
 
-    NSUInteger swizzled = 0;
-    unsigned int classCount = 0;
-    Class *classes = objc_copyClassList(&classCount);
-    for (unsigned int i = 0; i < classCount; i++) {
-        NSString *className = @(class_getName(classes[i]));
-        if ([gHandledPointerLockClasses containsObject:className]) continue;
-
-        unsigned int methodCount = 0;
-        Method *methods = class_copyMethodList(classes[i], &methodCount);
-        for (unsigned int m = 0; m < methodCount; m++) {
-            if (sel_isEqual(method_getName(methods[m]), selector)) {
-                method_setImplementation(methods[m], replacement);
-                [gHandledPointerLockClasses addObject:className];
+    __block NSUInteger swizzled = 0;
+    __block void (^visit)(UIViewController *) = nil;
+    visit = ^(UIViewController *controller) {
+        if (!controller) return;
+        Class cls = object_getClass(controller);
+        Method method = class_getInstanceMethod(cls, selector);
+        if (method) {
+            NSValue *key = [NSValue valueWithPointer:method];
+            if (![gHandledPointerLockMethods containsObject:key]) {
+                method_setImplementation(method, replacement);
+                [gHandledPointerLockMethods addObject:key];
                 swizzled++;
                 if (PearPointerDebug()) {
                     PearLog(@"[PearRuntime][pointer] disabled prefersPointerLocked on %s",
-                            class_getName(classes[i]));
+                            class_getName(cls));
                 }
-                break;
             }
         }
-        free(methods);
+        for (UIViewController *child in controller.childViewControllers) visit(child);
+        if (controller.presentedViewController) visit(controller.presentedViewController);
+    };
+
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            visit(window.rootViewController);
+        }
     }
-    free(classes);
 
     if (swizzled > 0) {
-        PearLog(@"[PearRuntime][pointer] pointer lock disabled (%lu implementation%s)",
+        PearLog(@"[PearRuntime][pointer] pointer lock disabled (%lu method%s)",
                 (unsigned long)swizzled, swizzled == 1 ? "" : "s");
     }
     return swizzled;
@@ -91,20 +101,17 @@ static void PearPointerLockShimInit(void) {
     @autoreleasepool {
         if (NSProcessInfo.processInfo.environment[@"PEAR_ALLOW_POINTER_LOCK"]) return;
 
-        PearDisablePointerLock();
-
-        // The game's view controller (and its preference) may be installed after
-        // this constructor runs; re-check shortly after launch and whenever the
-        // app becomes active.
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            PearDisablePointerLock();
-            PearRefreshPointerPreference();
-        });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            PearRefreshPointerPreference();
-        });
+        // Do not walk the Objective-C class list from a dyld initializer: Swift
+        // classes may not be realized yet, and some apps have metadata that is
+        // only safe after the runtime has finished loading images. The first
+        // launch callback is early enough for a user click.
+        for (int i = 1; i <= 4; i++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.75 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                PearDisablePointerLock();
+                PearRefreshPointerPreference();
+            });
+        }
 
         [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
                                                         object:nil queue:NSOperationQueue.mainQueue

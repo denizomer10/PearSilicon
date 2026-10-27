@@ -11,13 +11,11 @@ DerivedData/
 /runtime/.cache/
 /runtime/compile_commands.json
 
-# Scratch and reverse-engineering work — extracted app bundles and ad-hoc
-# scripts that are not part of the project.
-/build2/
+# Local scratch space for experiments, not part of the project.
 
 # Local artefacts
 *.log
-*.ipa
 
-# Private status notes (may contain title-specific detail)
+
+# Local notes kept outside the repository.
 docs/STATUS.md

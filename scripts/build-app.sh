@@ -1,8 +1,8 @@
 #!/bin/bash
 # Builds PearSilicon and assembles a runnable .app bundle.
 #
-# Requires full Xcode (Command Line Tools alone is not enough, because the
-# SwiftUI macro plugins ship with Xcode).
+# Requires the full development toolchain (the command-line tools alone are not
+# enough, because the SwiftUI macro plugins ship with the full toolchain).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,9 +15,9 @@ OUT="$ROOT/build/$APP_NAME.app"
 
 # --- 1) Environment check -------------------------------------------------
 DEV_DIR="$(xcode-select -p)"
-if [[ "$DEV_DIR" != *"Xcode.app"* ]]; then
-  echo "ERROR: active developer directory is not Xcode: $DEV_DIR"
-  echo "Run: sudo xcode-select -s /Applications/Xcode.app"
+if [[ ! -d "$DEV_DIR/Platforms/MacOSX.platform" ]]; then
+  echo "ERROR: the active developer directory is not a full toolchain: $DEV_DIR"
+  echo "Select a full toolchain with: sudo xcode-select -s /Applications/<Toolchain>.app"
   exit 1
 fi
 
@@ -45,6 +45,9 @@ fi
 
 if [[ -f "$ROOT/build/libPearRuntime.dylib" ]]; then
   cp "$ROOT/build/libPearRuntime.dylib" "$OUT/Contents/Resources/"
+fi
+if [[ -f "$ROOT/build/libswiftUIKit.dylib" ]]; then
+  cp "$ROOT/build/libswiftUIKit.dylib" "$OUT/Contents/Resources/"
 fi
 
 # --- 3b) App icon from the repo logo -------------------------------------

@@ -135,7 +135,7 @@ enum CLI {
         case "paths": return try pathsCommand()
         case "doctor": return try doctorCommand()
         case "link", "install-cli": return try linkCommand(parsed)
-        case "xcode": return try xcodeCommand(parsed)
+        case "build": return try buildProjectCommand(parsed)
         default:
             throw CLIError.message("unknown command '\(command)'. Run `pearsilicon help`.")
         }
@@ -170,14 +170,14 @@ enum CLI {
             throw CLIError.message("not found: \(url.path)")
         }
 
-        let installer = IPAInstaller(libraryURL: CLIPaths.shared.library)
+        let installer = PackageInstaller(libraryURL: CLIPaths.shared.library)
         let extensionName = url.pathExtension.lowercased()
 
         let app: InstalledApp
         if isDirectory.boolValue && extensionName == "app" {
             app = try awaitBridge { try await installer.installBundle(at: url) }
-        } else if extensionName == "ipa" {
-            app = try awaitBridge { try await installer.install(ipaAt: url) }
+        } else if !isDirectory.boolValue {
+            app = try awaitBridge { try await installer.install(packageAt: url) }
         } else {
             throw CLIError.message("expected a package file or an .app bundle, got \(url.lastPathComponent)")
         }
@@ -335,7 +335,7 @@ enum CLI {
     }
 
     private static func listCommand(_ arguments: CLIArguments) throws -> Int32 {
-        let apps = try IPAInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()
+        let apps = try PackageInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
 
         if arguments.flags.contains("json") {
@@ -416,7 +416,7 @@ enum CLI {
             }
         }
 
-        try IPAInstaller(libraryURL: CLIPaths.shared.library).uninstall(app)
+        try PackageInstaller(libraryURL: CLIPaths.shared.library).uninstall(app)
         try? KeymapStore(baseURL: CLIPaths.shared.keymaps).delete(for: app.id)
         notifyLibraryChanged()
         print("removed \(app.displayName) [\(app.id)]")
@@ -605,23 +605,23 @@ enum CLI {
         print("macOS:    \(ProcessInfo.processInfo.operatingSystemVersionString)")
         print("arch:     \(architecture)")
 
-        switch DeveloperTools.xcodeStatus() {
+        switch DeveloperTools.toolchainStatus() {
         case .ready:
-            print("xcode:    ready (\(DeveloperTools.activeDeveloperDirectory() ?? "selected"))")
+            print("toolchain:ready (\(DeveloperTools.activeDeveloperDirectory() ?? "selected"))")
         case .missing:
-            print("xcode:    NOT INSTALLED")
-            print("          install Xcode from the store, then run:")
-            print("            sudo xcode-select -s /Applications/Xcode.app")
-        case .installedButNotSelected(let xcodePath, let activePath):
-            print("xcode:    installed at \(xcodePath), but not selected")
+            print("toolchain: NOT INSTALLED")
+            print("          install the full development toolchain, then run:")
+            print("            sudo xcode-select -s /Applications/<Toolchain>.app")
+        case .installedButNotSelected(let toolchainPath, let activePath):
+            print("toolchain: installed at \(toolchainPath), but not selected")
             print("          active: \(activePath ?? "unknown")")
-            print("          run: \(DeveloperTools.selectCommand(for: xcodePath))")
+            print("          run: \(DeveloperTools.selectCommand(for: toolchainPath))")
         }
 
         let runtime = AppLauncher.runtimeLibraryURL()?.path
         print("runtime:  \(runtime ?? "NOT FOUND")")
 
-        let apps = (try? IPAInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()) ?? []
+        let apps = (try? PackageInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()) ?? []
         print("library:  \(CLIPaths.shared.library.path) (\(apps.count) apps)")
         return 0
     }
@@ -655,26 +655,26 @@ enum CLI {
         }
     }
 
-    // MARK: Xcode
+    // MARK: Project build
 
-    private static func xcodeCommand(_ arguments: CLIArguments) throws -> Int32 {
-        switch DeveloperTools.xcodeStatus() {
+    private static func buildProjectCommand(_ arguments: CLIArguments) throws -> Int32 {
+        switch DeveloperTools.toolchainStatus() {
         case .ready:
             break
         case .missing:
             throw CLIError.message("""
-            Xcode is not installed. Install the full Xcode from the store, then run:
-              sudo xcode-select -s /Applications/Xcode.app
+            The full development toolchain is not installed. Install it, open it once, then run:
+              sudo xcode-select -s /Applications/<Toolchain>.app
             """)
-        case .installedButNotSelected(let xcodePath, _):
+        case .installedButNotSelected(let toolchainPath, _):
             throw CLIError.message("""
-            Xcode is installed but not selected. Run:
-              \(DeveloperTools.selectCommand(for: xcodePath))
+            The development toolchain is installed but not selected. Run:
+              \(DeveloperTools.selectCommand(for: toolchainPath))
             """)
         }
 
         guard let project = arguments.positionals.first else {
-            throw CLIError.message("usage: pearsilicon xcode <project.xcodeproj|project.xcworkspace> --scheme <name> [--configuration Debug]")
+            throw CLIError.message("usage: pearsilicon build <project.xcodeproj|project.xcworkspace> --scheme <name> [--configuration Debug]")
         }
         guard let scheme = arguments.options["scheme"] else {
             throw CLIError.message("--scheme is required")
@@ -682,7 +682,7 @@ enum CLI {
         let configuration = arguments.options["configuration"] ?? "Debug"
         let destination = arguments.options["destination"] ?? "generic/platform=iOS"
 
-        let derivedData = CLIPaths.shared.work.appendingPathComponent("XcodeDerivedData", isDirectory: true)
+        let derivedData = CLIPaths.shared.work.appendingPathComponent("ProjectBuildData", isDirectory: true)
         try FileManager.default.createDirectory(at: derivedData, withIntermediateDirectories: true)
 
         var baseArguments: [String]
@@ -703,7 +703,7 @@ enum CLI {
         let settings = parseBuildSettings(settingsOutput)
         guard let productsDirectory = settings["BUILT_PRODUCTS_DIR"],
               let productName = settings["FULL_PRODUCT_NAME"] else {
-            throw CLIError.message("could not read BUILT_PRODUCTS_DIR / FULL_PRODUCT_NAME from xcodebuild")
+            throw CLIError.message("could not read BUILT_PRODUCTS_DIR / FULL_PRODUCT_NAME from the project builder")
         }
 
         print("building \(scheme) (\(configuration)) for \(destination)…")
@@ -738,7 +738,7 @@ enum CLI {
     // MARK: Helpers
 
     private static func resolveApp(_ query: String) throws -> InstalledApp {
-        let apps = try IPAInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()
+        let apps = try PackageInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()
         if let exact = apps.first(where: { $0.id == query }) { return exact }
 
         let matches = apps.filter {
@@ -905,7 +905,7 @@ enum CLI {
           pearsilicon <command> [options]
 
         COMMANDS
-          install <package|app>    Prepare and install an app package or an Xcode-built .app
+          install <package|app>    Prepare and install an app package or a toolchain-built .app
           run <package|app>        install + launch (use --no-launch to stop after install)
           launch <id|name>     Launch an installed app
           debug <id|name>      Launch with touch logging and follow the log
@@ -919,9 +919,9 @@ enum CLI {
           pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
           logs <id|name>       Print or follow the log (--follow, --system)
           paths                Show the Application Support layout
-          doctor               Check Xcode, runtime and library readiness
+          doctor               Check toolchain, runtime and library readiness
           link                 Symlink this binary to /usr/local/bin/pearsilicon
-          xcode <project>      Build a scheme for a device, install and launch it
+          build <project>      Build a scheme for a device, install and launch it
 
         COMMON OPTIONS
           --keys / --no-keys   Force the keymapper on or off for this launch
@@ -933,10 +933,10 @@ enum CLI {
           --trace              Shorthand for debug touch logging
           --lldb               (debug) attach LLDB to the launched process
 
-        XCODE
+        PROJECT BUILD
           Build for a device (not the simulator) and hand the product to PearSilicon:
 
-            pearsilicon xcode ~/Code/MyApp/MyApp.xcodeproj --scheme MyApp
+            pearsilicon build ~/Code/MyApp/MyApp.xcodeproj --scheme MyApp
 
           Or use the scheme's Run action: set the executable to
           /Applications/PearSilicon.app/Contents/MacOS/PearSilicon and pass

@@ -1,12 +1,12 @@
-// UsercentricsShim.mm
+// ConsentShim.mm
 //
-// Skips the Usercentrics consent SDK in titles that ship it.
+// Skips a consent-management SDK in apps that ship it.
 //
-// Some titles bundle UsercentricsUI, a Swift consent-management SDK. Its Swift
-// metadata is built for the iOS Swift runtime; under the macOS iOS-on-Mac
-// runtime the metadata accessor returns an invalid pointer and the app dies
-// with SIGBUS in the Swift runtime while the consent banner is being
-// configured. The crash is deterministic and happens before any gameplay.
+// Some apps bundle a Swift consent UI module. Its Swift metadata is built for
+// the iOS Swift runtime; under the macOS iOS-on-Mac runtime the metadata
+// accessor returns an invalid pointer and the app dies with SIGBUS in the
+// Swift runtime while the consent banner is being configured. The crash is
+// deterministic and happens before any app content is shown.
 //
 // The app only needs a consent decision to continue. This shim replaces the
 // C# entry points that create/show the native banner. `Initialize` is replaced
@@ -14,10 +14,14 @@
 // so the app proceeds without the Swift UI. Everything else is a no-op.
 //
 // The shim discovers the assemblies, classes and methods at runtime. It
-// contains no game names, bundle identifiers or hardcoded addresses; the
-// assembly and class names below are the SDK's own public metadata.
+// contains no application names, bundle identifiers or hardcoded addresses;
+// the assembly and class names below are the SDK's own public metadata. Those
+// identifiers are runtime lookup keys, not application-specific detail.
 //
-// Opt out with PEAR_NO_USERCENTRICS_SHIM=1.
+// The Swift consent module and the privacy bridge expose their own class
+// names; the string literals further down are used only to locate them.
+//
+// Opt out with PEAR_NO_CONSENT_SHIM=1.
 //
 // This is a compatibility shim for a third-party UI SDK.
 #import <Foundation/Foundation.h>
@@ -113,10 +117,10 @@ static void *gPrivacyOnInitialized;
 
 /// Void-returning C function used as the replacement body for the UI entry
 /// points. The C# methods we replace all return System.Void.
-static void PearUsercentricsNoop(void) {}
+static void PearConsentNoop(void) {}
 
 /// Returns true for PrivacyManager.IsReady(). A bool return travels in w0.
-static bool PearUsercentricsReturnTrue(void) { return true; }
+static bool PearConsentReturnTrue(void) { return true; }
 
 /// Handle to UnityFramework. The framework is not always loaded into the
 /// global symbol scope, so RTLD_DEFAULT can miss its exports; resolving from
@@ -197,11 +201,11 @@ static BOOL PearResolveIL2CPP(void) {
         static BOOL loggedMissing;
         if (!loggedMissing) {
             loggedMissing = YES;
-            PearLog(@"[PearRuntime][usercentrics] missing IL2CPP exports: "
+            PearLog(@"[PearRuntime][consent] missing IL2CPP exports: "
                     "domain=%d attach=%d assemblies=%d image=%d imageName=%d "
                     "generic=%d inflated=%d classCount=%d class=%d "
                     "className=%d ns=%d methods=%d fields=%d methodName=%d paramCount=%d "
-                    "returnType=%d fieldName=%d fieldType=%d classFromName=%d "
+                    "returnType=%d typeGetType=%d fieldName=%d fieldType=%d classFromName=%d "
                     "classGetType=%d objectNew=%d fieldSet=%d invoke=%d string=%d",
                     gDomainGet != NULL, gThreadAttach != NULL,
                     gClassForEach != NULL, gClassGetImage != NULL,
@@ -230,7 +234,7 @@ static BOOL PearMethodReturnsVoid(void *method) {
     return gTypeGetType(type) == 1;
 }
 
-static BOOL PearIsUsercentricsClass(const char *ns) {
+static BOOL PearIsConsentClass(const char *ns) {
     return ns && strstr(ns, "Usercentrics") != NULL;
 }
 
@@ -238,7 +242,7 @@ static BOOL PearIsUiEntryPoint(const char *name) {
     if (!name) return NO;
     // Keep the Swift UI entry points disabled. This list deliberately includes
     // AutoInitialize.Awake and the init helpers: letting them run reaches the
-    // UsercentricsUI Swift metadata and crashes with SIGBUS under the macOS
+    // consent module's Swift metadata and crashes with SIGBUS under the macOS
     // iOS-on-Mac runtime. The trade-off is that Initialize is then never
     // called, which is why the privacy service reports failure 4300 until the
     // request-level work is finished.
@@ -269,11 +273,11 @@ static NSString *PearContainedCachesPath(void) {
     return [root stringByAppendingPathComponent:@"Library/Caches"];
 }
 
-/// The app's active Usercentrics settings id and the region it applies to,
-/// discovered from the SDK's own ruleset cache. The game sends the active
+/// The app's active consent settings id and the region it applies to,
+/// discovered from the SDK's own ruleset cache. The app sends the active
 /// settings id to the consent service; a made-up id makes that request 404.
-/// The cache lives under Library/Caches/usercentrics/etags-<primary>/ruleSet/.
-static NSString *PearUsercentricsActiveSettingsId(NSString **outCountry) {
+/// The cache lives under `Library/Caches/<framework cache>/etags-<primary>/ruleSet/`.
+static NSString *PearConsentActiveSettingsId(NSString **outCountry) {
     static NSString *settingsId;
     static NSString *country;
     static dispatch_once_t once;
@@ -285,7 +289,7 @@ static NSString *PearUsercentricsActiveSettingsId(NSString **outCountry) {
         NSString *primary = nil;
         if (gDebug) {
             NSArray *entries = [fm contentsOfDirectoryAtPath:root error:NULL];
-            PearLog(@"[PearRuntime][usercentrics] settings cache root=%@ entries=%lu",
+            PearLog(@"[PearRuntime][consent] settings cache root=%@ entries=%lu",
                     root, (unsigned long)entries.count);
         }
 
@@ -330,17 +334,17 @@ static NSString *PearUsercentricsActiveSettingsId(NSString **outCountry) {
             if (settingsId.length) break;
         }
         if (!settingsId.length) settingsId = primary;
-        PearLog(@"[PearRuntime][usercentrics] settings id=%@ country=%@",
+        PearLog(@"[PearRuntime][consent] settings id=%@ country=%@",
                 settingsId ?: @"(none)", country);
     });
     if (outCountry) *outCountry = country;
     return settingsId;
 }
 
-/// Replacement for UsercentricsCMP.Initialize(OnInitialized callback).
-/// Builds a UsercentricsStatus that says "no consent required" and invokes the
-/// callback, which is what the game's privacy service waits for.
-static void PearUsercentricsInitialize(void *self, void *callback) {
+/// Replacement for the consent manager's Initialize(OnInitialized callback).
+/// Builds a consent-status object that says "no consent required" and invokes
+/// the callback, which is what the app's privacy service waits for.
+static void PearConsentInitialize(void *self, void *callback) {
     if (!callback || !gStatusClass || !gStatusCtor || !gOnInitializedInvoke) return;
 
     void *exception = NULL;
@@ -348,7 +352,7 @@ static void PearUsercentricsInitialize(void *self, void *callback) {
     if (!status) return;
     gRuntimeInvoke(gStatusCtor, status, NULL, &exception);
     if (exception) {
-        PearLog(@"[PearRuntime][usercentrics] status ctor threw");
+        PearLog(@"[PearRuntime][consent] status ctor threw");
         return;
     }
 
@@ -372,16 +376,16 @@ static void PearUsercentricsInitialize(void *self, void *callback) {
                 gRuntimeInvoke(ctor, newList, NULL, &e);
                 if (!e) {
                     gFieldSetValue(status, gServiceConsentsField, &newList);
-                    PearLog(@"[PearRuntime][usercentrics] initialised ServiceConsents");
+                    PearLog(@"[PearRuntime][consent] initialised ServiceConsents");
                 }
             }
         } else if (list) {
-            PearLog(@"[PearRuntime][usercentrics] ServiceConsents already set");
+            PearLog(@"[PearRuntime][consent] ServiceConsents already set");
         }
     }
 
     NSString *countryCode = nil;
-    NSString *activeSettingsId = PearUsercentricsActiveSettingsId(&countryCode);
+    NSString *activeSettingsId = PearConsentActiveSettingsId(&countryCode);
     void *settingsId = gStringNewWrapper(activeSettingsId.length
                                         ? activeSettingsId.UTF8String : "pearsilicon");
     void *country = gStringNewWrapper(countryCode.length ? countryCode.UTF8String : "US");
@@ -394,17 +398,17 @@ static void PearUsercentricsInitialize(void *self, void *callback) {
     exception = NULL;
     gRuntimeInvoke(gOnInitializedInvoke, callback, params, &exception);
     if (exception) {
-        PearLog(@"[PearRuntime][usercentrics] OnInitialized threw");
+        PearLog(@"[PearRuntime][consent] OnInitialized threw");
     } else {
-        PearLog(@"[PearRuntime][usercentrics] reported no consent required");
+        PearLog(@"[PearRuntime][consent] reported no consent required");
     }
 }
 
 /// Static variant of the Initialize replacement. IL2CPP passes a static
 /// method's arguments first and the MethodInfo last, so the callback arrives in
 /// the first slot.
-static void PearUsercentricsInitializeStatic(void *callback) {
-    PearUsercentricsInitialize(NULL, callback);
+static void PearConsentInitializeStatic(void *callback) {
+    PearConsentInitialize(NULL, callback);
 }
 
 static void *PearFindClass(void *image, size_t count, const char *wantedNamespace,
@@ -478,13 +482,13 @@ static void *PearFindField(void *klass, const char *wantedName) {
 }
 
 /// Debug helper: list a class's fields and their IL2CPP type kinds. Used to
-/// learn what the privacy service reads from UsercentricsStatus. Fields are
+/// learn what the privacy service reads from the consent status. Fields are
 /// metadata-only, so this is safe on a class that is not initialized yet.
 static void PearDumpFields(void *klass) {
     if (!klass || !gDebug) return;
     const char *ns = gClassGetNamespace(klass);
     const char *name = gClassGetName(klass);
-    PearLog(@"[PearRuntime][usercentrics] fields of %s.%s", ns ?: "", name ?: "");
+    PearLog(@"[PearRuntime][consent] fields of %s.%s", ns ?: "", name ?: "");
     void *iter = NULL;
     while (YES) {
         void *field = gClassGetFields(klass, &iter);
@@ -492,12 +496,12 @@ static void PearDumpFields(void *klass) {
         const char *fname = gFieldGetName(field);
         void *ftype = gFieldGetType ? gFieldGetType(field) : NULL;
         int kind = (ftype && gTypeGetType) ? gTypeGetType(ftype) : -1;
-        PearLog(@"[PearRuntime][usercentrics]   %s kind=%d", fname ?: "", kind);
+        PearLog(@"[PearRuntime][consent]   %s kind=%d", fname ?: "", kind);
     }
 }
 
-/// Reports a successful privacy initialisation to the game's own event
-/// handler. The native Usercentrics SDK would normally fire this; with the
+/// Reports a successful privacy initialisation to the app's own event
+/// handler. The native consent SDK would normally fire this; with the
 /// banner disabled we supply a "no consent required" payload.
 static void PearFirePrivacyInitialized(void) {
     if (!gPrivacyOnInitialized || !gStringNewWrapper || !gRuntimeInvoke) return;
@@ -507,7 +511,7 @@ static void PearFirePrivacyInitialized(void) {
     }
 
     NSString *countryCode = nil;
-    NSString *activeSettingsId = PearUsercentricsActiveSettingsId(&countryCode);
+    NSString *activeSettingsId = PearConsentActiveSettingsId(&countryCode);
     NSString *json = [NSString stringWithFormat:
         @"{\"shouldCollectConsent\":false,\"consents\":[],"
          "\"geolocationRuleset\":{\"activeSettingsId\":\"%@\","
@@ -522,9 +526,9 @@ static void PearFirePrivacyInitialized(void) {
     void *exception = NULL;
     gRuntimeInvoke(gPrivacyOnInitialized, NULL, params, &exception);
     if (exception) {
-        PearLog(@"[PearRuntime][usercentrics] privacy OnInitialized threw");
+        PearLog(@"[PearRuntime][consent] privacy OnInitialized threw");
     } else {
-        PearLog(@"[PearRuntime][usercentrics] reported privacy initialized (no consent required)");
+        PearLog(@"[PearRuntime][consent] reported privacy initialized (no consent required)");
     }
 }
 
@@ -535,14 +539,14 @@ typedef struct {
 static void PearPatchClassCallback(void *klass, void *userData) {
     PearPatchContext *ctx = (PearPatchContext *)userData;
     const char *ns = gClassGetNamespace(klass);
-    if (!PearIsUsercentricsClass(ns)) return;
+    if (!PearIsConsentClass(ns)) return;
     // il2cpp_class_get_methods on a generic definition blocks on the main
     // thread's class initializer (a semaphore wait), so skip generic and
     // inflated classes. Their concrete implementations are patched instead.
     if (gClassIsGeneric && gClassIsGeneric(klass)) return;
     if (gClassIsInflated && gClassIsInflated(klass)) return;
     const char *name = gClassGetName(klass);
-    if (gDebug) PearLog(@"[PearRuntime][usercentrics] scanning %s.%s", ns, name);
+    if (gDebug) PearLog(@"[PearRuntime][consent] scanning %s.%s", ns, name);
 
     void *iter = NULL;
     while (YES) {
@@ -553,7 +557,7 @@ static void PearPatchClassCallback(void *klass, void *userData) {
         if (!methodName) continue;
         if (gDebug) {
             void *ret = gMethodGetReturnType(method);
-            PearLog(@"[PearRuntime][usercentrics] method %s.%s::%s kind=%d",
+            PearLog(@"[PearRuntime][consent] method %s.%s::%s kind=%d",
                     ns, name, methodName, (ret && gTypeGetType) ? gTypeGetType(ret) : -1);
         }
         if (!PearMethodReturnsVoid(method)) continue;
@@ -566,23 +570,23 @@ static void PearPatchClassCallback(void *klass, void *userData) {
             if (gStatusClass && gStatusCtor && gOnInitializedInvoke &&
                 gMethodGetParamCount(method) == 1) {
                 BOOL isStatic = gMethodIsInstance ? !gMethodIsInstance(method) : NO;
-                *slot = isStatic ? (void *)&PearUsercentricsInitializeStatic
-                                 : (void *)&PearUsercentricsInitialize;
+                *slot = isStatic ? (void *)&PearConsentInitializeStatic
+                                 : (void *)&PearConsentInitialize;
                 ctx->patched++;
-                PearLog(@"[PearRuntime][usercentrics] replaced %s.%s::%s%s",
+                PearLog(@"[PearRuntime][consent] replaced %s.%s::%s%s",
                         ns, name, methodName, isStatic ? " (static)" : "");
             } else {
                 // Leave it alone rather than no-op it: a no-op would never
                 // invoke the callback and the app would wait forever.
-                PearLog(@"[PearRuntime][usercentrics] left %s.%s::%s alone "
+                PearLog(@"[PearRuntime][consent] left %s.%s::%s alone "
                         "(metadata incomplete)", ns, name, methodName);
             }
             continue;
         }
         if (PearIsUiEntryPoint(methodName)) {
-            *slot = (void *)&PearUsercentricsNoop;
+            *slot = (void *)&PearConsentNoop;
             ctx->patched++;
-            PearLog(@"[PearRuntime][usercentrics] skipped %s.%s::%s", ns, name, methodName);
+            PearLog(@"[PearRuntime][consent] skipped %s.%s::%s", ns, name, methodName);
         }
     }
 }
@@ -590,19 +594,19 @@ static void PearPatchClassCallback(void *klass, void *userData) {
 static void PearLogClassImageCallback(void *klass, void *userData) {
     if (!gDebug) return;
     const char *ns = gClassGetNamespace(klass);
-    if (!PearIsUsercentricsClass(ns)) return;
+    if (!PearIsConsentClass(ns)) return;
     const char *name = gClassGetName(klass);
     void *image = gClassGetImage ? gClassGetImage(klass) : NULL;
     const char *imageName = (image && gImageGetName) ? gImageGetName(image) : "?";
-    PearLog(@"[PearRuntime][usercentrics] found %s.%s image=%s", ns, name, imageName);
+    PearLog(@"[PearRuntime][consent] found %s.%s image=%s", ns, name, imageName);
 }
 
-static void PearInstallUsercentricsShim(void) {
+static void PearInstallConsentShim(void) {
     if (gInstalled) return;
     if (!PearResolveIL2CPP()) {
         if (!gLoggedResolveFailure) {
             gLoggedResolveFailure = YES;
-            PearLog(@"[PearRuntime][usercentrics] IL2CPP exports not available yet");
+            PearLog(@"[PearRuntime][consent] IL2CPP exports not available yet");
         }
         return;
     }
@@ -612,14 +616,14 @@ static void PearInstallUsercentricsShim(void) {
     if (!gGetCorlib()) return;
     if (!gLoggedCorlib) {
         gLoggedCorlib = YES;
-        PearLog(@"[PearRuntime][usercentrics] IL2CPP corlib resolved");
+        PearLog(@"[PearRuntime][consent] IL2CPP corlib resolved");
     }
 
     void *domain = gDomainGet();
     if (!domain) {
         if (!gLoggedDomainMissing) {
             gLoggedDomainMissing = YES;
-            PearLog(@"[PearRuntime][usercentrics] IL2CPP domain not ready yet");
+            PearLog(@"[PearRuntime][consent] IL2CPP domain not ready yet");
         }
         return;
     }
@@ -642,7 +646,7 @@ static void PearInstallUsercentricsShim(void) {
     if (!statusClass || !image) {
         if (!gLoggedAssemblyMissing) {
             gLoggedAssemblyMissing = YES;
-            PearLog(@"[PearRuntime][usercentrics] consent assembly not loaded yet");
+            PearLog(@"[PearRuntime][consent] consent assembly not loaded yet");
         }
         return;
     }
@@ -664,7 +668,7 @@ static void PearInstallUsercentricsShim(void) {
         gOnInitializedInvoke = PearFindMethod(onInitialized, "Invoke", 2);
     }
 
-    // The app listens to PrivacyEventsApple.OnInitialized(string, string).
+    // The app listens to the privacy bridge's OnInitialized(string, string).
     void *privacyImage = NULL;
     void *privacyEvents = PearFindClassAnywhere("PrivacyEventsApple", NULL, &privacyImage);
     if (privacyEvents) {
@@ -679,7 +683,7 @@ static void PearInstallUsercentricsShim(void) {
         void *privacyManager = PearFindClass(privacyImage, privacyCount, NULL, "PrivacyManager");
         void *isReady = privacyManager ? PearFindMethod(privacyManager, "IsReady", 0) : NULL;
         PearDumpFields(privacyManager);
-        PearLog(@"[PearRuntime][usercentrics] privacy image=%p manager=%p isReady=%p",
+        PearLog(@"[PearRuntime][consent] privacy image=%p manager=%p isReady=%p",
                 privacyImage, privacyManager, isReady);
         // Note: do not force IsReady here. The app creates its main UI after
         // the privacy screen dismisses through the normal callback; forcing the
@@ -699,11 +703,11 @@ static void PearInstallUsercentricsShim(void) {
 
     if (patched > 0) {
         gInstalled = YES;
-        PearLog(@"[PearRuntime][usercentrics] %d consent entry point(s) disabled", patched);
+        PearLog(@"[PearRuntime][consent] %d consent entry point(s) disabled", patched);
 
         // The privacy service subscribes after start-up; fire a few times so
         // one lands after it is listening.
-        // Unity API calls must run on the main thread; invoking the game's
+        // Unity API calls must run on the main thread; invoking the app's
         // event from a worker corrupts its UI state.
         for (int i = 5; i <= 30; i++) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 1.0 * NSEC_PER_SEC)),
@@ -713,19 +717,19 @@ static void PearInstallUsercentricsShim(void) {
         }
     } else if (!gLoggedNoMatch) {
         gLoggedNoMatch = YES;
-        PearLog(@"[PearRuntime][usercentrics] assembly loaded but no entry points matched");
+        PearLog(@"[PearRuntime][consent] assembly loaded but no entry points matched");
     }
 }
 
-static void PearScheduleUsercentricsShim(void) {
+static void PearScheduleConsentShim(void) {
     NSDictionary *env = NSProcessInfo.processInfo.environment;
-    if (env[@"PEAR_NO_USERCENTRICS_SHIM"]) return;
-    gDebug = env[@"PEAR_DEBUG_USERCENTRICS"] != nil;
-    PearLog(@"[PearRuntime][usercentrics] shim scheduled");
+    if (env[@"PEAR_NO_CONSENT_SHIM"]) return;
+    gDebug = env[@"PEAR_DEBUG_CONSENT"] != nil;
+    PearLog(@"[PearRuntime][consent] shim scheduled");
 
     // If IL2CPP and the assembly are already up (the runtime can be loaded
-    // after UnityFramework's constructor), patch before the game's first call.
-    PearInstallUsercentricsShim();
+    // after UnityFramework's constructor), patch before the app's first call.
+    PearInstallConsentShim();
 
     // The assembly is loaded after IL2CPP starts, often several seconds in
     // (the surrounding SDK initialisation can take ~7 s), but a cold launch can
@@ -733,7 +737,7 @@ static void PearScheduleUsercentricsShim(void) {
     // a fixed window; a fixed window silently gives up on a slow launch. Use a
     // background queue: the app's main thread is busy loading and would delay
     // (or never run) a main-queue timer before the consent crash.
-    dispatch_queue_t queue = dispatch_queue_create("com.pearsilicon.usercentrics", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_t queue = dispatch_queue_create("com.pearsilicon.consent", DISPATCH_QUEUE_SERIAL);
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
                               250 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
@@ -746,15 +750,15 @@ static void PearScheduleUsercentricsShim(void) {
                 dispatch_source_cancel(timer);
                 return;
             }
-            PearInstallUsercentricsShim();
+            PearInstallConsentShim();
         }
     });
     dispatch_resume(timer);
 }
 
 __attribute__((constructor))
-static void PearUsercentricsShimInit(void) {
+static void PearConsentShimInit(void) {
     @autoreleasepool {
-        PearScheduleUsercentricsShim();
+        PearScheduleConsentShim();
     }
 }

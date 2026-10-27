@@ -426,15 +426,28 @@ PEAR_INTERPOSE(PearSecItemCopyMatching, SecItemCopyMatching)
 PEAR_INTERPOSE(PearSecItemUpdate, SecItemUpdate)
 PEAR_INTERPOSE(PearSecItemDelete, SecItemDelete)
 
-// SecKeyCreateRandomKey on iOS routes through a keychain-backed store, which
-// fails with -34018 (errSecMissingEntitlement) without restricted entitlements.
-// Forcing a non-permanent (ephemeral, in-memory) key avoids the keychain add.
+// SecKeyCreateRandomKey on a sideloaded build routes through a keychain-backed
+// store, which fails with -34018 (errSecMissingEntitlement) without restricted
+// entitlements. Forcing a non-permanent (ephemeral, in-memory) key avoids the
+// keychain add.
 typedef SecKeyRef (*SecKeyCreateRandomKeyFn)(CFDictionaryRef, CFErrorRef *);
 
+static SecKeyRef PearSecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error);
+
+// The interpose table is the reliable source of the original function. A
+// `dlsym(RTLD_NEXT, …)` lookup can resolve back to this replacement on the
+// macOS iOS-support runtime, which recursed until the stack overflowed.
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeSecKeyCreateRandomKey
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearSecKeyCreateRandomKey,
+        (const void *)(uintptr_t)&SecKeyCreateRandomKey
+    };
+
 static SecKeyRef PearSecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error) {
-    static SecKeyCreateRandomKeyFn original = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ original = (SecKeyCreateRandomKeyFn)dlsym(RTLD_NEXT, "SecKeyCreateRandomKey"); });
+    SecKeyCreateRandomKeyFn original = (SecKeyCreateRandomKeyFn)kInterposeSecKeyCreateRandomKey.replacee;
     if (!original) return NULL;
 
     NSMutableDictionary *params = parameters
@@ -445,8 +458,6 @@ static SecKeyRef PearSecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRe
     PearLog(@"[PearRuntime][keychain] SecKeyCreateRandomKey (ephemeral)");
     return original((__bridge CFDictionaryRef)params, error);
 }
-
-PEAR_INTERPOSE(PearSecKeyCreateRandomKey, SecKeyCreateRandomKey)
 
 typedef OSStatus (*SecKeyGeneratePairFn)(CFDictionaryRef, SecKeyRef *, SecKeyRef *);
 

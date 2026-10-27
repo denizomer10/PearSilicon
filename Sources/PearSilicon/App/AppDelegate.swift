@@ -7,44 +7,41 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        presentXcodeWarningIfNeeded()
+        presentToolchainWarningIfNeeded()
     }
 
-    /// Warn when the full Xcode is missing or not selected. The app itself can
-    /// run without it, but installing/building tooling, the runtime build and
-    /// `pearsilicon xcode` cannot.
-    private func presentXcodeWarningIfNeeded() {
-        switch DeveloperTools.xcodeStatus() {
+    /// Warn when the full development toolchain is missing or not selected.
+    /// The app itself can run without it, but runtime builds and project builds
+    /// cannot.
+    private func presentToolchainWarningIfNeeded() {
+        switch DeveloperTools.toolchainStatus() {
         case .ready:
             return
 
         case .missing:
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "Xcode is not installed"
+            alert.messageText = "Full development toolchain not found"
             alert.informativeText = """
-            PearSilicon needs the full Xcode for its developer tooling; the Command Line Tools alone are not enough.
+            PearSilicon needs the full toolchain for its build commands; the \
+            command-line tools alone are not enough.
 
-            Install Xcode from the store, then run:
+            Install it, open it once, then select it with:
 
-            sudo xcode-select -s /Applications/Xcode.app
+            sudo xcode-select -s /Applications/<Toolchain>.app
             """
-            alert.addButton(withTitle: "Open Store")
-            alert.addButton(withTitle: "Later")
-            if alert.runModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(DeveloperTools.xcodeStoreURL)
-            }
+            alert.addButton(withTitle: "OK")
 
-        case .installedButNotSelected(let xcodePath, let activePath):
-            let command = DeveloperTools.selectCommand(for: xcodePath)
+        case .installedButNotSelected(let toolchainPath, let activePath):
+            let command = DeveloperTools.selectCommand(for: toolchainPath)
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "Xcode is installed but not selected"
+            alert.messageText = "Development toolchain is installed but not selected"
             alert.informativeText = """
-            macOS is currently using:
-            \(activePath ?? "the Command Line Tools")
+            The active developer directory is:
+            \(activePath ?? "the command-line tools")
 
-            Switch to Xcode:
+            Select the full toolchain with:
 
             \(command)
             """
