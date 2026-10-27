@@ -67,6 +67,11 @@ cat > "$ROOT/runtime/compile_commands.json" <<JSON
     "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c TrackingShim.mm"
   },
   {
+    "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/SandboxShim.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c SandboxShim.mm"
+  },
+  {
     "directory": "$ROOT/runtime/include",
     "file": "$ROOT/runtime/include/PearRuntime.h",
     "command": "$CXX -x objective-c++-header -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -fobjc-arc -I$ROOT/runtime/include -fsyntax-only PearRuntime.h"
@@ -110,6 +115,7 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/ConsentShim.mm" \
   "$ROOT/runtime/NetworkShim.mm" \
   "$ROOT/runtime/TrackingShim.mm" \
+  "$ROOT/runtime/SandboxShim.mm" \
   "$ROOT/runtime/GLShim.mm"
 
 echo ">> Done: $OUT"

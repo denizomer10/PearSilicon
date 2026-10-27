@@ -39,6 +39,9 @@ final class AppState: ObservableObject {
     /// control in some games).
     @Published private(set) var pointerLockAllowedApps: Set<String> = []
 
+    /// Bundle ids that launch with an iOS-like, isolated filesystem view.
+    @Published private(set) var strictContainerEnabledApps: Set<String> = []
+
     /// Default for apps without an explicit setting (also default OFF).
     @Published var keymapperDefaultEnabled: Bool = AppSettings.defaults.bool(forKey: "keymapper.defaultEnabled") {
         didSet { AppSettings.defaults.set(keymapperDefaultEnabled, forKey: "keymapper.defaultEnabled") }
@@ -185,6 +188,7 @@ final class AppState: ObservableObject {
         var enabled: Set<String> = []
         var hud: Set<String> = []
         var pointerLock: Set<String> = []
+        var strict: Set<String> = []
         for app in installedApps {
             let key = "keymapper.enabled." + app.id
             if let stored = AppSettings.defaults.object(forKey: key) as? Bool, stored {
@@ -196,10 +200,14 @@ final class AppState: ObservableObject {
             if AppSettings.pointerLockAllowed(for: app.id) {
                 pointerLock.insert(app.id)
             }
+            if AppSettings.strictContainerEnabled(for: app.id) {
+                strict.insert(app.id)
+            }
         }
         keymapperEnabledApps = enabled
         metalHUDEnabledApps = hud
         pointerLockAllowedApps = pointerLock
+        strictContainerEnabledApps = strict
     }
 
     func isKeymapperEnabled(for app: InstalledApp) -> Bool {
@@ -242,6 +250,18 @@ final class AppState: ObservableObject {
     func setPointerLockAllowed(_ allowed: Bool, for app: InstalledApp) {
         AppSettings.setPointerLockAllowed(allowed, for: app.id)
         if allowed { pointerLockAllowedApps.insert(app.id) } else { pointerLockAllowedApps.remove(app.id) }
+    }
+
+    // MARK: - iOS-like container
+
+    func isStrictContainerEnabled(for app: InstalledApp) -> Bool {
+        strictContainerEnabledApps.contains(app.id)
+    }
+
+    /// Hides host-only filesystem paths from the app on the next launch.
+    func setStrictContainerEnabled(_ enabled: Bool, for app: InstalledApp) {
+        AppSettings.setStrictContainerEnabled(enabled, for: app.id)
+        if enabled { strictContainerEnabledApps.insert(app.id) } else { strictContainerEnabledApps.remove(app.id) }
     }
 
     // MARK: - Selection
@@ -300,6 +320,9 @@ final class AppState: ObservableObject {
         }
         if isPointerLockAllowed(for: app) {
             extra["PEAR_ALLOW_POINTER_LOCK"] = "1"
+        }
+        if isStrictContainerEnabled(for: app) {
+            extra["PEAR_IOS_SANDBOX"] = "1"
         }
         do {
             let running = try await launcher.launch(app, keymapURL: keymapURL, extraEnvironment: extra)

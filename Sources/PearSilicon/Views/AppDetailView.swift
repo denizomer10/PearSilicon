@@ -142,6 +142,17 @@ struct AppDetailView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
+                    Toggle("iOS-like container", isOn: Binding(
+                        get: { state.isStrictContainerEnabled(for: app) },
+                        set: { state.setStrictContainerEnabled($0, for: app) }
+                    ))
+                    .toggleStyle(.switch)
+
+                    Text("Hides host-only filesystem paths from the app. Relaunch to apply.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
                     Divider()
 
                     Button {

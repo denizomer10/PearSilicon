@@ -115,6 +115,8 @@ Override the root with `PEAR_HOME_DIR`.
 
 - **Metal HUD** — launches with `MTL_HUD_ENABLED=1`.
 - **Pointer lock** — on by default; disable it if the cursor gets trapped.
+- **iOS-like container** — hides host-only filesystem paths from the app. Off by
+  default; relaunch to apply.
 
 Repeat-rate protection is always on and not configurable.
 
@@ -140,6 +142,7 @@ A keymap is a small JSON file per app:
 ## Diagnostics
 
 - `PEAR_LOG_FILE=<path>` writes the runtime log to a file.
+- `PEAR_IOS_SANDBOX=1` enables the iOS-like filesystem view for a launch.
 - `PEAR_DEBUG_TOUCH`, `PEAR_DEBUG_SCREEN`, `PEAR_DEBUG_GL` and
   `PEAR_DEBUG_CLOUD` add logging.
 - `PEAR_NO_*` disables a shim.
