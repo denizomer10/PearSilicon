@@ -280,6 +280,15 @@ This project is written from scratch as an interoperability layer:
   sends, method swizzling and `__DATA,__interpose` — the same technique used by
   any compatibility shim. A few private symbol names and numeric event/field
   constants are referenced; those are interface facts, not implementation.
+- **No SDK redistribution.** The build compiles against the installed
+  toolchain's headers and links system frameworks at runtime. The app bundle
+  and release archive contain only PearSilicon's own executables and libraries;
+  no platform framework, header or binary is copied into the repository or the
+  archive.
+- **Interface names, not implementation.** A small number of system selectors
+  and Swift symbol names are referenced because the runtime resolves calls by
+  name. Those names are interface facts; the implementations here are
+  independent.
 - **No application code.** Nothing is copied from or derived from application
   binaries. Behaviour was learned from the outside (observing what the system
   does for a real touch, a real launch, a real frame) and reimplemented here.
@@ -298,7 +307,8 @@ This project is written from scratch as an interoperability layer:
 
 Using private platform interfaces may be restricted by the platform vendor's
 terms for signed/store software; that is a separate question from the origin of
-this code.
+this code. This section is a technical statement about provenance, not legal
+advice.
 
 ## Scope and limitations
 

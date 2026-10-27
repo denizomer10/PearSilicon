@@ -669,6 +669,8 @@ static void PearInstallConsentShim(void) {
     }
 
     // The app listens to the privacy bridge's OnInitialized(string, string).
+    // The class name below is published by the app's third-party consent SDK;
+    // it is a lookup key for that module, not a platform-vendor symbol.
     void *privacyImage = NULL;
     void *privacyEvents = PearFindClassAnywhere("PrivacyEventsApple", NULL, &privacyImage);
     if (privacyEvents) {
