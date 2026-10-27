@@ -11,11 +11,12 @@
 // This redirects the app's home-relative directories into a per-app folder:
 //
 //   ~/Library/Application Support/PearSilicon/Games/<bundleID>/
-//     Documents/            Library/            Library/Caches/ …
+//     Documents/   Library/   Library/Caches/   Library/Group Containers/   tmp/
 //
 // It covers the APIs apps actually use for this — the two `NSFileManager`
-// directory lookups and the classic `NSSearchPathForDirectoriesInDomains` — plus
-// `NSHomeDirectory`, so a path built by hand is contained too.
+// directory lookups, the classic `NSSearchPathForDirectoriesInDomains`, security
+// group container URLs and the temporary directory — plus `NSHomeDirectory`, so
+// a path built by hand is contained too.
 //
 // Disable with `PEAR_NO_PATH_SHIM`; override the container with `PEAR_HOME_DIR`.
 #import <Foundation/Foundation.h>
@@ -62,6 +63,27 @@ static NSString *PearShimmedSubpath(NSSearchPathDirectory directory) {
     }
 }
 
+/// A per-app group container. Group containers are shared by several processes
+/// on iOS, but a locally prepared app has no signed group entitlement, so the
+/// platform refuses to create the real path. Keeping the directory inside the
+/// app's own container gives the same API surface without touching the user's
+/// shared folders.
+static NSString *PearGroupContainerPath(NSString *identifier, BOOL create) {
+    NSString *root = PearShimRoot();
+    if (!root || identifier.length == 0) return nil;
+    // Group identifiers are bundle-style strings; keep them from escaping the
+    // container if an app supplies a malformed one.
+    NSString *safe = [identifier stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+    safe = [safe stringByReplacingOccurrencesOfString:@".." withString:@"_"];
+    NSString *path = [[root stringByAppendingPathComponent:@"Library/Group Containers"]
+                      stringByAppendingPathComponent:safe];
+    if (create) {
+        [NSFileManager.defaultManager createDirectoryAtPath:path
+                                withIntermediateDirectories:YES attributes:nil error:NULL];
+    }
+    return path;
+}
+
 /// The shimmed path for a directory, optionally creating it. nil = don't shim.
 static NSString *PearShimmedPath(NSSearchPathDirectory directory, NSSearchPathDomainMask domain, BOOL create) {
     NSString *root = PearShimRoot();
@@ -71,6 +93,24 @@ static NSString *PearShimmedPath(NSSearchPathDirectory directory, NSSearchPathDo
     if (!subpath) return nil;
 
     NSString *path = subpath.length ? [root stringByAppendingPathComponent:subpath] : root;
+    if (create) {
+        [NSFileManager.defaultManager createDirectoryAtPath:path
+                                withIntermediateDirectories:YES attributes:nil error:NULL];
+    }
+    return path;
+}
+
+/// Resolves a directory relative to an existing shimmed URL (for example a
+/// group container) instead of the app's home container.
+static NSString *PearShimmedPathUnder(NSURL *base, NSSearchPathDirectory directory, BOOL create) {
+    NSString *root = PearShimRoot();
+    if (!root || !base.isFileURL) return nil;
+    NSString *basePath = base.path;
+    if (![basePath isEqualToString:root] &&
+        ![basePath hasPrefix:[root stringByAppendingString:@"/"]]) return nil;
+    NSString *subpath = PearShimmedSubpath(directory);
+    if (!subpath) return nil;
+    NSString *path = [basePath stringByAppendingPathComponent:subpath];
     if (create) {
         [NSFileManager.defaultManager createDirectoryAtPath:path
                                 withIntermediateDirectories:YES attributes:nil error:NULL];
@@ -91,12 +131,55 @@ static void PearInstallFileManagerShim(void) {
         method_setImplementation(urlMethod, imp_implementationWithBlock(
             ^NSURL *(id self, NSSearchPathDirectory directory, NSSearchPathDomainMask domain,
                      NSURL *url, BOOL create, NSError **error) {
-                NSString *path = PearShimmedPath(directory, domain, create);
+                NSString *path = PearShimmedPathUnder(url, directory, create)
+                              ?: PearShimmedPath(directory, domain, create);
                 if (path) return [NSURL fileURLWithPath:path isDirectory:YES];
                 return ((NSURL *(*)(id, SEL, NSSearchPathDirectory, NSSearchPathDomainMask,
                                     NSURL *, BOOL, NSError **))original)(self, urlSel, directory, domain,
                                                                         url, create, error);
             }));
+    }
+
+    // - containerURLForSecurityApplicationGroupIdentifier:
+    SEL groupSel = NSSelectorFromString(@"containerURLForSecurityApplicationGroupIdentifier:");
+    Method groupMethod = class_getInstanceMethod(fileManager, groupSel);
+    if (groupMethod) {
+        IMP original = method_getImplementation(groupMethod);
+        method_setImplementation(groupMethod, imp_implementationWithBlock(
+            ^NSURL *(id self, NSString *identifier) {
+                NSString *path = PearGroupContainerPath(identifier, YES);
+                if (path) return [NSURL fileURLWithPath:path isDirectory:YES];
+                return ((NSURL *(*)(id, SEL, NSString *))original)(self, groupSel, identifier);
+            }));
+    }
+
+    // - homeDirectoryForCurrentUser
+    SEL homeSel = NSSelectorFromString(@"homeDirectoryForCurrentUser");
+    Method homeMethod = class_getInstanceMethod(fileManager, homeSel);
+    if (homeMethod) {
+        IMP original = method_getImplementation(homeMethod);
+        method_setImplementation(homeMethod, imp_implementationWithBlock(^NSURL *(id self) {
+            NSString *root = PearShimRoot();
+            if (root) return [NSURL fileURLWithPath:root isDirectory:YES];
+            return ((NSURL *(*)(id, SEL))original)(self, homeSel);
+        }));
+    }
+
+    // - temporaryDirectory
+    SEL tempSel = NSSelectorFromString(@"temporaryDirectory");
+    Method tempMethod = class_getInstanceMethod(fileManager, tempSel);
+    if (tempMethod) {
+        IMP original = method_getImplementation(tempMethod);
+        method_setImplementation(tempMethod, imp_implementationWithBlock(^NSURL *(id self) {
+            NSString *root = PearShimRoot();
+            if (root) {
+                NSString *path = [root stringByAppendingPathComponent:@"tmp"];
+                [NSFileManager.defaultManager createDirectoryAtPath:path
+                                        withIntermediateDirectories:YES attributes:nil error:NULL];
+                return [NSURL fileURLWithPath:path isDirectory:YES];
+            }
+            return ((NSURL *(*)(id, SEL))original)(self, tempSel);
+        }));
     }
 
     // - URLsForDirectory:inDomains:  (older API, still used)

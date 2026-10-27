@@ -49,6 +49,9 @@
   have it disabled in that app's settings.
 - **Repeat-rate protection** — always on and not configurable; the keymapper
   rejects implausibly fast repeated presses.
+- **Local cloud compatibility** — account-gated apps can start without a remote
+  account; key-value storage, ubiquity containers, CloudKit responses and
+  GameKit identity are answered from local storage.
 - **Clean-room**, MIT-licensed.
 
 ## Requirements
@@ -154,14 +157,14 @@ target's first).
 
 | Shim | Purpose |
 | --- | --- |
-| `KeychainShim` | clean-room keychain store behind `SecItem*`/`SecKey`, with a synthetic access group for SDKs that read it back |
+| `KeychainShim` | clean-room keychain store behind `SecItem*`/`SecKey`, with software key generation and a synthetic access group for SDKs that read it back |
 | `ScreenShim` | make `UIScreen` follow the key window instead of the whole display |
 | `MetalLayerShim` | give a `CAMetalLayer` a device and a usable drawable, and recover a key window |
 | `GLShim` | define `EAGLGetProcAddress` and aspect-fit oversized legacy OpenGL drawables |
 | `CredentialShim` | return nil for a client credential that has no identity instead of trapping in CFNetwork |
-| `CloudShim` | local-only account surface: key-value storage, ubiquity container, GameKit player IDs and CloudKit status; no remote account or credentials |
+| `CloudShim` | local-only account surface: key-value storage, ubiquity container, CloudKit container/database/operation responses, and GameKit identity, friends, achievements and leaderboards; no remote account or credentials |
 | `DeviceShim` | keep hardware and UIKit identity values coherent for device-profile selection |
-| `PathShim` | keep the app's data inside its own container |
+| `PathShim` | keep app data, group containers and temporary files inside the app's own container |
 | `PointerLockShim` | per-app pointer-lock control, applied only to the live controller hierarchy |
 | `ODRShim` | resolve on-demand resource requests to the bundles present in the package |
 | `ConsentShim` | replace a consent SDK's UI entry points and report "no consent required" |
@@ -179,11 +182,14 @@ directory. `PathShim` contains them under:
 
 ```
 ~/Library/Application Support/PearSilicon/Games/<bundle-id>/
+  Documents/  Library/  Library/Caches/  Library/Group Containers/  tmp/
 ```
 
 `NSDocumentDirectory`, `NSLibraryDirectory`, `NSApplicationSupportDirectory`,
-`NSCachesDirectory`, `NSUbiquitousContainer`-style lookups and
-`NSHomeDirectory()` all resolve there. Override the root with `PEAR_HOME_DIR`.
+`NSCachesDirectory`, `NSUbiquitousContainer`-style lookups, security group
+container URLs, `NSHomeDirectory()`, `NSFileManager.homeDirectoryForCurrentUser`
+and the temporary directory all resolve there. Override the root with
+`PEAR_HOME_DIR`.
 
 ### Per-app options
 
@@ -280,6 +286,9 @@ This project is written from scratch as an interoperability layer:
 - **No titles named in the repository.** Shims match the SDK's own metadata and
   discover assemblies through the platform's runtime API. Title-specific detail
   lives in per-app settings, never in `runtime/` or the repository docs.
+- **Local cloud only.** CloudKit and GameKit entry points are answered from the
+  app's own container. No account, token, remote session or credential is
+  created, and no request leaves the machine on the shim's behalf.
 - **A compatibility layer, not a patch.** `LC_LOAD_DYLIB` is used only so the
   dynamic linker loads the runtime. The runtime supplies clean-room
   implementations of system surfaces (CFNetwork, UIKit, device APIs); it does
@@ -306,6 +315,9 @@ this code.
   package if that happens.
 - **Automatic keymap** means an engine-aware *template*, not computer vision on
   live frames.
+- **Cloud compatibility is local.** Cross-device sync, cloud saves and online
+  multiplayer still need the application's own service and sign-in; the shim
+  keeps the app launchable and its local data coherent when those are absent.
 
 ## License
 

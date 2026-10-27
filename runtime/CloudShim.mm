@@ -2,9 +2,9 @@
 //
 // Offline cloud compatibility for apps that gate startup on an account.
 //
-// A sideloaded build has no restricted cloud entitlements, so the real cloud
-// stack can report "no account" and keep an app on a sign-in screen forever.
-// This shim provides a **local-only** account surface:
+// A locally prepared build has no restricted cloud entitlements, so the real
+// cloud stack can report "no account" and keep an app on a sign-in screen
+// forever. This shim provides a **local-only** account surface:
 //
 //   - the key-value store is backed by a plist in the app's own container;
 //   - the ubiquity container and identity token resolve to that container;
@@ -41,11 +41,20 @@ static NSString *PearCloudRoot(void) {
     static NSString *root;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"unknown";
-        root = [[[PearRealHome()
-            stringByAppendingPathComponent:@"Library/Application Support/PearSilicon/Games"]
-            stringByAppendingPathComponent:bundleID]
-            stringByAppendingPathComponent:@"Library/Cloud"];
+        // Resolve the same per-app root PathShim uses, including its override.
+        // The cloud surface is local-only, so its files belong beside the rest
+        // of the app's contained data.
+        const char *override = getenv("PEAR_HOME_DIR");
+        NSString *base = nil;
+        if (override && override[0]) {
+            base = [NSString stringWithUTF8String:override];
+        } else {
+            NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"unknown";
+            base = [[PearRealHome()
+                stringByAppendingPathComponent:@"Library/Application Support/PearSilicon/Games"]
+                stringByAppendingPathComponent:bundleID];
+        }
+        root = [base stringByAppendingPathComponent:@"Library/Cloud"];
         [NSFileManager.defaultManager createDirectoryAtPath:root
                                 withIntermediateDirectories:YES attributes:nil error:NULL];
     });
@@ -218,6 +227,36 @@ static void PearInstallUbiquityContainer(void) {
         }));
     }
 
+    // The compatibility container is an ordinary local directory, so every
+    // item in it is already present. Answer the ubiquity queries locally
+    // instead of letting them reach the file provider.
+    SEL isUbiquitous = NSSelectorFromString(@"isUbiquitousItemAtURL:error:");
+    Method isUbiquitousMethod = class_getInstanceMethod(fileManager, isUbiquitous);
+    if (isUbiquitousMethod) {
+        method_setImplementation(isUbiquitousMethod, imp_implementationWithBlock(^BOOL(id self, NSURL *url, NSError **error) {
+            if (error) *error = nil;
+            return YES;
+        }));
+    }
+
+    SEL startDownload = NSSelectorFromString(@"startDownloadingUbiquitousItemAtURL:error:");
+    Method startDownloadMethod = class_getInstanceMethod(fileManager, startDownload);
+    if (startDownloadMethod) {
+        method_setImplementation(startDownloadMethod, imp_implementationWithBlock(^BOOL(id self, NSURL *url, NSError **error) {
+            if (error) *error = nil;
+            return YES;
+        }));
+    }
+
+    SEL evict = NSSelectorFromString(@"evictUbiquitousItemAtURL:error:");
+    Method evictMethod = class_getInstanceMethod(fileManager, evict);
+    if (evictMethod) {
+        method_setImplementation(evictMethod, imp_implementationWithBlock(^BOOL(id self, NSURL *url, NSError **error) {
+            if (error) *error = nil;
+            return YES;
+        }));
+    }
+
     PearLog(@"[PearRuntime][cloud] ubiquity container at %@", PearUbiquityPath());
 }
 
@@ -277,6 +316,70 @@ static NSString *PearContainerIdentifier(id container) {
     return [@"iCloud." stringByAppendingString:bundleID];
 }
 
+static id PearBlockValue(id object, NSString *key) {
+    @try {
+        return [object valueForKey:key];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+/// Returns a local record-zone object for an identifier. A few callers create
+/// a zone, save it, then fetch it back; returning a real object keeps that
+/// flow working without a network round trip.
+static id PearRecordZoneWithID(id zoneID) {
+    Class zoneClass = PearEnsureCloudKitClass("CKRecordZone");
+    SEL initSelector = NSSelectorFromString(@"initWithZoneID:");
+    if (!zoneClass || !zoneID || ![zoneClass instancesRespondToSelector:initSelector]) return nil;
+    @try {
+        return ((id (*)(id, SEL, id))objc_msgSend)([zoneClass alloc], initSelector, zoneID);
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+/// Answers the result block of a cloud operation while the operation is held by
+/// the compatibility database/container. The real operation is never started,
+/// so no request reaches a remote service.
+static void PearFinishCloudOperation(NSOperation *operation) {
+    if (!operation) return;
+    NSString *name = NSStringFromClass(operation.class);
+    id block = nil;
+
+    if ([name isEqualToString:@"CKQueryOperation"]) {
+        block = PearBlockValue(operation, @"queryResultBlock")
+             ?: PearBlockValue(operation, @"queryCompletionBlock");
+        if (block) ((void (^)(id, NSError *))block)(nil, nil);
+    } else if ([name isEqualToString:@"CKModifyRecordsOperation"]) {
+        block = PearBlockValue(operation, @"modifyRecordsCompletionBlock");
+        if (block) ((void (^)(NSArray *, NSArray *, NSError *))block)(@[], @[], nil);
+    } else if ([name isEqualToString:@"CKFetchRecordsOperation"]) {
+        block = PearBlockValue(operation, @"fetchRecordsCompletionBlock");
+        if (block) ((void (^)(NSDictionary *, NSError *))block)(@{}, nil);
+    } else if ([name isEqualToString:@"CKFetchRecordZonesOperation"]) {
+        block = PearBlockValue(operation, @"fetchRecordZonesCompletionBlock");
+        if (block) ((void (^)(NSDictionary *, NSError *))block)(@{}, nil);
+    } else if ([name isEqualToString:@"CKModifyRecordZonesOperation"]) {
+        block = PearBlockValue(operation, @"modifyRecordZonesCompletionBlock");
+        if (block) ((void (^)(NSArray *, NSArray *, NSError *))block)(@[], @[], nil);
+    } else if ([name isEqualToString:@"CKFetchSubscriptionsOperation"]) {
+        block = PearBlockValue(operation, @"fetchSubscriptionsCompletionBlock");
+        if (block) ((void (^)(NSDictionary *, NSError *))block)(@{}, nil);
+    } else if ([name isEqualToString:@"CKModifySubscriptionsOperation"]) {
+        block = PearBlockValue(operation, @"modifySubscriptionsCompletionBlock");
+        if (block) ((void (^)(NSArray *, NSArray *, NSError *))block)(@[], @[], nil);
+    } else if ([name isEqualToString:@"CKFetchRecordZoneChangesOperation"]) {
+        block = PearBlockValue(operation, @"fetchRecordZoneChangesCompletionBlock");
+        if (block) ((void (^)(NSError *))block)(nil);
+    } else if ([name isEqualToString:@"CKFetchDatabaseChangesOperation"]) {
+        block = PearBlockValue(operation, @"fetchDatabaseChangesCompletionBlock");
+        if (block) ((void (^)(id, BOOL, NSError *))block)(nil, NO, nil);
+    }
+
+    void (^completion)(void) = operation.completionBlock;
+    if (completion) completion();
+}
+
 static Class PearCloudDatabaseClass(void) {
     Class base = PearEnsureCloudKitClass("CKDatabase");
     if (!base) return Nil;
@@ -296,7 +399,7 @@ static Class PearCloudDatabaseClass(void) {
 
     PearAddMethod(cls, @selector(saveRecord:completionHandler:),
                   imp_implementationWithBlock(^(id self, id record, void (^done)(id, NSError *)) {
-        if (done) done(nil, PearCloudOfflineError());
+        if (done) done(record, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(fetchRecordWithID:completionHandler:),
                   imp_implementationWithBlock(^(id self, id recordID, void (^done)(id, NSError *)) {
@@ -308,11 +411,11 @@ static Class PearCloudDatabaseClass(void) {
     }), "v@:@@?");
     PearAddMethod(cls, @selector(fetchRecordZoneWithID:completionHandler:),
                   imp_implementationWithBlock(^(id self, id zoneID, void (^done)(id, NSError *)) {
-        if (done) done(nil, PearCloudOfflineError());
+        if (done) done(PearRecordZoneWithID(zoneID), nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(saveRecordZone:completionHandler:),
                   imp_implementationWithBlock(^(id self, id zone, void (^done)(id, NSError *)) {
-        if (done) done(nil, nil);
+        if (done) done(zone, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(deleteRecordZoneWithID:completionHandler:),
                   imp_implementationWithBlock(^(id self, id zoneID, void (^done)(NSError *)) {
@@ -326,10 +429,31 @@ static Class PearCloudDatabaseClass(void) {
                   imp_implementationWithBlock(^(id self, void (^done)(NSArray *, NSError *)) {
         if (done) done(@[], nil);
     }), "v@:@?");
+    PearAddMethod(cls, @selector(performQuery:inZoneWithID:completionHandler:),
+                  imp_implementationWithBlock(^(id self, id query, id zoneID,
+                                               void (^done)(NSArray *, NSError *)) {
+        if (done) done(@[], nil);
+    }), "v@:@@@?");
+    PearAddMethod(cls, @selector(fetchSubscriptionWithID:completionHandler:),
+                  imp_implementationWithBlock(^(id self, NSString *subscriptionID,
+                                               void (^done)(id, NSError *)) {
+        if (done) done(nil, nil);
+    }), "v@:@@?");
+    PearAddMethod(cls, @selector(saveSubscription:completionHandler:),
+                  imp_implementationWithBlock(^(id self, id subscription,
+                                               void (^done)(id, NSError *)) {
+        if (done) done(subscription, nil);
+    }), "v@:@@?");
+    PearAddMethod(cls, @selector(deleteSubscriptionWithID:completionHandler:),
+                  imp_implementationWithBlock(^(id self, NSString *subscriptionID,
+                                               void (^done)(NSError *)) {
+        if (done) done(nil);
+    }), "v@:@@?");
     PearAddMethod(cls, @selector(addOperation:),
                   imp_implementationWithBlock(^(id self, NSOperation *operation) {
-        void (^completion)(void) = operation.completionBlock;
-        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        if (operation) dispatch_async(dispatch_get_main_queue(), ^{
+            @autoreleasepool { PearFinishCloudOperation(operation); }
+        });
     }), "v@:@");
 
     objc_registerClassPair(cls);
@@ -366,6 +490,53 @@ static Class PearCloudContainerClass(void) {
                   imp_implementationWithBlock(^(id self, void (^done)(NSInteger, NSError *)) {
         if (done) dispatch_async(dispatch_get_main_queue(), ^{ done(1, nil); }); // available
     }), "v@:@?");
+    PearAddMethod(cls, @selector(statusForApplicationPermission:completionHandler:),
+                  imp_implementationWithBlock(^(id self, NSInteger permission,
+                                               void (^done)(NSInteger, NSError *)) {
+        if (done) done(1, nil); // granted
+    }), "v@:q@?");
+    PearAddMethod(cls, @selector(requestApplicationPermission:completionHandler:),
+                  imp_implementationWithBlock(^(id self, NSInteger permission,
+                                               void (^done)(NSInteger, NSError *)) {
+        if (done) done(1, nil); // granted
+    }), "v@:q@?");
+    PearAddMethod(cls, @selector(fetchAllLongLivedOperationIDsWithCompletionHandler:),
+                  imp_implementationWithBlock(^(id self, void (^done)(NSArray *, NSError *)) {
+        if (done) done(@[], nil);
+    }), "v@:@?");
+    PearAddMethod(cls, @selector(fetchLongLivedOperationWithID:completionHandler:),
+                  imp_implementationWithBlock(^(id self, NSString *operationID,
+                                               void (^done)(id, NSError *)) {
+        if (done) done(nil, nil);
+    }), "v@:@@?");
+    PearAddMethod(cls, @selector(discoverAllContactUserInfosWithCompletionHandler:),
+                  imp_implementationWithBlock(^(id self, void (^done)(NSArray *, NSError *)) {
+        if (done) done(@[], nil);
+    }), "v@:@?");
+    PearAddMethod(cls, @selector(discoverUserIdentityWithEmailAddress:completionHandler:),
+                  imp_implementationWithBlock(^(id self, NSString *address,
+                                               void (^done)(id, NSError *)) {
+        if (done) done(nil, nil);
+    }), "v@:@@?");
+    PearAddMethod(cls, @selector(discoverUserIdentityWithPhoneNumber:completionHandler:),
+                  imp_implementationWithBlock(^(id self, NSString *number,
+                                               void (^done)(id, NSError *)) {
+        if (done) done(nil, nil);
+    }), "v@:@@?");
+    PearAddMethod(cls, @selector(fetchAllShareParticipantsWithCompletionHandler:),
+                  imp_implementationWithBlock(^(id self, void (^done)(NSArray *, NSError *)) {
+        if (done) done(@[], nil);
+    }), "v@:@?");
+    PearAddMethod(cls, @selector(fetchShareMetadataWithURL:completionHandler:),
+                  imp_implementationWithBlock(^(id self, NSURL *url,
+                                               void (^done)(id, NSError *)) {
+        if (done) done(nil, PearCloudOfflineError());
+    }), "v@:@@?");
+    PearAddMethod(cls, @selector(acceptShareMetadata:completionHandler:),
+                  imp_implementationWithBlock(^(id self, id metadata,
+                                               void (^done)(id, NSError *)) {
+        if (done) done(nil, PearCloudOfflineError());
+    }), "v@:@@?");
     PearAddMethod(cls, @selector(fetchUserRecordIDWithCompletionHandler:),
                   imp_implementationWithBlock(^(id self, void (^done)(id, NSError *)) {
         Class recordIDClass = PearEnsureCloudKitClass("CKRecordID");
@@ -392,8 +563,9 @@ static Class PearCloudContainerClass(void) {
     }), "@@:");
     PearAddMethod(cls, @selector(addOperation:),
                   imp_implementationWithBlock(^(id self, NSOperation *operation) {
-        void (^completion)(void) = operation.completionBlock;
-        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        if (operation) dispatch_async(dispatch_get_main_queue(), ^{
+            @autoreleasepool { PearFinishCloudOperation(operation); }
+        });
     }), "v@:@");
 
     objc_registerClassPair(cls);
@@ -460,6 +632,18 @@ static Class PearLocalPlayerClass(void) {
         PearAddMethod(cls, @selector(isAuthenticated), imp_implementationWithBlock(^BOOL(id self) {
             return YES;
         }), "c@:");
+        PearAddMethod(cls, @selector(authenticated), imp_implementationWithBlock(^BOOL(id self) {
+            return YES;
+        }), "c@:");
+        PearAddMethod(cls, @selector(scopedIDsArePersistent), imp_implementationWithBlock(^BOOL(id self) {
+            return YES;
+        }), "c@:");
+        PearAddMethod(cls, @selector(isMultiplayerGamingRestricted), imp_implementationWithBlock(^BOOL(id self) {
+            return NO;
+        }), "c@:");
+        PearAddMethod(cls, @selector(isPersonalizedCommunicationRestricted), imp_implementationWithBlock(^BOOL(id self) {
+            return NO;
+        }), "c@:");
         PearAddMethod(cls, @selector(playerID), imp_implementationWithBlock(^NSString *(id self) {
             return PearLocalPlayerID();
         }), "@@:");
@@ -496,6 +680,18 @@ static Class PearLocalPlayerClass(void) {
                       imp_implementationWithBlock(^(id self, void (^done)(NSArray *, NSError *)) {
             if (done) done(@[], nil);
         }), "v@:@?");
+        PearAddMethod(cls, @selector(loadFriendsWithCompletionHandler:),
+                      imp_implementationWithBlock(^(id self, void (^done)(NSArray *, NSError *)) {
+            if (done) done(@[], nil);
+        }), "v@:@?");
+        PearAddMethod(cls, @selector(loadFriendsAuthorizationStatus:),
+                      imp_implementationWithBlock(^(id self, void (^done)(NSInteger, NSError *)) {
+            if (done) done(1, nil); // authorized
+        }), "v@:@?");
+        PearAddMethod(cls, @selector(loadRecentPlayersWithCompletionHandler:),
+                      imp_implementationWithBlock(^(id self, void (^done)(NSArray *, NSError *)) {
+            if (done) done(@[], nil);
+        }), "v@:@?");
         PearAddMethod(cls, @selector(saveGameData:withName:completionHandler:),
                       imp_implementationWithBlock(^(id self, NSData *data, NSString *name, void (^done)(id, NSError *)) {
             if (done) done(nil, nil);
@@ -512,6 +708,62 @@ static Class PearLocalPlayerClass(void) {
         objc_registerClassPair(cls);
     });
     return cls;
+}
+
+static void PearReplaceClassMethod(Class cls, SEL selector, id block, const char *fallbackTypes) {
+    if (!cls || !selector || !block) return;
+    Method existing = class_getClassMethod(cls, selector);
+    IMP imp = imp_implementationWithBlock(block);
+    if (existing) method_setImplementation(existing, imp);
+    else class_addMethod(object_getClass(cls), selector, imp, fallbackTypes ?: "v@:");
+}
+
+/// Local answers for the GameKit surfaces apps commonly touch before or during
+/// startup. None of these calls reaches a remote service.
+static void PearInstallGameKitExtras(void) {
+    Class player = PearEnsureGameKitClass("GKPlayer");
+    if (player) {
+        PearReplaceClassMethod(player, @selector(loadPlayersForIdentifiers:completionHandler:),
+            ^(id self, NSArray *identifiers, void (^done)(NSArray *, NSError *)) {
+                if (done) done(@[], nil);
+            }, "v@:@?");
+    }
+
+    Class achievement = PearEnsureGameKitClass("GKAchievement");
+    if (achievement) {
+        PearReplaceClassMethod(achievement, @selector(loadAchievementsWithCompletionHandler:),
+            ^(id self, void (^done)(NSArray *, NSError *)) {
+                if (done) done(@[], nil);
+            }, "v@:@?");
+        PearReplaceClassMethod(achievement, @selector(reportAchievements:withCompletionHandler:),
+            ^(id self, NSArray *achievements, void (^done)(NSError *)) {
+                if (done) done(nil);
+            }, "v@:@@?");
+        PearReplaceClassMethod(achievement, @selector(resetAchievementsWithCompletionHandler:),
+            ^(id self, void (^done)(NSError *)) {
+                if (done) done(nil);
+            }, "v@:@?");
+    }
+
+    Class leaderboard = PearEnsureGameKitClass("GKLeaderboard");
+    if (leaderboard) {
+        PearReplaceClassMethod(leaderboard, @selector(loadLeaderboardsWithCompletionHandler:),
+            ^(id self, void (^done)(NSArray *, NSError *)) {
+                if (done) done(@[], nil);
+            }, "v@:@?");
+        PearReplaceClassMethod(leaderboard, @selector(loadCategoriesWithCompletionHandler:),
+            ^(id self, void (^done)(NSArray *, NSError *)) {
+                if (done) done(@[], nil);
+            }, "v@:@?");
+    }
+
+    Class score = PearEnsureGameKitClass("GKScore");
+    if (score) {
+        PearReplaceClassMethod(score, @selector(reportScores:withCompletionHandler:),
+            ^(id self, NSArray *scores, void (^done)(NSError *)) {
+                if (done) done(nil);
+            }, "v@:@@?");
+    }
 }
 
 static void PearInstallGameKit(void) {
@@ -533,6 +785,8 @@ static void PearInstallGameKit(void) {
     if (PearCloudDebug()) {
         PearLog(@"[PearRuntime][cloud] GameKit local player compatibility installed");
     }
+
+    PearInstallGameKitExtras();
 }
 
 #pragma mark - Install

@@ -172,7 +172,16 @@ static void StoreSecKey(SecKeyRef key, NSDictionary *params, CFStringRef keyClas
     for (id k in params) {
         if (IsControlKey(k)) continue;
         if ([k isEqual:(__bridge id)kSecAttrIsPermanent]) continue;
-        item[k] = params[k];
+        if ([k isEqual:(__bridge id)kSecAttrKeyClass]) continue;
+        if ([k isEqual:(__bridge id)kSecPrivateKeyAttrs]) continue;
+        if ([k isEqual:(__bridge id)kSecPublicKeyAttrs]) continue;
+        if ([k isEqual:(__bridge id)kSecAttrAccessControl]) continue;
+        if ([k isEqual:(__bridge id)kSecAttrTokenID]) continue;
+        if ([k isEqual:(__bridge id)kSecAttrAccessGroup]) continue;
+        id value = params[k];
+        if (![NSPropertyListSerialization propertyList:value
+                                isValidForFormat:NSPropertyListBinaryFormat_v1_0]) continue;
+        item[k] = value;
     }
 
     CFDictionaryRef keyAttrs = SecKeyCopyAttributes(key);
@@ -426,10 +435,11 @@ PEAR_INTERPOSE(PearSecItemCopyMatching, SecItemCopyMatching)
 PEAR_INTERPOSE(PearSecItemUpdate, SecItemUpdate)
 PEAR_INTERPOSE(PearSecItemDelete, SecItemDelete)
 
-// SecKeyCreateRandomKey on a sideloaded build routes through a keychain-backed
-// store, which fails with -34018 (errSecMissingEntitlement) without restricted
-// entitlements. Forcing a non-permanent (ephemeral, in-memory) key avoids the
-// keychain add.
+// SecKeyCreateRandomKey on a locally prepared build routes through a
+// keychain-backed store, which fails with -34018 (errSecMissingEntitlement)
+// without restricted entitlements. Removing the store-only attributes lets the
+// platform build an in-memory key; the shim persists the result itself when the
+// caller asked for a permanent key.
 typedef SecKeyRef (*SecKeyCreateRandomKeyFn)(CFDictionaryRef, CFErrorRef *);
 
 static SecKeyRef PearSecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error);
@@ -446,17 +456,56 @@ __attribute__((used)) static struct {
         (const void *)(uintptr_t)&SecKeyCreateRandomKey
     };
 
+/// Attributes that make the platform store a key in securityd. An in-memory
+/// compatibility key cannot use them without restricted entitlements, so they
+/// are removed before key generation.
+static void PearStripStoreOnlyKeyAttributes(NSMutableDictionary *params) {
+    if (!params) return;
+    params[(__bridge id)kSecAttrIsPermanent] = @NO;
+    NSArray *keys = @[ (__bridge id)kSecAttrAccessControl,
+                       (__bridge id)kSecAttrAccessGroup,
+                       (__bridge id)kSecAttrTokenID,
+                       (__bridge id)kSecAttrApplicationTag ];
+    for (id key in keys) [params removeObjectForKey:key];
+
+    id privateAttrs = params[(__bridge id)kSecPrivateKeyAttrs];
+    if ([privateAttrs isKindOfClass:NSDictionary.class]) {
+        NSMutableDictionary *priv = [privateAttrs mutableCopy];
+        priv[(__bridge id)kSecAttrIsPermanent] = @NO;
+        for (id key in keys) [priv removeObjectForKey:key];
+        params[(__bridge id)kSecPrivateKeyAttrs] = priv;
+    }
+}
+
+static BOOL PearWantsPersistentKey(NSDictionary *params) {
+    if ([params[(__bridge id)kSecAttrIsPermanent] boolValue]) return YES;
+    id privateAttrs = params[(__bridge id)kSecPrivateKeyAttrs];
+    return [privateAttrs isKindOfClass:NSDictionary.class] &&
+           [privateAttrs[(__bridge id)kSecAttrIsPermanent] boolValue];
+}
+
 static SecKeyRef PearSecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error) {
     SecKeyCreateRandomKeyFn original = (SecKeyCreateRandomKeyFn)kInterposeSecKeyCreateRandomKey.replacee;
     if (!original) return NULL;
 
-    NSMutableDictionary *params = parameters
-        ? [(__bridge NSDictionary *)parameters mutableCopy]
-        : [NSMutableDictionary dictionary];
-    params[(__bridge id)kSecAttrIsPermanent] = @NO;
+    NSDictionary *requested = parameters ? (__bridge NSDictionary *)parameters : @{};
+    BOOL persistent = PearWantsPersistentKey(requested);
 
-    PearLog(@"[PearRuntime][keychain] SecKeyCreateRandomKey (ephemeral)");
-    return original((__bridge CFDictionaryRef)params, error);
+    NSMutableDictionary *params = [requested mutableCopy] ?: [NSMutableDictionary dictionary];
+    PearStripStoreOnlyKeyAttributes(params);
+
+    PearLog(@"[PearRuntime][keychain] SecKeyCreateRandomKey type=%@ size=%@ persistent=%d",
+            params[(__bridge id)kSecAttrKeyType] ?: @"?",
+            params[(__bridge id)kSecAttrKeySizeInBits] ?: @"?", persistent);
+
+    SecKeyRef key = original((__bridge CFDictionaryRef)params, error);
+    if (!key) {
+        PearLog(@"[PearRuntime][keychain] SecKeyCreateRandomKey failed: %@",
+                (error && *error) ? (__bridge id)*error : @"unknown");
+        return NULL;
+    }
+    if (persistent) StoreSecKey(key, requested, kSecAttrKeyClassPrivate);
+    return key;
 }
 
 typedef OSStatus (*SecKeyGeneratePairFn)(CFDictionaryRef, SecKeyRef *, SecKeyRef *);
@@ -479,16 +528,23 @@ static OSStatus PearSecKeyGeneratePair(CFDictionaryRef parameters, SecKeyRef *pu
     SecKeyGeneratePairFn original = (SecKeyGeneratePairFn)kInterposeSecKeyGeneratePair.replacee;
     if (!original) return errSecUnimplemented;
 
-    NSMutableDictionary *params = parameters
-        ? [(__bridge NSDictionary *)parameters mutableCopy]
-        : [NSMutableDictionary dictionary];
-    params[(__bridge id)kSecAttrIsPermanent] = @NO;
+    NSDictionary *requested = parameters ? (__bridge NSDictionary *)parameters : @{};
+    NSMutableDictionary *params = [requested mutableCopy] ?: [NSMutableDictionary dictionary];
+    PearStripStoreOnlyKeyAttributes(params);
+
+    PearLog(@"[PearRuntime][keychain] SecKeyGeneratePair type=%@ size=%@",
+            params[(__bridge id)kSecAttrKeyType] ?: @"?",
+            params[(__bridge id)kSecAttrKeySizeInBits] ?: @"?");
 
     OSStatus status = original((__bridge CFDictionaryRef)params, publicKey, privateKey);
-    if (status == errSecSuccess && publicKey && privateKey && *publicKey && *privateKey) {
+    if (status != errSecSuccess) {
+        PearLog(@"[PearRuntime][keychain] SecKeyGeneratePair failed: %d", (int)status);
+        return status;
+    }
+    if (publicKey && privateKey && *publicKey && *privateKey) {
         // Persist both keys in our own store so later lookups succeed.
-        StoreSecKey(*publicKey, params, kSecAttrKeyClassPublic);
-        StoreSecKey(*privateKey, params, kSecAttrKeyClassPrivate);
+        StoreSecKey(*publicKey, requested, kSecAttrKeyClassPublic);
+        StoreSecKey(*privateKey, requested, kSecAttrKeyClassPrivate);
     }
     return status;
 }
