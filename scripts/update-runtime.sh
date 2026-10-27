@@ -12,6 +12,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIBRARY="$HOME/Library/Application Support/PearSilicon/Applications"
 RUNTIME="$ROOT/build/libPearRuntime.dylib"
 SWIFT_OVERLAY="$ROOT/build/libswiftUIKit.dylib"
+CXX_COMPAT="$ROOT/build/libcxxcompat.dylib"
 ENT="$HOME/Library/Application Support/PearSilicon/Work/entitlements.plist"
 
 [[ -f "$RUNTIME" ]] || { echo "runtime not built: $RUNTIME"; exit 1; }
@@ -34,6 +35,14 @@ for APP in "$LIBRARY"/*.app; do
     cp "$SWIFT_OVERLAY" "$APP/Frameworks/libswiftUIKit.dylib"
   fi
 
+  EXE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist" 2>/dev/null)"
+  if [[ -f "$CXX_COMPAT" && -n "$EXE" && -f "$APP/$EXE" ]] &&
+     nm -gU "$APP/$EXE" 2>/dev/null | grep -q "__ZNSt3__119piecewise_constructE"; then
+    cp "$CXX_COMPAT" "$APP/Frameworks/libcxxcompat.dylib"
+    install_name_tool -change /usr/lib/libc++.1.dylib \
+      "$APP/Frameworks/libcxxcompat.dylib" "$APP/$EXE" 2>/dev/null || true
+  fi
+
   # inside-out signing: nested code first, then the executable, then the bundle
   for fw in "$APP"/Frameworks/*.framework; do
     [[ -d "$fw" ]] && sign "$fw"
@@ -45,7 +54,6 @@ for APP in "$LIBRARY"/*.app; do
     [[ -n "$f" ]] && sign "$f"
   done < <(find "$APP" -name '*.dylib' -type f 2>/dev/null)
 
-  EXE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist" 2>/dev/null)"
   [[ -n "$EXE" && -f "$APP/$EXE" ]] && sign "$APP/$EXE"
 
   if codesign --force --sign - --entitlements "$ENT" "$APP" >/dev/null 2>&1; then

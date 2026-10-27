@@ -237,6 +237,26 @@ final class PackageInstaller: @unchecked Sendable {
             try fileManager.copyItem(at: swiftOverlay, to: overlayDestination)
         }
 
+        // A few builds carry a weak placeholder for a C++ runtime data symbol
+        // that macOS does not export. Put the re-exporting compatibility
+        // library in the bundle and point the binary's C++ dependency at it.
+        let cxxCompat = runtime.deletingLastPathComponent()
+            .appendingPathComponent("libcxxcompat.dylib")
+        if fileManager.fileExists(atPath: cxxCompat.path),
+           let app = try? makeInstalledApp(fromBundleAt: bundleURL),
+           BinaryPatcher.containsSymbol(at: app.executableURL,
+                                        named: "__ZNSt3__119piecewise_constructE") {
+            let compatDestination = frameworks.appendingPathComponent("libcxxcompat.dylib")
+            if fileManager.fileExists(atPath: compatDestination.path) {
+                try fileManager.removeItem(at: compatDestination)
+            }
+            try fileManager.copyItem(at: cxxCompat, to: compatDestination)
+            _ = try? Shell.run("/usr/bin/install_name_tool", [
+                "-change", "/usr/lib/libc++.1.dylib",
+                compatDestination.path, app.executableURL.path
+            ])
+        }
+
         if let app = try? makeInstalledApp(fromBundleAt: bundleURL) {
             // Use an absolute load path: some store binaries run under a
             // security policy that refuses `@` expansion for their dylib load

@@ -49,6 +49,9 @@ fi
 if [[ -f "$ROOT/build/libswiftUIKit.dylib" ]]; then
   cp "$ROOT/build/libswiftUIKit.dylib" "$OUT/Contents/Resources/"
 fi
+if [[ -f "$ROOT/build/libcxxcompat.dylib" ]]; then
+  cp "$ROOT/build/libcxxcompat.dylib" "$OUT/Contents/Resources/"
+fi
 
 # --- 3b) App icon from the repo logo -------------------------------------
 ICON_KEY=""

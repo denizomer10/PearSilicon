@@ -41,6 +41,7 @@ enum BinaryPatcher {
 
     enum LoadCommand {
         static let segment64: UInt32 = 0x19
+        static let symtab: UInt32 = 0x2
         static let loadDylib: UInt32 = 0x0C
         static let loadWeakDylib: UInt32 = 0x8000_0018
         static let reexportDylib: UInt32 = 0x8000_001F
@@ -388,6 +389,48 @@ enum BinaryPatcher {
     }
 
     // MARK: - Load command addition
+
+    /// True if a 64-bit Mach-O image defines `symbol` in its symbol table.
+    /// Some Catalyst builds carry a weak C++ placeholder symbol that the host
+    /// runtime does not provide; the installer uses this to decide whether the
+    /// local C++ compatibility library is needed.
+    static func containsSymbol(at url: URL, named symbol: String) -> Bool {
+        guard let data = try? Data(contentsOf: url) else { return false }
+        for base in machO64Offsets(data) {
+            let ncmds = Int(readU32(data, base + 16))
+            var offset = base + MachO.headerSize
+            for _ in 0..<ncmds {
+                guard offset + 8 <= data.count else { break }
+                let cmd = readU32(data, offset)
+                let cmdsize = Int(readU32(data, offset + 4))
+                guard cmdsize >= 8, offset + cmdsize <= data.count else { break }
+
+                if cmd == LoadCommand.symtab, cmdsize >= 24 {
+                    let symoff = Int(readU32(data, offset + 8))
+                    let nsyms = Int(readU32(data, offset + 12))
+                    let stroff = Int(readU32(data, offset + 16))
+                    let strsize = Int(readU32(data, offset + 20))
+                    if symoff >= 0, nsyms >= 0, stroff >= 0, strsize >= 0,
+                       symoff + nsyms * 16 <= data.count,
+                       stroff + strsize <= data.count {
+                        for index in 0..<nsyms {
+                            let sym = symoff + index * 16
+                            let strx = Int(readU32(data, sym))
+                            guard strx < strsize else { continue }
+                            let start = stroff + strx
+                            var end = start
+                            while end < stroff + strsize && data[end] != 0 { end += 1 }
+                            if String(decoding: data[start..<end], as: UTF8.self) == symbol {
+                                return true
+                            }
+                        }
+                    }
+                }
+                offset += cmdsize
+            }
+        }
+        return false
+    }
 
     /// Adds an `LC_LOAD_DYLIB` command to each 64-bit Mach-O image in the file,
     /// writing it into the header padding so no section data has to move. This

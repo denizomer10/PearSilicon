@@ -9,6 +9,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="$ROOT/build"
 OUT="$OUT_DIR/libPearRuntime.dylib"
 SWIFT_OVERLAY="$OUT_DIR/libswiftUIKit.dylib"
+CXX_COMPAT="$OUT_DIR/libcxxcompat.dylib"
 
 if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
   echo "ERROR: the target SDK was not found. Is the full development toolchain installed?"
@@ -113,6 +114,20 @@ xcrun --sdk macosx clang++ \
 
 echo ">> Done: $OUT"
 file "$OUT"
+
+# A few Catalyst binaries carry a weak C++ placeholder that the host runtime
+# does not export. This small library re-exports the system C++ runtime and
+# supplies the missing empty tag object.
+echo ">> Building $CXX_COMPAT (C++ runtime compatibility)"
+xcrun --sdk macosx clang++ \
+  -target arm64-apple-ios15.0-macabi \
+  -isysroot "$SDK" \
+  -dynamiclib \
+  -Wl,-reexport_library,"$SDK/usr/lib/libc++.1.tbd" \
+  -install_name @rpath/libcxxcompat.dylib \
+  -o "$CXX_COMPAT" \
+  "$ROOT/runtime/cxxcompat.cpp"
+file "$CXX_COMPAT"
 
 # Some Swift SDKs link against the UIKit Swift overlay, which the Mac Catalyst
 # host runtime does not ship. Build the small clean-room overlay used by the
