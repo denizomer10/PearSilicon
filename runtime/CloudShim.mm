@@ -341,9 +341,164 @@ static id PearRecordZoneWithID(id zoneID) {
 /// Answers the result block of a cloud operation while the operation is held by
 /// the compatibility database/container. The real operation is never started,
 /// so no request reaches a remote service.
+static NSArray *PearArrayValue(id object, NSString *key) {
+    id value = PearBlockValue(object, key);
+    return [value isKindOfClass:NSArray.class] ? value : @[];
+}
+
+static NSMutableDictionary *PearCloudZoneStore(void) {
+    static NSMutableDictionary *store;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ store = [NSMutableDictionary dictionary]; });
+    return store;
+}
+
+static NSMutableDictionary *PearCloudRecordStore(void) {
+    static NSMutableDictionary *store;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ store = [NSMutableDictionary dictionary]; });
+    return store;
+}
+
+static NSMutableDictionary *PearCloudSubscriptionStore(void) {
+    static NSMutableDictionary *store;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ store = [NSMutableDictionary dictionary]; });
+    return store;
+}
+
+static NSString *PearCloudObjectKey(id object, NSString *property) {
+    id value = PearBlockValue(object, property);
+    return value ? [value description] : nil;
+}
+
+static void PearStoreZone(id zone) {
+    NSString *key = PearCloudObjectKey(zone, @"zoneID");
+    if (!key) return;
+    @synchronized (PearCloudZoneStore()) { PearCloudZoneStore()[key] = zone; }
+}
+
+static id PearStoredZone(id zoneID) {
+    NSString *key = zoneID ? [zoneID description] : nil;
+    if (!key) return nil;
+    @synchronized (PearCloudZoneStore()) { return PearCloudZoneStore()[key]; }
+}
+
+static void PearRemoveStoredZone(id zoneID) {
+    NSString *key = zoneID ? [zoneID description] : nil;
+    if (!key) return;
+    @synchronized (PearCloudZoneStore()) { [PearCloudZoneStore() removeObjectForKey:key]; }
+}
+
+static void PearStoreRecord(id record) {
+    NSString *key = PearCloudObjectKey(record, @"recordID");
+    if (!key) return;
+    @synchronized (PearCloudRecordStore()) { PearCloudRecordStore()[key] = record; }
+}
+
+static id PearStoredRecord(id recordID) {
+    NSString *key = recordID ? [recordID description] : nil;
+    if (!key) return nil;
+    @synchronized (PearCloudRecordStore()) { return PearCloudRecordStore()[key]; }
+}
+
+static void PearRemoveStoredRecord(id recordID) {
+    NSString *key = recordID ? [recordID description] : nil;
+    if (!key) return;
+    @synchronized (PearCloudRecordStore()) { [PearCloudRecordStore() removeObjectForKey:key]; }
+}
+
+static void PearStoreSubscription(id subscription) {
+    NSString *key = PearCloudObjectKey(subscription, @"subscriptionID");
+    if (!key) return;
+    @synchronized (PearCloudSubscriptionStore()) { PearCloudSubscriptionStore()[key] = subscription; }
+}
+
+static void PearRemoveStoredSubscription(id subscriptionID) {
+    NSString *key = subscriptionID ? [subscriptionID description] : nil;
+    if (!key) return;
+    @synchronized (PearCloudSubscriptionStore()) { [PearCloudSubscriptionStore() removeObjectForKey:key]; }
+}
+
+/// Builds local stand-ins for records a fetch operation asked for. Callers that
+/// index the result expect a non-empty collection when they requested IDs.
+static NSDictionary *PearPlaceholderRecords(id operation) {
+    NSArray *recordIDs = PearArrayValue(operation, @"recordIDs");
+    Class recordClass = PearEnsureCloudKitClass("CKRecord");
+    SEL initSelector = NSSelectorFromString(@"initWithRecordType:recordID:");
+    NSMutableDictionary *records = [NSMutableDictionary dictionary];
+    for (id recordID in recordIDs) {
+        id record = PearStoredRecord(recordID);
+        if (!record && recordClass && [recordClass instancesRespondToSelector:initSelector]) {
+            @try {
+                record = ((id (*)(id, SEL, id, id))objc_msgSend)([recordClass alloc], initSelector,
+                                                                  @"LocalRecord", recordID);
+            } @catch (__unused NSException *exception) {
+                record = nil;
+            }
+            if (record) PearStoreRecord(record);
+        }
+        if (record && recordID) records[recordID] = record;
+    }
+    return records;
+}
+
+static NSDictionary *PearPlaceholderZones(id operation) {
+    NSArray *zoneIDs = PearArrayValue(operation, @"recordZoneIDs");
+    NSMutableDictionary *zones = [NSMutableDictionary dictionary];
+    if (zoneIDs.count == 0) {
+        @synchronized (PearCloudZoneStore()) {
+            for (id zone in PearCloudZoneStore().allValues) {
+                id zoneID = PearBlockValue(zone, @"zoneID");
+                if (zoneID) zones[zoneID] = zone;
+            }
+        }
+        return zones;
+    }
+    for (id zoneID in zoneIDs) {
+        id zone = PearStoredZone(zoneID) ?: PearRecordZoneWithID(zoneID);
+        if (zone && zoneID) {
+            PearStoreZone(zone);
+            zones[zoneID] = zone;
+        }
+    }
+    return zones;
+}
+
+static NSDictionary *PearSubscriptionResults(id operation) {
+    NSArray *subscriptionIDs = PearArrayValue(operation, @"subscriptionIDs");
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    @synchronized (PearCloudSubscriptionStore()) {
+        NSDictionary *all = PearCloudSubscriptionStore();
+        if (subscriptionIDs.count == 0) {
+            [result addEntriesFromDictionary:all];
+        } else {
+            for (id subscriptionID in subscriptionIDs) {
+                NSString *key = subscriptionID ? [subscriptionID description] : nil;
+                id subscription = key ? all[key] : nil;
+                if (subscription) result[subscriptionID] = subscription;
+            }
+        }
+    }
+    return result;
+}
+
+static NSArray *PearAllStoredZones(void) {
+    @synchronized (PearCloudZoneStore()) { return PearCloudZoneStore().allValues; }
+}
+
+static NSArray *PearAllStoredRecords(void) {
+    @synchronized (PearCloudRecordStore()) { return PearCloudRecordStore().allValues; }
+}
+
+static NSArray *PearAllStoredSubscriptions(void) {
+    @synchronized (PearCloudSubscriptionStore()) { return PearCloudSubscriptionStore().allValues; }
+}
+
 static void PearFinishCloudOperation(NSOperation *operation) {
     if (!operation) return;
     NSString *name = NSStringFromClass(operation.class);
+    if (PearCloudDebug()) PearLog(@"[PearRuntime][cloud] finishing %@", name);
     id block = nil;
 
     if ([name isEqualToString:@"CKQueryOperation"]) {
@@ -351,23 +506,35 @@ static void PearFinishCloudOperation(NSOperation *operation) {
              ?: PearBlockValue(operation, @"queryCompletionBlock");
         if (block) ((void (^)(id, NSError *))block)(nil, nil);
     } else if ([name isEqualToString:@"CKModifyRecordsOperation"]) {
+        NSArray *saved = PearArrayValue(operation, @"recordsToSave");
+        NSArray *deleted = PearArrayValue(operation, @"recordIDsToDelete");
+        for (id record in saved) PearStoreRecord(record);
+        for (id recordID in deleted) PearRemoveStoredRecord(recordID);
         block = PearBlockValue(operation, @"modifyRecordsCompletionBlock");
-        if (block) ((void (^)(NSArray *, NSArray *, NSError *))block)(@[], @[], nil);
+        if (block) ((void (^)(NSArray *, NSArray *, NSError *))block)(saved, deleted, nil);
     } else if ([name isEqualToString:@"CKFetchRecordsOperation"]) {
         block = PearBlockValue(operation, @"fetchRecordsCompletionBlock");
-        if (block) ((void (^)(NSDictionary *, NSError *))block)(@{}, nil);
+        if (block) ((void (^)(NSDictionary *, NSError *))block)(PearPlaceholderRecords(operation), nil);
     } else if ([name isEqualToString:@"CKFetchRecordZonesOperation"]) {
         block = PearBlockValue(operation, @"fetchRecordZonesCompletionBlock");
-        if (block) ((void (^)(NSDictionary *, NSError *))block)(@{}, nil);
+        if (block) ((void (^)(NSDictionary *, NSError *))block)(PearPlaceholderZones(operation), nil);
     } else if ([name isEqualToString:@"CKModifyRecordZonesOperation"]) {
+        NSArray *saved = PearArrayValue(operation, @"recordZonesToSave");
+        NSArray *deleted = PearArrayValue(operation, @"recordZoneIDsToDelete");
+        for (id zone in saved) PearStoreZone(zone);
+        for (id zoneID in deleted) PearRemoveStoredZone(zoneID);
         block = PearBlockValue(operation, @"modifyRecordZonesCompletionBlock");
-        if (block) ((void (^)(NSArray *, NSArray *, NSError *))block)(@[], @[], nil);
+        if (block) ((void (^)(NSArray *, NSArray *, NSError *))block)(saved, deleted, nil);
     } else if ([name isEqualToString:@"CKFetchSubscriptionsOperation"]) {
         block = PearBlockValue(operation, @"fetchSubscriptionsCompletionBlock");
-        if (block) ((void (^)(NSDictionary *, NSError *))block)(@{}, nil);
+        if (block) ((void (^)(NSDictionary *, NSError *))block)(PearSubscriptionResults(operation), nil);
     } else if ([name isEqualToString:@"CKModifySubscriptionsOperation"]) {
+        NSArray *saved = PearArrayValue(operation, @"subscriptionsToSave");
+        NSArray *deleted = PearArrayValue(operation, @"subscriptionIDsToDelete");
+        for (id subscription in saved) PearStoreSubscription(subscription);
+        for (id subscriptionID in deleted) PearRemoveStoredSubscription(subscriptionID);
         block = PearBlockValue(operation, @"modifySubscriptionsCompletionBlock");
-        if (block) ((void (^)(NSArray *, NSArray *, NSError *))block)(@[], @[], nil);
+        if (block) ((void (^)(NSArray *, NSArray *, NSError *))block)(saved, deleted, nil);
     } else if ([name isEqualToString:@"CKFetchRecordZoneChangesOperation"]) {
         block = PearBlockValue(operation, @"fetchRecordZoneChangesCompletionBlock");
         if (block) ((void (^)(NSError *))block)(nil);
@@ -399,55 +566,85 @@ static Class PearCloudDatabaseClass(void) {
 
     PearAddMethod(cls, @selector(saveRecord:completionHandler:),
                   imp_implementationWithBlock(^(id self, id record, void (^done)(id, NSError *)) {
+        PearStoreRecord(record);
         if (done) done(record, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(fetchRecordWithID:completionHandler:),
                   imp_implementationWithBlock(^(id self, id recordID, void (^done)(id, NSError *)) {
-        if (done) done(nil, PearCloudOfflineError());
+        id record = PearStoredRecord(recordID);
+        if (!record && recordID) {
+            Class recordClass = PearEnsureCloudKitClass("CKRecord");
+            SEL initSelector = NSSelectorFromString(@"initWithRecordType:recordID:");
+            if (recordClass && [recordClass instancesRespondToSelector:initSelector]) {
+                @try {
+                    record = ((id (*)(id, SEL, id, id))objc_msgSend)([recordClass alloc],
+                                                                      initSelector,
+                                                                      @"LocalRecord", recordID);
+                } @catch (__unused NSException *exception) {
+                    record = nil;
+                }
+            }
+            if (record) PearStoreRecord(record);
+        }
+        if (done) done(record, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(deleteRecordWithID:completionHandler:),
                   imp_implementationWithBlock(^(id self, id recordID, void (^done)(id, NSError *)) {
-        if (done) done(nil, PearCloudOfflineError());
+        PearRemoveStoredRecord(recordID);
+        if (done) done(nil, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(fetchRecordZoneWithID:completionHandler:),
                   imp_implementationWithBlock(^(id self, id zoneID, void (^done)(id, NSError *)) {
-        if (done) done(PearRecordZoneWithID(zoneID), nil);
+        id zone = PearStoredZone(zoneID) ?: PearRecordZoneWithID(zoneID);
+        if (zone) PearStoreZone(zone);
+        if (done) done(zone, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(saveRecordZone:completionHandler:),
                   imp_implementationWithBlock(^(id self, id zone, void (^done)(id, NSError *)) {
+        PearStoreZone(zone);
         if (done) done(zone, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(deleteRecordZoneWithID:completionHandler:),
-                  imp_implementationWithBlock(^(id self, id zoneID, void (^done)(NSError *)) {
-        if (done) done(nil);
+                  imp_implementationWithBlock(^(id self, id zoneID, void (^done)(id, NSError *)) {
+        PearRemoveStoredZone(zoneID);
+        if (done) done(zoneID, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(fetchAllRecordZonesWithCompletionHandler:),
                   imp_implementationWithBlock(^(id self, void (^done)(NSArray *, NSError *)) {
-        if (done) done(@[], nil);
+        if (done) done(PearAllStoredZones(), nil);
     }), "v@:@?");
     PearAddMethod(cls, @selector(fetchAllSubscriptionsWithCompletionHandler:),
                   imp_implementationWithBlock(^(id self, void (^done)(NSArray *, NSError *)) {
-        if (done) done(@[], nil);
+        if (done) done(PearAllStoredSubscriptions(), nil);
     }), "v@:@?");
     PearAddMethod(cls, @selector(performQuery:inZoneWithID:completionHandler:),
                   imp_implementationWithBlock(^(id self, id query, id zoneID,
                                                void (^done)(NSArray *, NSError *)) {
-        if (done) done(@[], nil);
+        // The compatibility store does not evaluate predicates; return the
+        // records it has so callers receive a usable local result set.
+        if (done) done(PearAllStoredRecords(), nil);
     }), "v@:@@@?");
     PearAddMethod(cls, @selector(fetchSubscriptionWithID:completionHandler:),
                   imp_implementationWithBlock(^(id self, NSString *subscriptionID,
                                                void (^done)(id, NSError *)) {
-        if (done) done(nil, nil);
+        id subscription = nil;
+        NSString *key = subscriptionID ? [subscriptionID description] : nil;
+        @synchronized (PearCloudSubscriptionStore()) {
+            if (key) subscription = PearCloudSubscriptionStore()[key];
+        }
+        if (done) done(subscription, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(saveSubscription:completionHandler:),
                   imp_implementationWithBlock(^(id self, id subscription,
                                                void (^done)(id, NSError *)) {
+        PearStoreSubscription(subscription);
         if (done) done(subscription, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(deleteSubscriptionWithID:completionHandler:),
                   imp_implementationWithBlock(^(id self, NSString *subscriptionID,
-                                               void (^done)(NSError *)) {
-        if (done) done(nil);
+                                               void (^done)(id, NSError *)) {
+        PearRemoveStoredSubscription(subscriptionID);
+        if (done) done(subscriptionID, nil);
     }), "v@:@@?");
     PearAddMethod(cls, @selector(addOperation:),
                   imp_implementationWithBlock(^(id self, NSOperation *operation) {

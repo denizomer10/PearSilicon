@@ -337,6 +337,14 @@ static OSStatus PearSecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result
                 SecKeyRef key = CopySecKeyFromItem(item);
                 if (key) { [outputs addObject:(__bridge_transfer id)key]; continue; }
             }
+            NSData *keyData = item[@"__keydata"] ?: item[@"__data"];
+            // A caller that asked only for data expects NSData, not an
+            // attribute dictionary. Returning a dictionary here makes callers
+            // that read `bytes` fail with an unrecognized selector.
+            if (wantData && !wantAttrs && !wantRef) {
+                if (keyData) [outputs addObject:keyData];
+                continue;
+            }
             NSMutableDictionary *attrs = [item mutableCopy];
             [attrs removeObjectForKey:@"__id"];
             [attrs removeObjectForKey:@"__keydata"];
@@ -344,9 +352,8 @@ static OSStatus PearSecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result
             if (!attrs[(__bridge id)kSecAttrAccessGroup]) {
                 attrs[(__bridge id)kSecAttrAccessGroup] = DefaultAccessGroup();
             }
-            if (wantData) {
-                NSData *d = item[@"__keydata"] ?: item[@"__data"];
-                if (d) attrs[(__bridge id)kSecValueData] = d;
+            if (wantData && keyData) {
+                attrs[(__bridge id)kSecValueData] = keyData;
             }
             [outputs addObject:attrs];
             continue;
