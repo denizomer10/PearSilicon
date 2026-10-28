@@ -406,6 +406,7 @@ enum CLI {
         print("min iOS:     \(app.minimumOSVersion ?? "—")")
         print("bundle:      \(app.bundleURL.path)")
         print("data:        \(paths.support.appendingPathComponent("Games/\(app.id)").path)")
+        print("odr packs:   \(AppPaths.odrDirectory(for: app.id).path)")
         print("keymap:      \(store.fileURL(for: app.id).path)\(store.exists(for: app.id) ? "" : " (missing)")")
         print("log:         \(paths.logs.appendingPathComponent("\(app.id).log").path)")
         print("running:     \(pid.map { "yes (pid \($0))" } ?? "no")")
@@ -609,6 +610,7 @@ enum CLI {
         print("library:  \(paths.library.path)")
         print("keymaps:  \(paths.keymaps.path)")
         print("logs:     \(paths.logs.path)")
+        print("odr:      \(paths.support.appendingPathComponent("ODR").path)")
         print("work:     \(paths.work.path)")
         print("runtime:  \(AppLauncher.runtimeLibraryURL()?.path ?? "not found")")
         return 0
@@ -635,6 +637,7 @@ enum CLI {
 
         let runtime = AppLauncher.runtimeLibraryURL()?.path
         print("runtime:  \(runtime ?? "NOT FOUND")")
+        print("runtime build: \(DeveloperTools.runtimeBuildAvailable() ? "available" : "missing iOSSupport frameworks")")
 
         let apps = (try? PackageInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()) ?? []
         print("library:  \(CLIPaths.shared.library.path) (\(apps.count) apps)")

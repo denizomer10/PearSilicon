@@ -24,7 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.messageText = "Full development toolchain not found"
             alert.informativeText = """
             PearSilicon needs the full toolchain for its build commands; the \
-            command-line tools alone are not enough.
+            command-line tools alone are not enough. The compatibility runtime \
+            can still be built with the command-line tools.
 
             Install it, open it once, then select it with:
 

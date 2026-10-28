@@ -29,10 +29,13 @@ application logic or protection systems.
 
 - macOS 26 or later
 - an arm64 Mac
-- the platform's full development toolchain selected
+- for the app and its project build commands: the platform's full development
+  toolchain selected
+- for the compatibility runtime alone: the Command Line Tools are enough
 
 The app checks the toolchain at launch; `pearsilicon doctor` reports it from a
-terminal.
+terminal. `./runtime/build.sh` works with either toolchain because the Catalyst
+frameworks ship inside the macOS SDK.
 
 ## Install and run
 
@@ -59,14 +62,14 @@ Full command reference: [docs/CLI.md](docs/CLI.md).
 ## Build
 
 ```sh
-./scripts/build-app.sh          # app + runtime
+./scripts/build-app.sh          # app + runtime (full toolchain)
 open build/PearSilicon.app
 
 ./scripts/make-zip.sh           # build/PearSilicon.zip
 
 swift build
 swift test
-./runtime/build.sh              # runtime dylib only
+./runtime/build.sh              # runtime dylib only (Command Line Tools work)
 ```
 
 ## How it works
@@ -92,7 +95,8 @@ swift test
 | `DeviceShim` | coherent device identity |
 | `PathShim` | keep app data, group containers and temporary files contained |
 | `PointerLockShim` | per-app pointer-lock control |
-| `ODRShim` | resolve on-demand resources present in the package |
+| `ODRShim` | resolve packaged and user-supplied on-demand resources |
+| `ServicesShim` | audio-session, haptics, store availability, remote-notification and background-task surfaces |
 | `ConsentShim` | local consent entry points |
 | `NetworkShim` | iOS-style request identity and HTTP/2 |
 | `BeepShim` | silence the alert beep for unhandled keys |
@@ -111,12 +115,24 @@ App data is kept under:
 
 Override the root with `PEAR_HOME_DIR`.
 
+Some apps keep content in On-Demand Resources that their package does not
+carry. Put those bundles in the per-app ODR folder:
+
+```
+~/Library/Application Support/PearSilicon/ODR/<bundle-id>/
+```
+
+The folder accepts flat bundle files or a copy of the Addressables tree with a
+`BuildTarget/` subdirectory. At launch the runtime merges it with the bundles
+inside the app, without copying the files. Override the folder with
+`PEAR_ODR_PATH=<dir>`.
+
 ## Per-app options
 
 - **Metal HUD** — launches with `MTL_HUD_ENABLED=1`.
 - **Pointer lock** — on by default; disable it if the cursor gets trapped.
-- **iOS-like container** — hides host-only filesystem paths from the app. Off by
-  default; relaunch to apply.
+- **iOS-like container** — part of the base environment and applied to every
+  launch; there is no per-app switch.
 
 Repeat-rate protection is always on and not configurable.
 
@@ -143,6 +159,8 @@ A keymap is a small JSON file per app:
 
 - `PEAR_LOG_FILE=<path>` writes the runtime log to a file.
 - The iOS-like filesystem view is applied to every launch.
+- `PEAR_ODR_PATH=<dir>` overrides the per-app folder for On-Demand Resources.
+- `PEAR_DEBUG_SERVICES=1` logs the installed service surfaces.
 - `PEAR_DEBUG_TOUCH`, `PEAR_DEBUG_SCREEN`, `PEAR_DEBUG_GL` and
   `PEAR_DEBUG_CLOUD` add logging.
 - `PEAR_NO_*` disables a shim.

@@ -171,6 +171,15 @@ final class PackageInstaller: @unchecked Sendable {
     private func finalizeInstall(at destination: URL, mode: PreparationMode) throws {
         try prepareForMacOS(at: destination, mode: mode)
         try signBundle(at: destination, mode: mode)
+
+        // Give the user a place to drop ODR packs that the app package does
+        // not carry. The runtime merges this directory into its local resource
+        // view at launch.
+        let bundleID = destination.deletingPathExtension().lastPathComponent
+        try? fileManager.createDirectory(
+            at: AppPaths.odrDirectory(for: bundleID),
+            withIntermediateDirectories: true
+        )
     }
 
     /// True when the bundle declares itself as an iOS Simulator build.

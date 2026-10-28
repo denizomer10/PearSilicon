@@ -16,6 +16,16 @@ enum AppPaths {
         supportRoot.appendingPathComponent("Games", isDirectory: true)
     }
 
+    /// Optional per-app directory for On-Demand Resources that are not part of
+    /// the app package. The runtime merges bundles found here into its local
+    /// Addressables view, so content can be supplied without repackaging the
+    /// app.
+    static func odrDirectory(for bundleID: String) -> URL {
+        supportRoot
+            .appendingPathComponent("ODR", isDirectory: true)
+            .appendingPathComponent(bundleID, isDirectory: true)
+    }
+
     /// The macOS App Sandbox data directory for an app. When the app is signed
     /// with `com.apple.security.app-sandbox`, the system makes this its home
     /// before any app code runs.

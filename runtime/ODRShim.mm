@@ -29,6 +29,95 @@ static NSProgress *gODRProgress;
 static dispatch_queue_t gODRQueue;
 static BOOL gODRReportedMissingContent;
 
+/// Optional per-app directory for ODR packs that are not part of the app
+/// package:
+///
+///   ~/Library/Application Support/PearSilicon/ODR/<bundle-id>/
+///
+/// `PEAR_ODR_PATH` overrides it, which is useful for testing a directory
+/// without installing anything into the support folder.
+static NSString *PearODRExternalRoot(void) {
+    const char *override = getenv("PEAR_ODR_PATH");
+    if (override && override[0]) {
+        NSString *path = [[NSString stringWithUTF8String:override] stringByExpandingTildeInPath];
+        if (!path.isAbsolutePath) {
+            path = [NSFileManager.defaultManager.currentDirectoryPath
+                    stringByAppendingPathComponent:path];
+        }
+        return path.stringByStandardizingPath;
+    }
+
+    NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
+    if (bundleID.length == 0) return nil;
+    return [[NSHomeDirectory() stringByAppendingPathComponent:
+             @"Library/Application Support/PearSilicon/ODR"]
+            stringByAppendingPathComponent:bundleID];
+}
+
+/// Builds a read-only view that contains the app's own Addressables bundles
+/// plus any files supplied in the external directory. Symlinks keep this cheap
+/// for multi-gigabyte packs; a copy is used only when the file system rejects
+/// symlinks. The app keeps loading from its own directory when the external
+/// directory is absent or empty.
+static NSString *PearODRMergeExternalRoot(NSString *localRoot, NSString *externalRoot) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSMutableArray<NSString *> *sources = [NSMutableArray arrayWithObject:localRoot];
+    [sources addObject:externalRoot];
+
+    // Accept both a flat directory of bundles and a copy of the Addressables
+    // tree that still has its BuildTarget subdirectory.
+    NSString *nested = [externalRoot stringByAppendingPathComponent:@"BuildTarget"];
+    BOOL isDirectory = NO;
+    if ([fm fileExistsAtPath:nested isDirectory:&isDirectory] && isDirectory) {
+        [sources addObject:nested];
+    }
+
+    NSUInteger localCount = [fm contentsOfDirectoryAtPath:localRoot error:nil].count;
+    NSUInteger externalCount = 0;
+    for (NSString *source in sources) {
+        if ([source isEqualToString:localRoot]) continue;
+        externalCount += [fm contentsOfDirectoryAtPath:source error:nil].count;
+    }
+    if (externalCount == 0) return localRoot;
+
+    NSString *staging = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"PearODR-%d", getpid()]];
+    [fm removeItemAtPath:staging error:nil];
+    if (![fm createDirectoryAtPath:staging withIntermediateDirectories:YES attributes:nil error:nil]) {
+        PearLog(@"[PearRuntime][odr] could not create merged root at %@", staging);
+        return localRoot;
+    }
+
+    NSMutableSet<NSString *> *names = [NSMutableSet set];
+    NSUInteger linked = 0;
+    NSUInteger copied = 0;
+    for (NSString *source in sources) {
+        NSArray<NSString *> *entries = [fm contentsOfDirectoryAtPath:source error:nil];
+        for (NSString *name in entries) {
+            if ([names containsObject:name]) continue;
+            NSString *from = [source stringByAppendingPathComponent:name];
+            NSString *to = [staging stringByAppendingPathComponent:name];
+            NSError *error = nil;
+            if ([fm createSymbolicLinkAtPath:to withDestinationPath:from error:&error]) {
+                [names addObject:name];
+                linked++;
+            } else if ([fm copyItemAtPath:from toPath:to error:nil]) {
+                [names addObject:name];
+                copied++;
+            } else {
+                PearLog(@"[PearRuntime][odr] could not merge %@: %@",
+                        name, error.localizedDescription ?: @"unknown error");
+            }
+        }
+    }
+
+    PearLog(@"[PearRuntime][odr] external root %@: %lu local and %lu external entries "
+            "merged into %@ (%lu links, %lu copies)",
+            externalRoot, (unsigned long)localCount, (unsigned long)externalCount,
+            staging, (unsigned long)linked, (unsigned long)copied);
+    return staging;
+}
+
 /// The directory that stands in for the ODR asset pack. The Addressables
 /// bundles are in `Data/Raw/aa/BuildTarget`; the parent directories are
 /// fallbacks for titles that keep them elsewhere.
@@ -42,18 +131,26 @@ static NSBundle *PearODRLocalBundle(void) {
         [app stringByAppendingPathComponent:@"Data/Raw"],
     ];
 
+    NSString *localRoot = nil;
     NSFileManager *fm = NSFileManager.defaultManager;
     for (NSString *path in candidates) {
         BOOL isDirectory = NO;
         if ([fm fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory) {
-            gODRLocalBundle = [NSBundle bundleWithPath:path];
-            PearLog(@"[PearRuntime][odr] local resource root: %@", path);
-            return gODRLocalBundle;
+            localRoot = path;
+            break;
         }
     }
+    if (!localRoot) localRoot = app;
 
-    gODRLocalBundle = NSBundle.mainBundle;
-    PearLog(@"[PearRuntime][odr] no local resource root, using %@", gODRLocalBundle.bundlePath);
+    NSString *root = localRoot;
+    NSString *external = PearODRExternalRoot();
+    if (external.length && [fm fileExistsAtPath:external]) {
+        root = PearODRMergeExternalRoot(localRoot, external);
+    }
+
+    gODRLocalBundle = [NSBundle bundleWithPath:root];
+    if (!gODRLocalBundle) gODRLocalBundle = [NSBundle bundleWithPath:app];
+    PearLog(@"[PearRuntime][odr] local resource root: %@", gODRLocalBundle.bundlePath);
     return gODRLocalBundle;
 }
 

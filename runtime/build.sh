@@ -1,8 +1,10 @@
 #!/bin/bash
-# Builds libPearRuntime.dylib for the iOS SDK (arm64).
+# Builds libPearRuntime.dylib for the Catalyst target (arm64).
 #
-# The dylib must match the host process, which is an iOS binary, so we
-# link against the iOS SDK rather than the macOS one.
+# The dylib must match the host process, which is an iOS binary, so it is
+# compiled for the Catalyst target. The iOS frameworks ship inside the macOS
+# SDK's iOSSupport directory, so this works with the Command Line Tools alone
+# as well as with a full toolchain.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,12 +13,15 @@ OUT="$OUT_DIR/libPearRuntime.dylib"
 SWIFT_OVERLAY="$OUT_DIR/libswiftUIKit.dylib"
 CXX_COMPAT="$OUT_DIR/libcxxcompat.dylib"
 
-if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
-  echo "ERROR: the target SDK was not found. Is the full development toolchain installed?"
+SDK="${PEAR_MACOS_SDK:-$(xcrun --sdk macosx --show-sdk-path)}"
+IOS_FRAMEWORKS="$SDK/System/iOSSupport/System/Library/Frameworks"
+if [[ ! -d "$IOS_FRAMEWORKS" ]]; then
+  echo "ERROR: the macOS SDK does not include the iOSSupport frameworks."
+  echo "       SDK: $SDK"
+  echo "       Install the Command Line Tools or a full toolchain with macOS SDK 26 or later."
   exit 1
 fi
 
-SDK="$(xcrun --sdk macosx --show-sdk-path)"
 CXX="$(xcrun --find clang++)"
 mkdir -p "$OUT_DIR"
 
@@ -50,6 +55,11 @@ cat > "$ROOT/runtime/compile_commands.json" <<JSON
     "directory": "$ROOT/runtime",
     "file": "$ROOT/runtime/ODRShim.mm",
     "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c ODRShim.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/ServicesShim.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c ServicesShim.mm"
   },
   {
     "directory": "$ROOT/runtime",
@@ -112,6 +122,7 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/PointerLockShim.mm" \
   "$ROOT/runtime/BeepShim.mm" \
   "$ROOT/runtime/ODRShim.mm" \
+  "$ROOT/runtime/ServicesShim.mm" \
   "$ROOT/runtime/ConsentShim.mm" \
   "$ROOT/runtime/NetworkShim.mm" \
   "$ROOT/runtime/TrackingShim.mm" \
@@ -142,7 +153,6 @@ echo ">> Building $SWIFT_OVERLAY (Swift UIKit compatibility)"
 CLANG_TARGET="arm64-apple-ios15.0-macabi"
 CLANG="$(xcrun --find clang)"
 SWIFTC="$(xcrun --find swiftc)"
-IOS_FRAMEWORKS="$SDK/System/iOSSupport/System/Library/Frameworks"
 "$CLANG" -c -target "$CLANG_TARGET" -isysroot "$SDK" \
   "$ROOT/runtime/swift/PearSwiftUIKitSupport.c" \
   -o "$OUT_DIR/PearSwiftUIKitSupport.o"

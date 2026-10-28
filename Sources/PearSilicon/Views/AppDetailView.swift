@@ -154,6 +154,18 @@ struct AppDetailView: View {
                     }
                     .buttonStyle(.glass)
 
+                    Button {
+                        let folder = AppPaths.odrDirectory(for: app.id)
+                        try? FileManager.default.createDirectory(
+                            at: folder, withIntermediateDirectories: true
+                        )
+                        NSWorkspace.shared.activateFileViewerSelecting([folder])
+                    } label: {
+                        Label("ODR packs", systemImage: "shippingbox")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glass)
+
                     Button(role: .destructive) {
                         state.uninstall(app)
                     } label: {

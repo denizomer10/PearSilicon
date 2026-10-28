@@ -3,10 +3,10 @@ import Foundation
 /// Whether a full development toolchain is available, and which developer
 /// directory is active.
 ///
-/// PearSilicon itself needs the target runtime only. Building the runtime and
-/// the host app needs the platform SDK, its SwiftUI macro plugins, and the
-/// project builder that ship with the full toolchain rather than the command
-/// line tools alone.
+/// The compatibility runtime needs only the macOS SDK and its iOSSupport
+/// frameworks, so the Command Line Tools are enough for `runtime/build.sh`.
+/// The GUI and the project build commands need the full toolchain because the
+/// SwiftUI macro plugins ship with it.
 enum DeveloperTools {
 
     enum ToolchainStatus: Equatable, Sendable {
@@ -76,5 +76,19 @@ enum DeveloperTools {
     /// Shell command that selects a full toolchain installation.
     static func selectCommand(for toolchainPath: String) -> String {
         "sudo xcode-select -s \"\(toolchainPath)/Contents/Developer\""
+    }
+
+    /// Whether `runtime/build.sh` can run with the active developer directory.
+    /// It only needs the macOS SDK's iOSSupport frameworks, which the Command
+    /// Line Tools also provide.
+    static func runtimeBuildAvailable() -> Bool {
+        guard let output = try? Shell.run(
+            "/usr/bin/xcrun", ["--sdk", "macosx", "--show-sdk-path"]
+        ) else { return false }
+        let sdk = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sdk.isEmpty else { return false }
+        return FileManager.default.fileExists(
+            atPath: "\(sdk)/System/iOSSupport/System/Library/Frameworks"
+        )
     }
 }
