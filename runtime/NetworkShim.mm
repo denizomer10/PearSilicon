@@ -35,6 +35,19 @@
 static BOOL gInstalled;
 static BOOL gKeepUA;
 
+static BOOL PearNetworkDebug(void) {
+    return getenv("PEAR_DEBUG_NETWORK") != NULL;
+}
+
+/// Logs the request line and headers (never the body). Encrypted payloads are
+/// opaque by design; this is enough to spot a host-only header or user agent.
+static void PearLogRequest(NSString *phase, NSURLRequest *request) {
+    if (!PearNetworkDebug() || !request) return;
+    PearLog(@"[PearRuntime][network] %@ %@ %@ headers=%@",
+            phase, request.HTTPMethod ?: @"GET", request.URL.absoluteString ?: @"(null)",
+            request.allHTTPHeaderFields ?: @{});
+}
+
 #pragma mark - Header values
 
 static NSString *PearDeviceModel(void) {
@@ -196,6 +209,7 @@ static NSMutableURLRequest *PearRewrittenRequest(NSURLRequest *request) {
     NSMutableURLRequest *rewritten = [request mutableCopy];
     if (!rewritten) rewritten = [NSMutableURLRequest requestWithURL:request.URL];
     PearApplyHeaders(rewritten);
+    PearLogRequest(@"outgoing", rewritten);
     return rewritten;
 }
 

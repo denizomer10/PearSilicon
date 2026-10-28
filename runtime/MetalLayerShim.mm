@@ -12,6 +12,7 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <Metal/Metal.h>
+#import <objc/runtime.h>
 #import "PearRuntime.h"
 
 static BOOL PearMetalDebug(void) {
@@ -49,7 +50,11 @@ static void PearEnsureKeyWindow(void) {
     PearLog(@"[PearRuntime][window] promoted %@ to key window", NSStringFromClass(window.class));
 }
 
+static void PearFixMetalLayers(void);
+static void PearInstallNextDrawableFix(void);
+
 static void PearFixMetalLayers(void) {
+    PearInstallNextDrawableFix();
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) {
         if (PearMetalDebug()) {
@@ -122,9 +127,56 @@ static void PearFixMetalLayers(void) {
     }
 }
 
+/// A layer can be created and asked for a drawable before it is attached to a
+/// window, so the periodic scan below cannot see it yet. Setting the device at
+/// the moment a drawable is requested closes that window without changing the
+/// layer's size or contents.
+static void PearInstallNextDrawableFix(void) {
+    static BOOL installed = NO;
+    if (installed) return;
+    Class layerClass = (Class)objc_getClass("CAMetalLayer");
+    if (!layerClass) {
+        if (PearMetalDebug()) PearLog(@"[PearRuntime][metal] CAMetalLayer not registered yet");
+        return;
+    }
+    SEL selector = NSSelectorFromString(@"nextDrawable");
+    Method method = class_getInstanceMethod(layerClass, selector);
+    if (!method) {
+        if (PearMetalDebug()) PearLog(@"[PearRuntime][metal] CAMetalLayer has no nextDrawable");
+        return;
+    }
+    installed = YES;
+    if (PearMetalDebug()) PearLog(@"[PearRuntime][metal] nextDrawable fix installed");
+
+    IMP original = method_getImplementation(method);
+    method_setImplementation(method, imp_implementationWithBlock(^id(id self) {
+        CAMetalLayer *layer = (CAMetalLayer *)self;
+        if (layer.device == nil) {
+            id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+            if (device) {
+                layer.device = device;
+                if (PearMetalDebug()) {
+                    PearLog(@"[PearRuntime][metal] assigned device before nextDrawable");
+                }
+            }
+        }
+        return ((id (*)(id, SEL))original)(self, selector);
+    }));
+}
+
 __attribute__((constructor))
 static void PearMetalLayerShimInit(void) {
     if (NSProcessInfo.processInfo.environment[@"PEAR_NO_METAL_FIX"]) return;
+    PearInstallNextDrawableFix();
+    // CAMetalLayer may not be registered yet during dyld initializers, and the
+    // app's main thread can be busy for a long time while it loads content, so
+    // retry from a background queue.
+    for (int i = 1; i <= 400; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.05 * NSEC_PER_SEC)),
+                       dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            @autoreleasepool { PearInstallNextDrawableFix(); }
+        });
+    }
     // The layer and the key window can appear well after the app's first frame,
     // especially when an engine preloads content. Check for a full minute.
     for (int i = 1; i <= 60; i++) {

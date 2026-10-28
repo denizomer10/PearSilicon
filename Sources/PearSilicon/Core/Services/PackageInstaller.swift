@@ -1,5 +1,19 @@
 import Foundation
 
+/// How an app is prepared to run on macOS.
+///
+/// `.compatibility` keeps the small in-process compatibility runtime. It is
+/// needed for APIs that cannot be provided from outside a process (Metal layer
+/// device, keychain storage, cloud stores, legacy C++ symbols).
+///
+/// `.nativeContainer` loads no compatibility code into the app at all. The
+/// sandbox and the data container are supplied by macOS itself, before the app
+/// starts; nothing is added to the executable's load commands.
+ enum PreparationMode: String, Sendable {
+    case compatibility
+    case nativeContainer
+}
+
 /// Installs app package files into the library, prepares them to run on macOS,
 /// scans the library and removes apps.
 ///
@@ -53,7 +67,7 @@ final class PackageInstaller: @unchecked Sendable {
 
     // MARK: - Install
 
-    func install(packageAt url: URL) async throws -> InstalledApp {
+    func install(packageAt url: URL, mode: PreparationMode = .compatibility) async throws -> InstalledApp {
         guard fileManager.fileExists(atPath: url.path) else {
             throw PearError.packageNotFound(url.lastPathComponent)
         }
@@ -113,7 +127,7 @@ final class PackageInstaller: @unchecked Sendable {
         try fileManager.moveItem(at: app, to: destination)
 
         // 4) prepare for macOS and 5) sign
-        try finalizeInstall(at: destination)
+        try finalizeInstall(at: destination, mode: mode)
 
         return try makeInstalledApp(fromBundleAt: destination)
     }
@@ -125,7 +139,7 @@ final class PackageInstaller: @unchecked Sendable {
     ///
     /// Simulator builds are rejected: their binaries target the simulator
     /// runtime and cannot be turned into Mac Catalyst binaries.
-    func installBundle(at sourceURL: URL) async throws -> InstalledApp {
+    func installBundle(at sourceURL: URL, mode: PreparationMode = .compatibility) async throws -> InstalledApp {
         // A bundle install never goes through `unzip`, so clear any result
         // left over from a previous app package install; otherwise the caller would
         // report that app package's damaged files against this bundle.
@@ -149,14 +163,14 @@ final class PackageInstaller: @unchecked Sendable {
         }
         try Shell.run("/usr/bin/ditto", [sourceURL.path, destination.path])
 
-        try finalizeInstall(at: destination)
+        try finalizeInstall(at: destination, mode: mode)
         return try makeInstalledApp(fromBundleAt: destination)
     }
 
     /// Prepares a bundle that is already in the library and signs it.
-    private func finalizeInstall(at destination: URL) throws {
-        try prepareForMacOS(at: destination)
-        try signBundle(at: destination)
+    private func finalizeInstall(at destination: URL, mode: PreparationMode) throws {
+        try prepareForMacOS(at: destination, mode: mode)
+        try signBundle(at: destination, mode: mode)
     }
 
     /// True when the bundle declares itself as an iOS Simulator build.
@@ -183,14 +197,51 @@ final class PackageInstaller: @unchecked Sendable {
     // MARK: - Prepare for macOS
 
     /// Rewrites the bundle so macOS will load it as a Mac Catalyst app.
-    func prepareForMacOS(at bundleURL: URL) throws {
+    func prepareForMacOS(at bundleURL: URL, mode: PreparationMode = .compatibility) throws {
         unpreparedBinaries = []
         try patchInfoPlist(at: bundleURL)
         removeLegacySignatureArtifacts(at: bundleURL)
         _ = try patchMachOBinaries(at: bundleURL)
-        try loadRuntime(at: bundleURL)
+        if mode == .compatibility {
+            try loadRuntime(at: bundleURL)
+        } else {
+            try removeRuntimeArtifacts(at: bundleURL)
+        }
         ensureExecutableBits(at: bundleURL)
         _ = try? Shell.run("/usr/bin/xattr", ["-cr", bundleURL.path])
+    }
+
+    /// The mode an installed app is currently prepared for.
+    func currentPreparationMode(for app: InstalledApp) -> PreparationMode {
+        BinaryPatcher.hasLoadDylib(at: app.executableURL, containing: "libPearRuntime")
+            ? .compatibility : .nativeContainer
+    }
+
+    /// Switches an installed app between the two preparation modes without
+    /// reinstalling it. Used by the per-app toggle so a launch never mixes a
+    /// runtime load command with the native sandbox signature.
+    func setPreparationMode(_ mode: PreparationMode, for app: InstalledApp) throws {
+        guard currentPreparationMode(for: app) != mode else { return }
+        try prepareForMacOS(at: app.bundleURL, mode: mode)
+        try signBundle(at: app.bundleURL, mode: mode)
+    }
+
+    /// Ensures no compatibility library is referenced or shipped. The native
+    /// container adds no load commands to the app's executable.
+    private func removeRuntimeArtifacts(at bundleURL: URL) throws {
+        let frameworks = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
+        for name in ["libPearRuntime.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib"] {
+            let url = frameworks.appendingPathComponent(name)
+            if fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
+            }
+        }
+        if let app = try? makeInstalledApp(fromBundleAt: bundleURL) {
+            _ = try BinaryPatcher.removeLoadDylib(at: app.executableURL,
+                                                  containing: "libPearRuntime")
+            _ = try BinaryPatcher.removeLoadDylib(at: app.executableURL,
+                                                  containing: "libcxxcompat")
+        }
     }
 
     /// `unzip` does not reliably restore the executable bit from an app package, and a
@@ -407,15 +458,21 @@ final class PackageInstaller: @unchecked Sendable {
         )
     }
 
-    /// Adhoc signing with the entitlements the macOS loader needs.
+    /// Adhoc signing for a prepared app.
+    ///
+    /// A shipping app carries no extra entitlements. Real App Store builds have
+    /// neither debug (`get-task-allow`) nor JIT keys, and an app can read them
+    /// back with `csops`, so granting them here would make every install look
+    /// like a debug repack. The debug set is written next to this file for
+    /// explicit, short-lived debugging sessions only.
     ///
     /// Code is signed **inside-out**: every nested code object first, then the
     /// main executable, then the bundle. `codesign --deep` is deliberately NOT
     /// used: on an already-prepared app it can leave the original (now stale) platform
     /// signature on nested frameworks, which makes `dlopen` fail with
     /// "code signature invalid" and the app exit silently at launch.
-    private func signBundle(at bundleURL: URL) throws {
-        let entitlements = try ensureEntitlementsPath()
+    private func signBundle(at bundleURL: URL, mode: PreparationMode) throws {
+        let entitlements = try ensureEntitlementsPath(for: bundleURL, mode: mode)
 
         // 1) nested code objects (frameworks, plugins, dylibs)
         for object in codeObjects(in: bundleURL) {
@@ -462,28 +519,53 @@ final class PackageInstaller: @unchecked Sendable {
         return result
     }
 
-    private func ensureEntitlementsPath() throws -> String {
+    /// Shipping entitlements (empty), the native container's App Sandbox set,
+    /// and the optional debug set.
+    ///
+    /// The native container's isolation is applied by macOS from these
+    /// entitlements at exec time. No library is loaded into the app.
+    private func ensureEntitlementsPath(for bundleURL: URL, mode: PreparationMode) throws -> String {
+        try fileManager.createDirectory(at: workRoot, withIntermediateDirectories: true)
+
         let entitlements = workRoot.appendingPathComponent("entitlements.plist")
-        if !fileManager.fileExists(atPath: entitlements.path) {
-            try fileManager.createDirectory(at: workRoot, withIntermediateDirectories: true)
-            let plist = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0">
-            <dict>
-                <key>com.apple.security.get-task-allow</key>
-                <true/>
-                <key>com.apple.security.cs.allow-jit</key>
-                <true/>
-                <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-                <true/>
-                <key>com.apple.security.cs.disable-library-validation</key>
-                <true/>
-            </dict>
-            </plist>
-            """
-            try plist.write(to: entitlements, atomically: true, encoding: .utf8)
-        }
-        return entitlements.path
+        let nativeEntitlements = workRoot.appendingPathComponent("native-entitlements.plist")
+        let debugEntitlements = workRoot.appendingPathComponent("debug-entitlements.plist")
+
+        let shipping = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict/>
+        </plist>
+        """
+        try shipping.write(to: entitlements, atomically: true, encoding: .utf8)
+
+        let native = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict/>
+        </plist>
+        """
+        try native.write(to: nativeEntitlements, atomically: true, encoding: .utf8)
+
+        let debug = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>com.apple.security.get-task-allow</key>
+            <true/>
+            <key>com.apple.security.cs.allow-jit</key>
+            <true/>
+            <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+            <true/>
+            <key>com.apple.security.cs.disable-library-validation</key>
+            <true/>
+        </dict>
+        </plist>
+        """
+        try debug.write(to: debugEntitlements, atomically: true, encoding: .utf8)
+        return (mode == .nativeContainer ? nativeEntitlements : entitlements).path
     }
 }

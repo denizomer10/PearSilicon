@@ -27,7 +27,7 @@ A clear and concise description of what you expected to happen.
 **Environment Info:**
  - Mac Model: [e.g., arm64 Mac]
  - macOS Version: [e.g., 26.6.2]
- - PearSilicon Version: [e.g., v0.1.6]
+ - PearSilicon Version: [e.g., v0.1.7]
 
 **Additional context**
 Add any other context about the problem here (e.g., did you try enabling the Keymapper, Metal HUD, etc.?)

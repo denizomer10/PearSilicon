@@ -174,11 +174,12 @@ enum CLI {
         let installer = PackageInstaller(libraryURL: CLIPaths.shared.library)
         let extensionName = url.pathExtension.lowercased()
 
+        let mode: PreparationMode = .compatibility
         let app: InstalledApp
         if isDirectory.boolValue && extensionName == "app" {
-            app = try awaitBridge { try await installer.installBundle(at: url) }
+            app = try awaitBridge { try await installer.installBundle(at: url, mode: mode) }
         } else if !isDirectory.boolValue {
-            app = try awaitBridge { try await installer.install(packageAt: url) }
+            app = try awaitBridge { try await installer.install(packageAt: url, mode: mode) }
         } else {
             throw CLIError.message("expected a package file or an .app bundle, got \(url.lastPathComponent)")
         }
@@ -192,6 +193,7 @@ enum CLI {
         notifyLibraryChanged()
         print("installed \(app.displayName) [\(app.id)]")
         print("  bundle: \(app.bundleURL.path)")
+        print("  mode: \(mode.rawValue)")
         if !installer.corruptedFiles.isEmpty {
             print("  warning: \(installer.corruptedFiles.count) file(s) failed their CRC check and may be damaged:")
             for file in installer.corruptedFiles.prefix(5) {
@@ -271,6 +273,8 @@ enum CLI {
             environment["PEAR_ALLOW_POINTER_LOCK"] = "1"
         }
 
+        let nativeContainer = false
+
         let strictContainer: Bool
         if arguments.flags.contains("container") {
             strictContainer = true
@@ -284,10 +288,16 @@ enum CLI {
         }
         let launchEnvironment = environment
 
+        // A previously prepared native app must be switched back so the
+        // runtime is present before a normal launch.
+        let installer = PackageInstaller(libraryURL: paths.library)
+        try? installer.setPreparationMode(.compatibility, for: app)
+
         let launcher = AppLauncher(libraryURL: paths.library)
         let pid: pid_t = try awaitBridge {
             let running = try await launcher.launch(
-                app, keymapURL: keymapURL, extraEnvironment: launchEnvironment
+                app, keymapURL: keymapURL, extraEnvironment: launchEnvironment,
+                nativeContainer: nativeContainer
             )
             return running?.processIdentifier ?? 0
         }
@@ -300,6 +310,7 @@ enum CLI {
         print("  keymap: \(keymapState(enabled: enabled, hasFile: hasKeymap, url: keymapURL))")
         print("  metal HUD: \(hudEnabled ? "on" : "off")")
         print("  pointer lock: \(pointerLock ? "allowed" : "disabled")")
+        print("  mode: compatibility runtime")
         print("  container: \(strictContainer ? "iOS-like" : "host") ")
         if let logPath { print("  log:    \(logPath)") }
 
@@ -907,7 +918,7 @@ enum CLI {
     // MARK: Help
 
     private static func printVersion() {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.6"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.7"
         print("pearsilicon \(version)")
     }
 

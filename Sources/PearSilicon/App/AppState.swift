@@ -324,8 +324,14 @@ final class AppState: ObservableObject {
         if isStrictContainerEnabled(for: app) {
             extra["PEAR_IOS_SANDBOX"] = "1"
         }
+
+        let nativeContainer = false
         do {
-            let running = try await launcher.launch(app, keymapURL: keymapURL, extraEnvironment: extra)
+            try? packageInstaller.setPreparationMode(.compatibility, for: app)
+            let running = try await launcher.launch(
+                app, keymapURL: keymapURL, extraEnvironment: extra,
+                nativeContainer: nativeContainer
+            )
             statusMessage = L10n.launching(app.displayName)
 
             // Own the keymapper UI from here: a small overlay button + editor over

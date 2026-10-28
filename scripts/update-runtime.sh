@@ -13,13 +13,23 @@ LIBRARY="$HOME/Library/Application Support/PearSilicon/Applications"
 RUNTIME="$ROOT/build/libPearRuntime.dylib"
 SWIFT_OVERLAY="$ROOT/build/libswiftUIKit.dylib"
 CXX_COMPAT="$ROOT/build/libcxxcompat.dylib"
-ENT="$HOME/Library/Application Support/PearSilicon/Work/entitlements.plist"
+ENT_DIR="$HOME/Library/Application Support/PearSilicon/Work"
+# Shipping installs carry no extra entitlements. Set PEAR_DEBUG_SIGNING=1 for a
+# short debugging session (get-task-allow and JIT keys) when LLDB is needed.
+if [[ "${PEAR_DEBUG_SIGNING:-0}" == "1" ]]; then
+  ENT="$ENT_DIR/debug-entitlements.plist"
+else
+  ENT="$ENT_DIR/entitlements.plist"
+fi
 
 [[ -f "$RUNTIME" ]] || { echo "runtime not built: $RUNTIME"; exit 1; }
-[[ -f "$ENT" ]] || { echo "entitlements not found: $ENT"; exit 1; }
 
 sign() {
-  codesign --force --sign - --entitlements "$ENT" "$1" >/dev/null 2>&1
+  if [[ -f "$ENT" ]]; then
+    codesign --force --sign - --entitlements "$ENT" "$1" >/dev/null 2>&1
+  else
+    codesign --force --sign - "$1" >/dev/null 2>&1
+  fi
 }
 
 ok=0

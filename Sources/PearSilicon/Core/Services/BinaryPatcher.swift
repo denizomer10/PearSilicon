@@ -466,6 +466,89 @@ enum BinaryPatcher {
         return true
     }
 
+    /// True when the executable already references a dylib whose install name
+    /// contains `token`.
+    static func hasLoadDylib(at url: URL, containing token: String) -> Bool {
+        guard let data = try? Data(contentsOf: url) else { return false }
+        for base in machO64Offsets(data) {
+            let ncmds = Int(readU32(data, base + 16))
+            var offset = base + MachO.headerSize
+            for _ in 0..<ncmds {
+                guard offset + 8 <= data.count else { break }
+                let cmd = readU32(data, offset)
+                let cmdsize = Int(readU32(data, offset + 4))
+                guard cmdsize >= 8, offset + cmdsize <= data.count else { break }
+                if (cmd == LoadCommand.loadDylib || cmd == LoadCommand.loadWeakDylib)
+                    && cmdsize >= 24 {
+                    let nameOffset = Int(readU32(data, offset + 8))
+                    guard nameOffset >= 12, nameOffset < cmdsize else {
+                        offset += cmdsize; continue
+                    }
+                    let nameStart = offset + nameOffset
+                    let nameEnd = min(offset + cmdsize, data.count)
+                    let name = String(decoding: data[nameStart..<nameEnd], as: UTF8.self)
+                        .split(separator: "\0", maxSplits: 1).first.map(String.init) ?? ""
+                    if name.contains(token) { return true }
+                }
+                offset += cmdsize
+            }
+        }
+        return false
+    }
+
+    /// Removes every `LC_LOAD_DYLIB` whose install name contains `token`.
+    ///
+    /// Used when preparing an app for the native container: the executable must
+    /// not reference a compatibility library at all. Commands are removed from
+    /// the end of the list so earlier offsets stay valid.
+    @discardableResult
+    static func removeLoadDylib(at url: URL, containing token: String) throws -> Bool {
+        let fileManager = FileManager.default
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+        let permissions = attributes?[.posixPermissions] as? NSNumber
+
+        var data = try Data(contentsOf: url)
+        var changed = false
+
+        for base in machO64Offsets(data) {
+            var matches: [(offset: Int, size: Int)] = []
+            let ncmds = Int(readU32(data, base + 16))
+            var offset = base + MachO.headerSize
+            for _ in 0..<ncmds {
+                guard offset + 8 <= data.count else { break }
+                let cmd = readU32(data, offset)
+                let cmdsize = Int(readU32(data, offset + 4))
+                guard cmdsize >= 8, offset + cmdsize <= data.count else { break }
+                if (cmd == LoadCommand.loadDylib || cmd == LoadCommand.loadWeakDylib)
+                    && cmdsize >= 24 {
+                    let nameOffset = Int(readU32(data, offset + 8))
+                    guard nameOffset >= 12, nameOffset < cmdsize else {
+                        offset += cmdsize; continue
+                    }
+                    let nameStart = offset + nameOffset
+                    let nameEnd = min(offset + cmdsize, data.count)
+                    let name = String(decoding: data[nameStart..<nameEnd], as: UTF8.self)
+                        .split(separator: "\0", maxSplits: 1).first.map(String.init) ?? ""
+                    if name.contains(token) {
+                        matches.append((offset, cmdsize))
+                    }
+                }
+                offset += cmdsize
+            }
+            for match in matches.reversed() {
+                removeLoadCommand(&data, base: base, at: match.offset, size: match.size)
+                changed = true
+            }
+        }
+
+        guard changed else { return false }
+        try data.write(to: url)
+        if let permissions {
+            try? fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
+        }
+        return true
+    }
+
     private static func addLoadDylib(_ data: inout Data, base: Int, path dylibPath: String) -> Bool {
         let ncmds = Int(readU32(data, base + 16))
         if containsLoadDylib(data, base: base, ncmds: ncmds, path: dylibPath) { return false }

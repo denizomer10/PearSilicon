@@ -42,7 +42,7 @@ final class AppLauncher: @unchecked Sendable {
 
     // MARK: - Public API
 
-    func launch(_ app: InstalledApp, keymapURL: URL?, extraEnvironment: [String: String] = [:], method: LaunchMethod = .launchServices) async throws -> NSRunningApplication? {
+    func launch(_ app: InstalledApp, keymapURL: URL?, extraEnvironment: [String: String] = [:], method: LaunchMethod = .launchServices, nativeContainer: Bool = false) async throws -> NSRunningApplication? {
         guard fileManager.fileExists(atPath: app.executableURL.path) else {
             throw PearError.missingExecutable(app.executableName)
         }
@@ -54,7 +54,16 @@ final class AppLauncher: @unchecked Sendable {
             supportRoot: libraryURL.deletingLastPathComponent()
         )
 
-        let env = buildEnvironment(app: app, keymapURL: keymapURL, extra: extraEnvironment)
+        if nativeContainer {
+            AppPaths.migrateToNativeContainerIfNeeded(for: app.id)
+        }
+
+        let env = buildEnvironment(app: app, keymapURL: keymapURL, extra: extraEnvironment,
+                                   nativeContainer: nativeContainer)
+
+        if nativeContainer {
+            return try spawnSandboxed(app, env: env)
+        }
 
         switch method {
         case .direct:
@@ -67,7 +76,7 @@ final class AppLauncher: @unchecked Sendable {
 
     // MARK: - Environment
 
-    private func buildEnvironment(app: InstalledApp, keymapURL: URL?, extra: [String: String]) -> [String: String] {
+    private func buildEnvironment(app: InstalledApp, keymapURL: URL?, extra: [String: String], nativeContainer: Bool) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
 
         // Route iOS framework lookups to the system iOS-on-Mac runtime.
@@ -78,11 +87,40 @@ final class AppLauncher: @unchecked Sendable {
         env["DYLD_LIBRARY_PATH"] = libraries
         env["DYLD_FALLBACK_LIBRARY_PATH"] = libraries
 
+        if nativeContainer {
+            // The App Sandbox already makes the container the app's home. These
+            // values also cover Foundation paths that consult the environment
+            // directly, and keep temporary files inside the same view.
+            let data = AppPaths.nativeContainerData(for: app.id)
+            try? fileManager.createDirectory(at: data, withIntermediateDirectories: true)
+            let temporary = data.appendingPathComponent("tmp", isDirectory: true)
+            try? fileManager.createDirectory(at: temporary, withIntermediateDirectories: true)
+            env["CFFIXED_USER_HOME"] = data.path
+            env["HOME"] = data.path
+            env["TMPDIR"] = temporary.path
+            for (key, value) in extra { env[key] = value }
+            return env
+        }
+
         // Where the runtime keeps this app's keychain-backed data.
         let support = libraryURL.deletingLastPathComponent()
         env["PEAR_KEYCHAIN_DIR"] = support
             .appendingPathComponent("Keychain", isDirectory: true)
             .appendingPathComponent(app.id, isDirectory: true).path
+
+        // A previous native-container run may have moved the app's data into
+        // the macOS container. Point the path shim there when the old location
+        // no longer has the data, so a compatibility launch does not start a
+        // fresh download.
+        let containerData = AppPaths.nativeContainerData(for: app.id)
+        let oldDocuments = AppPaths.gamesRoot
+            .appendingPathComponent(app.id, isDirectory: true)
+            .appendingPathComponent("Documents", isDirectory: true)
+        let containerDocuments = containerData.appendingPathComponent("Documents", isDirectory: true)
+        if fileManager.fileExists(atPath: containerDocuments.path),
+           !fileManager.fileExists(atPath: oldDocuments.path) {
+            env["PEAR_HOME_DIR"] = containerData.path
+        }
 
         // The runtime is loaded via an `LC_LOAD_DYLIB` entry, not via the
         // older environment-variable loading path (which is refused for these
@@ -92,6 +130,63 @@ final class AppLauncher: @unchecked Sendable {
         }
         for (key, value) in extra { env[key] = value }
         return env
+    }
+
+    // MARK: - Native sandbox
+
+    /// Starts the app through `sandbox-exec`, which applies the profile in the
+    /// kernel before the executable runs. No compatibility library is loaded
+    /// and the game bundle is untouched apart from the platform patch.
+    private func spawnSandboxed(_ app: InstalledApp, env: [String: String]) throws -> NSRunningApplication? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+        process.arguments = ["-p", Self.nativeIsolationProfile(), app.executableURL.path]
+        process.currentDirectoryURL = app.bundleURL
+        process.environment = env
+
+        try? fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        let logURL = logDirectory.appendingPathComponent("\(app.id).native.log")
+        fileManager.createFile(atPath: logURL.path, contents: nil)
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            process.standardOutput = handle
+            process.standardError = handle
+        } else {
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        }
+
+        try process.run()
+        let pid = process.processIdentifier
+        // A directly spawned process is not made frontmost by LaunchServices.
+        // Activate it once it has a connection to the window server.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows])
+        }
+        return NSRunningApplication(processIdentifier: pid)
+    }
+
+    /// Hides host-only paths and prevents writes outside the app's container.
+    /// The app still reaches its own container through the normal home path.
+    private static func nativeIsolationProfile() -> String {
+        let readDenied = [
+            "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/libexec",
+            "/Applications", "/Library/MobileSubstrate", "/var/jb",
+            "/private/var/jb", "/private/var/lib/apt", "/private/var/lib/cydia",
+            "/private/var/stash", "/private/var/tmp/cydia.log",
+            "/private/var/mobile/Library/SBSettings",
+        ]
+        let writeDenied = [
+            "/Applications", "/Library", "/System", "/usr", "/bin", "/sbin",
+            "/private/etc", "/private/var/jb",
+        ]
+        var rules = "(version 1)(allow default)"
+        for path in readDenied {
+            rules += "(deny file-read* (subpath \"\(path)\"))"
+        }
+        for path in writeDenied {
+            rules += "(deny file-write* (subpath \"\(path)\"))"
+        }
+        return rules
     }
 
     // MARK: - Direct spawn
