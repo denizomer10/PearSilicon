@@ -911,7 +911,7 @@ enum CLI {
     // MARK: Help
 
     private static func printVersion() {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.9"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
         print("pearsilicon \(version)")
     }
 
