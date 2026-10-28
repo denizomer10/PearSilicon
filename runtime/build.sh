@@ -135,7 +135,8 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/TrackingShim.mm" \
   "$ROOT/runtime/SandboxShim.mm" \
   "$ROOT/runtime/GLShim.mm" \
-  "$ROOT/runtime/WebInputShim.mm"
+  "$ROOT/runtime/WebInputShim.mm" \
+  "$ROOT/runtime/FoundationShim.mm"
 
 echo ">> Done: $OUT"
 file "$OUT"
