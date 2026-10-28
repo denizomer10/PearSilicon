@@ -40,6 +40,8 @@ static int gLastCropViewport[4] = { -1, -1, -1, -1 };
 static int gLastPresentViewport[4] = { -1, -1, -1, -1 };
 static BOOL gCropApplied = NO;
 
+static void PearFitDrawable(CALayer *layer);
+
 /// Shows only the region the engine actually rendered, stretched to the
 /// drawable. Legacy titles keep a design-resolution viewport in the corner of
 /// a window-sized framebuffer; cropping to that viewport makes the visible
@@ -49,6 +51,11 @@ static void PearUpdateDrawableCrop(void) {
     if (getenv("PEAR_NO_GL_VIEWPORT_FIT")) return;
     CALayer *layer = gDrawableLayer;
     if (!layer) return;
+
+    // The window can be resized (or rotated) after the renderbuffer was
+    // created. Re-fit on every present so the visible scale follows the window;
+    // a stale scale makes taps land away from the controls.
+    PearFitDrawable(layer);
 
     typedef void (*PearGetIntegervFn)(int pname, int *params);
     static PearGetIntegervFn getIntegerv;
@@ -153,11 +160,20 @@ static UIWindow *PearGLKeyWindow(void) {
     return first;
 }
 
+static CGSize gLastFitWindowSize = { 0, 0 };
+static CGSize gLastFitLayerSize = { 0, 0 };
+static CGFloat gLastFitScale = 0;
+static BOOL gFitApplied = NO;
+
 /// If the drawable is larger than the key window, scale the layer visually
 /// while leaving its bounds and renderbuffer size untouched. Input continues to
 /// arrive in window points, which is the space this class of legacy renderer
 /// uses for its hit-testing; transforming the view instead made the game receive
 /// 2560-space taps and miss every control.
+///
+/// This is called on every present, and the window can be resized at any time,
+/// so the scale is recomputed from the *current* window bounds and applied on
+/// the main queue.
 static void PearFitDrawable(CALayer *layer) {
     if (!layer || getenv("PEAR_NO_GL_FIT")) return;
     UIWindow *window = PearGLKeyWindow();
@@ -167,20 +183,50 @@ static void PearFitDrawable(CALayer *layer) {
     CGRect layerBounds = layer.bounds;
     if (windowBounds.size.width < 1 || windowBounds.size.height < 1) return;
     if (layerBounds.size.width < 1 || layerBounds.size.height < 1) return;
-    if (layerBounds.size.width <= windowBounds.size.width * 1.02 &&
-        layerBounds.size.height <= windowBounds.size.height * 1.02) {
+
+    BOOL fits = layerBounds.size.width <= windowBounds.size.width * 1.02 &&
+                layerBounds.size.height <= windowBounds.size.height * 1.02;
+    if (fits) {
+        if (!gFitApplied) return;
+        gFitApplied = NO;
+        gLastFitScale = 0;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CALayer *current = gDrawableLayer;
+            if (!current) return;
+            current.transform = CATransform3DIdentity;
+            if (current.superlayer) {
+                current.position = CGPointMake(CGRectGetMidX(current.superlayer.bounds),
+                                               CGRectGetMidY(current.superlayer.bounds));
+            }
+        });
         return;
     }
 
     CGFloat scale = MIN(windowBounds.size.width / layerBounds.size.width,
                         windowBounds.size.height / layerBounds.size.height);
-    layer.transform = CATransform3DMakeScale(scale, scale, 1);
-    if (layer.superlayer) {
-        layer.position = CGPointMake(CGRectGetMidX(layer.superlayer.bounds),
-                                     CGRectGetMidY(layer.superlayer.bounds));
-        layer.superlayer.backgroundColor = UIColor.blackColor.CGColor;
+    if (gFitApplied &&
+        CGSizeEqualToSize(gLastFitWindowSize, windowBounds.size) &&
+        CGSizeEqualToSize(gLastFitLayerSize, layerBounds.size) &&
+        fabs(gLastFitScale - scale) < 0.001) {
+        return;
     }
-    window.backgroundColor = UIColor.blackColor;
+
+    gFitApplied = YES;
+    gLastFitWindowSize = windowBounds.size;
+    gLastFitLayerSize = layerBounds.size;
+    gLastFitScale = scale;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CALayer *current = gDrawableLayer;
+        if (!current) return;
+        current.transform = CATransform3DMakeScale(scale, scale, 1);
+        if (current.superlayer) {
+            current.position = CGPointMake(CGRectGetMidX(current.superlayer.bounds),
+                                           CGRectGetMidY(current.superlayer.bounds));
+            current.superlayer.backgroundColor = UIColor.blackColor.CGColor;
+        }
+        window.backgroundColor = UIColor.blackColor;
+    });
 
     if (PearGLDebug()) {
         PearLog(@"[PearRuntime][gl] scaled drawable %@ by %.3f into window %@",

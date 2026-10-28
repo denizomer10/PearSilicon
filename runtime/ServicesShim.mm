@@ -47,6 +47,25 @@ static void PearReplaceInstance(Class cls, SEL selector, id block) {
     if (method) method_setImplementation(method, imp_implementationWithBlock(block));
 }
 
+#pragma mark - Video subscriber account
+
+/// VideoSubscriberAccount is an iOS-only service. Crunchyroll registers the
+/// user's TV provider subscription while starting a download; the framework
+/// raises an exception on macOS because the process has no TV-provider
+/// entitlement. There is no host subscription to report, so accept the
+/// registration and report "no subscription" instead.
+static void PearInstallVideoSubscriberSurface(void) {
+    Class center = NSClassFromString(@"VSSubscriptionRegistrationCenter");
+    if (!center) return;
+
+    PearReplaceInstance(center, @selector(setCurrentSubscription:),
+        ^(id self, id subscription) {});
+    PearReplaceInstance(center, @selector(currentSubscription),
+        ^id(id self) { return nil; });
+
+    PearLog(@"[PearRuntime][services] video subscriber registration is local");
+}
+
 static void PearReplaceClass(Class cls, SEL selector, id block) {
     if (!cls || !selector) return;
     Method method = class_getClassMethod(cls, selector);
@@ -878,6 +897,7 @@ static void PearServicesShimInit(void) {
         PearInstallAudioSession();
         PearObserveAudioInterruptions();
         PearInstallAlertLogging();
+        PearInstallVideoSubscriberSurface();
         PearInstallHaptics();
         PearInstallStoreSurface();
         PearInstallRemoteNotifications();
@@ -894,6 +914,7 @@ static void PearServicesShimInit(void) {
                 PearInstallAudioSession();
                 PearObserveAudioInterruptions();
                 PearInstallAlertLogging();
+                PearInstallVideoSubscriberSurface();
                 PearInstallHaptics();
                 PearInstallStoreSurface();
                 PearInstallRemoteNotifications();
