@@ -51,7 +51,7 @@ final class AppLauncher: @unchecked Sendable {
 
     // MARK: - Public API
 
-    func launch(_ app: InstalledApp, keymapURL: URL?, extraEnvironment: [String: String] = [:], method: LaunchMethod = .launchServices, nativeContainer: Bool = false) async throws -> NSRunningApplication? {
+    func launch(_ app: InstalledApp, keymapURL: URL?, extraEnvironment: [String: String] = [:], method: LaunchMethod = .launchServices, nativeContainer: Bool = false, sandboxed: Bool = false) async throws -> NSRunningApplication? {
         guard fileManager.fileExists(atPath: app.executableURL.path) else {
             throw PearError.missingExecutable(app.executableName)
         }
@@ -71,6 +71,15 @@ final class AppLauncher: @unchecked Sendable {
                                    nativeContainer: nativeContainer)
 
         if nativeContainer {
+            return try spawnSandboxed(app, env: env)
+        }
+
+        // Experimental: keep the compatibility environment but apply the
+        // kernel sandbox profile as well. Note: under sandbox-exec dyld ignores
+        // DYLD_INSERT_LIBRARIES for these processes, so this path only loads a
+        // runtime that is referenced by an LC_LOAD_DYLIB. It exists to measure
+        // the sandbox/injection trade-off, not as a default.
+        if sandboxed {
             return try spawnSandboxed(app, env: env)
         }
 

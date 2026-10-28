@@ -300,7 +300,8 @@ enum CLI {
         let pid: pid_t = try awaitBridge {
             let running = try await launcher.launch(
                 app, keymapURL: keymapURL, extraEnvironment: launchEnvironment,
-                nativeContainer: nativeContainer
+                nativeContainer: nativeContainer,
+                sandboxed: arguments.flags.contains("sandboxed")
             )
             return running?.processIdentifier ?? 0
         }
