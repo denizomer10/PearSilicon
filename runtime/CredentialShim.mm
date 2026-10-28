@@ -57,8 +57,18 @@ static BOOL PearIdentityIsUsable(SecIdentityRef identity) {
     if (!identity) return NO;
     SecCertificateRef certificate = NULL;
     OSStatus status = SecIdentityCopyCertificate(identity, &certificate);
+    BOOL hasCertificate = status == errSecSuccess && certificate != NULL;
     if (certificate) CFRelease(certificate);
-    return status == errSecSuccess && certificate != NULL;
+    if (!hasCertificate) return NO;
+
+    // A client-certificate credential also needs its private key. An identity
+    // copied from a server trust or a keychain entry without a key reaches
+    // CFNetwork and crashes while it compares the (missing) certificate chain.
+    SecKeyRef key = NULL;
+    OSStatus keyStatus = SecIdentityCopyPrivateKey(identity, &key);
+    BOOL hasKey = keyStatus == errSecSuccess && key != NULL;
+    if (key) CFRelease(key);
+    return hasKey;
 }
 
 static NSURLCredential *PearCredentialWithIdentity(id self, SEL _cmd,
