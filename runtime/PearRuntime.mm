@@ -717,25 +717,32 @@ static void WatchKeymap(NSString *path) {
     // verified without a real mouse/keyboard.
     if (NSProcessInfo.processInfo.environment[@"PEAR_TEST_TAP_AT"]) {
         NSString *spec = NSProcessInfo.processInfo.environment[@"PEAR_TEST_TAP_AT"];
-        NSArray<NSString *> *parts = [spec componentsSeparatedByString:@","];
-        if (parts.count >= 2) {
+        // Several taps can be chained with `;` so a coordinate sweep can be
+        // checked without a second launch or a screenshot tool.
+        NSArray<NSString *> *taps = [spec componentsSeparatedByString:@";"];
+        [taps enumerateObjectsUsingBlock:^(NSString *tap, NSUInteger index, BOOL *stop) {
+            NSArray<NSString *> *parts = [tap componentsSeparatedByString:@","];
+            if (parts.count < 2) return;
             CGFloat nx = parts[0].doubleValue;
             CGFloat ny = parts[1].doubleValue;
             double delay = parts.count >= 3 ? parts[2].doubleValue : 8.0;
+            NSString *key = [NSString stringWithFormat:@"pear-test-at-%lu", (unsigned long)index];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
-                PearLog(@"[PearRuntime][touch] TEST tap at (%.3f,%.3f) after %.1fs", nx, ny, delay);
+                PearLog(@"[PearRuntime][touch] TEST tap %lu at (%.3f,%.3f) after %.1fs state=%ld",
+                        (unsigned long)index, nx, ny, delay,
+                        (long)UIApplication.sharedApplication.applicationState);
                 if (getenv("PEAR_TOUCH_CGEVENT")) {
                     PearSynthesizeTapCGEvent(nx, ny);
                 } else {
-                    PearSynthesizeVirtualFinger(YES, @"pear-test-at", nx, ny);
+                    PearSynthesizeVirtualFinger(YES, key, nx, ny);
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
                                    dispatch_get_main_queue(), ^{
-                        PearSynthesizeVirtualFinger(NO, @"pear-test-at", nx, ny);
+                        PearSynthesizeVirtualFinger(NO, key, nx, ny);
                     });
                 }
             });
-        }
+        }];
     }
     if (NSProcessInfo.processInfo.environment[@"PEAR_TEST_LOOK"]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)),
