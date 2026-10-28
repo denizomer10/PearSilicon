@@ -15,9 +15,9 @@
 // The app treats that as fatal, stops loading and leaves a black window.
 //
 // This shim makes the request succeed and points `bundle` at the local
-// Addressables directory, so the app gets past the preload. Note that it can
+// Addressables directory, so the app gets past the preload. A package that
 // was stripped of its ODR asset packs still cannot load those bundles, and the
-// log below says so.
+// log below names the files that are missing.
 //
 // Disable with PEAR_NO_ODR_SHIM=1.
 #import <Foundation/Foundation.h>
@@ -57,16 +57,36 @@ static NSBundle *PearODRLocalBundle(void) {
     return gODRLocalBundle;
 }
 
+/// The local file that stands in for a tag, or nil when the package does not
+/// carry it. Addressables writes one file per tag as
+/// `<tag>_assets_all.bundle`; other layouts use `<tag>.bundle` or a directory
+/// named after the tag.
+static NSString *PearODRLocalPathForTag(NSString *tag) {
+    NSString *root = PearODRLocalBundle().bundlePath;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray<NSString *> *names = @[
+        [tag stringByAppendingString:@"_assets_all.bundle"],
+        [tag stringByAppendingPathExtension:@"bundle"],
+        tag,
+    ];
+    for (NSString *name in names) {
+        NSString *path = [root stringByAppendingPathComponent:name];
+        if ([fm fileExistsAtPath:path]) return path;
+    }
+    return nil;
+}
+
 /// Warns once when the app declares ODR tags but the app package carries no bundles
-/// for them.
-/// delivers ODR packs separately, so they are not in the package.
+/// for them. iOS delivers ODR packs separately, so a package that was prepared
+/// for sideloading often does not include them.
 static void PearODRCheckForMissingContent(void) {
     if (gODRReportedMissingContent) return;
     gODRReportedMissingContent = YES;
 
     NSString *app = NSBundle.mainBundle.bundlePath;
     NSString *manifest = [app stringByAppendingPathComponent:@"OnDemandResources.plist"];
-    if (![NSFileManager.defaultManager fileExistsAtPath:manifest]) return;
+    NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:manifest];
+    if (![plist isKindOfClass:[NSDictionary class]]) return;
 
     NSString *root = PearODRLocalBundle().bundlePath;
     NSArray<NSString *> *entries = [NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil];
@@ -78,9 +98,29 @@ static void PearODRCheckForMissingContent(void) {
         PearLog(@"[PearRuntime][odr] WARNING: this app uses On-Demand Resources but the app package "
                 "contains no asset bundles. The game will stop loading (black window). "
                 "Use an app package that includes the ODR asset packs.");
-    } else {
-        PearLog(@"[PearRuntime][odr] %lu local bundle(s) available for ODR requests", (unsigned long)bundles);
+        return;
     }
+
+    NSDictionary *tags = plist[@"NSBundleResourceRequestTags"];
+    NSMutableArray<NSString *> *missing = [NSMutableArray array];
+    for (NSString *tag in tags) {
+        if ([tag isKindOfClass:[NSString class]] && !PearODRLocalPathForTag(tag)) {
+            [missing addObject:tag];
+        }
+    }
+    if (missing.count == 0) {
+        PearLog(@"[PearRuntime][odr] %lu local bundle(s) available for ODR requests",
+                (unsigned long)bundles);
+        return;
+    }
+
+    NSUInteger shown = MIN((NSUInteger)8, missing.count);
+    NSString *names = [[missing subarrayWithRange:NSMakeRange(0, shown)] componentsJoinedByString:@", "];
+    PearLog(@"[PearRuntime][odr] WARNING: %lu of %lu ODR tag(s) have no local asset bundle: %@%@. "
+            "Expected %@_assets_all.bundle under %@. Loading will stop at the first missing bundle; "
+            "the app package must include its On-Demand Resources.",
+            (unsigned long)missing.count, (unsigned long)tags.count, names,
+            missing.count > shown ? @", ..." : @"", missing.firstObject, root);
 }
 
 static NSProgress *PearODRProgress(void) {
@@ -104,23 +144,16 @@ static NSArray<NSString *> *PearODRAssetPacksForTag(NSString *tag) {
     return [packs isKindOfClass:[NSArray class]] ? packs : @[];
 }
 
-/// The ODR asset pack for a tag is not in the app package when the tag has no file
-/// with that name (or `<tag>.bundle`) in the local resource root.
+/// The ODR asset pack for a tag is not in the app package when none of the
+/// candidate file names exists in the local resource root.
 static void PearODRReportMissingTag(NSString *tag) {
+    if (PearODRLocalPathForTag(tag)) return;
     NSString *root = PearODRLocalBundle().bundlePath;
-    NSFileManager *fm = NSFileManager.defaultManager;
-    NSArray<NSString *> *candidates = @[
-        [root stringByAppendingPathComponent:tag],
-        [root stringByAppendingPathComponent:[tag stringByAppendingPathExtension:@"bundle"]],
-    ];
-    for (NSString *path in candidates) {
-        if ([fm fileExistsAtPath:path]) return;
-    }
     NSArray<NSString *> *packs = PearODRAssetPacksForTag(tag);
     NSString *packList = packs.count ? [packs componentsJoinedByString:@", "] : @"none listed";
-    PearLog(@"[PearRuntime][odr] WARNING: tag '%@' has no local bundle in %@ "
-            "(the app package is missing its On-Demand Resources; asset pack(s): %@)",
-            tag, root, packList);
+    PearLog(@"[PearRuntime][odr] WARNING: tag '%@' has no local bundle; expected %@_assets_all.bundle "
+            "in %@ (the app package is missing its On-Demand Resources; asset pack(s): %@)",
+            tag, tag, root, packList);
 }
 
 static void PearODRBegin(id self, SEL _cmd, void (^handler)(NSError *)) {
