@@ -63,6 +63,11 @@ cat > "$ROOT/runtime/compile_commands.json" <<JSON
   },
   {
     "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/PlatformShim.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c PlatformShim.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
     "file": "$ROOT/runtime/ConsentShim.mm",
     "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c ConsentShim.mm"
   },
@@ -123,6 +128,7 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/BeepShim.mm" \
   "$ROOT/runtime/ODRShim.mm" \
   "$ROOT/runtime/ServicesShim.mm" \
+  "$ROOT/runtime/PlatformShim.mm" \
   "$ROOT/runtime/ConsentShim.mm" \
   "$ROOT/runtime/NetworkShim.mm" \
   "$ROOT/runtime/TrackingShim.mm" \
