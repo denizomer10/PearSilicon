@@ -51,7 +51,16 @@ enum BinaryPatcher {
         static let legacyGuard32: UInt32 = 0x21
         static let legacyGuard64: UInt32 = 0x2C
         static let buildVersion: UInt32 = 0x32
+        static let chainedFixups: UInt32 = 0x8000_0034
     }
+
+    /// ObjC classes iOS provides but macOS does not. A strong import of an
+    /// absent class aborts the process in dyld ("Symbol not found") before any
+    /// app code runs. Marking the import weak turns the missing class into
+    /// `nil`, which is the same state as an unavailable optional class.
+    private static let unavailableSystemSymbols: Set<String> = [
+        "_OBJC_CLASS_$_PHAssetCurationUtilities"
+    ]
 
     // MARK: - Detection
 
@@ -225,6 +234,168 @@ enum BinaryPatcher {
         return changed
     }
 
+    /// Repairs a chained-fixups table whose `seg_count` is larger than the
+    /// image's segment count. Some store packages were rewritten by tooling
+    /// that removed a segment but left the starts table untouched; dyld then
+    /// rejects the image with "seg_count exceeds number of segments" even
+    /// though the remaining entries are valid. Only trailing empty entries are
+    /// dropped, so no fixup data is lost.
+    ///
+    /// - Returns: `true` if the table was changed.
+    private static func repairChainedFixups(_ data: inout Data, base: Int) -> Bool {
+        var fixups: (offset: Int, size: Int)? = nil
+        var segments = 0
+        let ncmds = Int(readU32(data, base + 16))
+        var offset = base + MachO.headerSize
+
+        for _ in 0..<ncmds {
+            guard offset + 8 <= data.count else { break }
+            let cmd = readU32(data, offset)
+            let cmdsize = Int(readU32(data, offset + 4))
+            guard cmdsize >= 8, offset + cmdsize <= data.count else { break }
+
+            if cmd == LoadCommand.segment64 { segments += 1 }
+            if cmd == LoadCommand.chainedFixups, cmdsize >= 16 {
+                fixups = (base + Int(readU32(data, offset + 8)),
+                          Int(readU32(data, offset + 12)))
+            }
+            offset += cmdsize
+        }
+
+        guard let fixups, segments > 0,
+              fixups.offset >= 0, fixups.size >= 28,
+              fixups.offset + fixups.size <= data.count else { return false }
+
+        let starts = fixups.offset + Int(readU32(data, fixups.offset + 4))
+        guard starts >= fixups.offset, starts + 4 <= fixups.offset + fixups.size else {
+            return false
+        }
+
+        let countOffset = starts
+        let segCount = Int(readU32(data, countOffset))
+        guard segCount > segments else { return false }
+
+        // A corrupt count must not turn into a long scan: the starts table can
+        // only hold as many entries as the blob has room for.
+        let availableEntries = (fixups.offset + fixups.size - (countOffset + 4)) / 4
+        guard segCount <= availableEntries else { return false }
+
+        for index in segments..<segCount {
+            let entry = countOffset + 4 + index * 4
+            guard entry + 4 <= fixups.offset + fixups.size,
+                  readU32(data, entry) == 0 else { return false }
+        }
+
+        writeU32(&data, countOffset, UInt32(segments))
+        return true
+    }
+
+    /// Marks imports of system classes that only exist on iOS as weak, both in
+    /// the chained-fixups import table and in the symbol table. The caller then
+    /// sees a `nil` class instead of a launch-time abort.
+    ///
+    /// - Returns: `true` if an import was changed.
+    private static func weakenUnavailableImports(_ data: inout Data, base: Int) -> Bool {
+        guard !unavailableSystemSymbols.isEmpty else { return false }
+
+        var fixups: (offset: Int, size: Int)? = nil
+        var symtab: (symoff: Int, nsyms: Int, stroff: Int, strsize: Int)? = nil
+        let ncmds = Int(readU32(data, base + 16))
+        var offset = base + MachO.headerSize
+
+        for _ in 0..<ncmds {
+            guard offset + 8 <= data.count else { break }
+            let cmd = readU32(data, offset)
+            let cmdsize = Int(readU32(data, offset + 4))
+            guard cmdsize >= 8, offset + cmdsize <= data.count else { break }
+
+            if cmd == LoadCommand.chainedFixups, cmdsize >= 16 {
+                fixups = (base + Int(readU32(data, offset + 8)),
+                          Int(readU32(data, offset + 12)))
+            }
+            if cmd == LoadCommand.symtab, cmdsize >= 24 {
+                symtab = (base + Int(readU32(data, offset + 8)),
+                          Int(readU32(data, offset + 12)),
+                          base + Int(readU32(data, offset + 16)),
+                          Int(readU32(data, offset + 20)))
+            }
+            offset += cmdsize
+        }
+
+        var changed = false
+
+        if let fixups, fixups.offset >= 0, fixups.size >= 28,
+           fixups.offset + fixups.size <= data.count {
+            let start = fixups.offset
+            let end = start + fixups.size
+            let importsOffset = Int(readU32(data, start + 8))
+            let symbolsOffset = Int(readU32(data, start + 12))
+            let count = Int(readU32(data, start + 16))
+            let format = readU32(data, start + 20)
+            let stride: Int
+            switch format {
+            case 1: stride = 4
+            case 2: stride = 8
+            case 3: stride = 16
+            default: stride = 0
+            }
+
+            if stride > 0, count > 0,
+               start + importsOffset >= start,
+               start + importsOffset + count * stride <= end,
+               start + symbolsOffset <= end {
+                for index in 0..<count {
+                    let entry = start + importsOffset + index * stride
+                    let raw = readU32(data, entry)
+                    guard raw & 0x100 == 0 else { continue }
+                    let nameOffset = Int(raw >> 9)
+                    let nameStart = start + symbolsOffset + nameOffset
+                    guard nameStart >= start + symbolsOffset, nameStart < end else { continue }
+
+                    var name = ""
+                    var cursor = nameStart
+                    while cursor < end, data[data.startIndex + cursor] != 0 {
+                        name.append(Character(UnicodeScalar(data[data.startIndex + cursor])))
+                        cursor += 1
+                    }
+                    if unavailableSystemSymbols.contains(name) {
+                        writeU32(&data, entry, raw | 0x100)
+                        changed = true
+                    }
+                }
+            }
+        }
+
+        if let symtab, symtab.symoff >= 0, symtab.nsyms >= 0,
+           symtab.stroff >= 0, symtab.strsize >= 0,
+           symtab.symoff + symtab.nsyms * 16 <= data.count,
+           symtab.stroff + symtab.strsize <= data.count {
+            let stringEnd = symtab.stroff + symtab.strsize
+            for index in 0..<symtab.nsyms {
+                let entry = symtab.symoff + index * 16
+                let strx = Int(readU32(data, entry))
+                guard strx < symtab.strsize, symtab.stroff + strx < stringEnd else { continue }
+
+                var cursor = symtab.stroff + strx
+                var name = ""
+                while cursor < stringEnd, data[data.startIndex + cursor] != 0 {
+                    name.append(Character(UnicodeScalar(data[data.startIndex + cursor])))
+                    cursor += 1
+                }
+                guard unavailableSystemSymbols.contains(name) else { continue }
+                let type = data[data.startIndex + entry + 4]
+                guard type & 0x0E == 0 else { continue } // only undefined symbols
+                let desc = readU16(data, entry + 6)
+                if desc & 0x0040 == 0 {
+                    writeU16(&data, entry + 6, desc | 0x0040)
+                    changed = true
+                }
+            }
+        }
+
+        return changed
+    }
+
     /// Removes a load command from the command area by sliding the following
     /// commands down. Only the command bytes move; section data keeps its
     /// absolute offsets, so nothing else has to be adjusted.
@@ -331,7 +502,13 @@ enum BinaryPatcher {
         var data = try Data(contentsOf: url)
         guard isMachO64(data) else { return changed }
 
-        if try patch(&data) {
+        var dirty = try patch(&data)
+        for base in machO64Offsets(data) {
+            if repairChainedFixups(&data, base: base) { dirty = true }
+            if weakenUnavailableImports(&data, base: base) { dirty = true }
+        }
+
+        if dirty {
             try data.write(to: url)
             if let permissions {
                 try? FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
@@ -395,6 +572,17 @@ enum BinaryPatcher {
     /// runtime does not provide; the installer uses this to decide whether the
     /// local C++ compatibility library is needed.
     static func containsSymbol(at url: URL, named symbol: String) -> Bool {
+        containsSymbol(at: url) { $0 == symbol }
+    }
+
+    /// True if a 64-bit Mach-O image's symbol table contains a name with the
+    /// given prefix. Used to detect a linkage to a whole Swift module when no
+    /// load-command path is present.
+    static func containsSymbol(at url: URL, withPrefix prefix: String) -> Bool {
+        containsSymbol(at: url) { $0.hasPrefix(prefix) }
+    }
+
+    private static func containsSymbol(at url: URL, matching predicate: (String) -> Bool) -> Bool {
         guard let data = try? Data(contentsOf: url) else { return false }
         for base in machO64Offsets(data) {
             let ncmds = Int(readU32(data, base + 16))
@@ -420,7 +608,7 @@ enum BinaryPatcher {
                             let start = stroff + strx
                             var end = start
                             while end < stroff + strsize && data[end] != 0 { end += 1 }
-                            if String(decoding: data[start..<end], as: UTF8.self) == symbol {
+                            if predicate(String(decoding: data[start..<end], as: UTF8.self)) {
                                 return true
                             }
                         }
@@ -709,5 +897,16 @@ enum BinaryPatcher {
         data[base + 1] = UInt8((value >> 8) & 0xFF)
         data[base + 2] = UInt8((value >> 16) & 0xFF)
         data[base + 3] = UInt8((value >> 24) & 0xFF)
+    }
+
+    private static func readU16(_ data: Data, _ offset: Int) -> UInt16 {
+        let base = data.startIndex + offset
+        return UInt16(data[base]) | UInt16(data[base + 1]) << 8
+    }
+
+    private static func writeU16(_ data: inout Data, _ offset: Int, _ value: UInt16) {
+        let base = data.startIndex + offset
+        data[base] = UInt8(value & 0xFF)
+        data[base + 1] = UInt8((value >> 8) & 0xFF)
     }
 }

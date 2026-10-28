@@ -202,4 +202,137 @@ final class BinaryPatcherTests: XCTestCase {
         // Already thin: no further change.
         XCTAssertFalse(try BinaryPatcher.thinToARM64(at: url))
     }
+
+    // MARK: - Damaged chained fixups
+
+    /// Minimal image with `segments` segment commands, a chained-fixups
+    /// command pointing at `blob`, and an already-current build version.
+    private func makeMachO(segments: Int, fixups blob: Data?) -> Data {
+        var commands = Data()
+        func u32(_ value: UInt32, into data: inout Data) {
+            data.append(contentsOf: [UInt8(value & 0xff), UInt8((value >> 8) & 0xff),
+                                     UInt8((value >> 16) & 0xff), UInt8((value >> 24) & 0xff)])
+        }
+
+        for _ in 0..<segments {
+            u32(0x19, into: &commands)   // LC_SEGMENT_64
+            u32(72, into: &commands)
+            commands.append(Data(count: 64))
+        }
+
+        if let blob {
+            u32(0x8000_0034, into: &commands) // LC_DYLD_CHAINED_FIXUPS
+            u32(16, into: &commands)
+            u32(4096, into: &commands)        // dataoff
+            u32(UInt32(blob.count), into: &commands)
+        }
+
+        u32(0x32, into: &commands)            // LC_BUILD_VERSION
+        u32(24, into: &commands)
+        u32(6, into: &commands)               // platform = Mac Catalyst
+        u32(0x000F0000, into: &commands)
+        u32(0x001A0100, into: &commands)
+        u32(0, into: &commands)
+
+        var data = Data()
+        u32(0xFEEDFACF, into: &data)
+        u32(0, into: &data); u32(0, into: &data); u32(0, into: &data)
+        u32(UInt32(segments + (blob != nil ? 1 : 0) + 1), into: &data)
+        u32(UInt32(commands.count), into: &data)
+        u32(0, into: &data); u32(0, into: &data)
+        data.append(commands)
+        data.append(Data(count: max(0, 4096 - data.count)))
+        if let blob { data.append(blob) }
+        return data
+    }
+
+    private func chainedFixupsBlob(segCount: UInt32, offsets: [UInt32]) -> Data {
+        var blob = Data()
+        func u32(_ value: UInt32) {
+            blob.append(contentsOf: [UInt8(value & 0xff), UInt8((value >> 8) & 0xff),
+                                     UInt8((value >> 16) & 0xff), UInt8((value >> 24) & 0xff)])
+        }
+        u32(0)          // fixups_version
+        u32(28)         // starts_offset
+        u32(0)          // imports_offset
+        u32(0)          // symbols_offset
+        u32(0)          // imports_count
+        u32(1)          // imports_format
+        u32(0)          // symbols_format
+        u32(segCount)
+        offsets.forEach { u32($0) }
+        blob.append(Data(count: 64)) // room for the referenced starts structures
+        return blob
+    }
+
+    private func writeTemporary(_ data: Data, name: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try? FileManager.default.removeItem(at: url)
+        try data.write(to: url)
+        return url
+    }
+
+    func testClampsChainedFixupSegmentCount() throws {
+        // Four segments in the image, five entries in the starts table; the
+        // extra entry is empty, so it can be dropped safely.
+        let blob = chainedFixupsBlob(segCount: 5, offsets: [0, 24, 56, 0, 0])
+        let url = try writeTemporary(makeMachO(segments: 4, fixups: blob), name: "pear-fixups-count.bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertTrue(try BinaryPatcher.patchFile(at: url))
+
+        let result = try Data(contentsOf: url)
+        let segCount = result.withUnsafeBytes { $0.load(fromByteOffset: 4096 + 28, as: UInt32.self) }
+        XCTAssertEqual(segCount, 4)
+
+        // A repaired image is a no-op on the next pass.
+        XCTAssertFalse(try BinaryPatcher.patchFile(at: url))
+    }
+
+    func testDoesNotClampWhenExtraEntryCarriesFixups() throws {
+        // The extra entry is non-zero: dropping it would lose fixups, so the
+        // image must be left untouched.
+        let blob = chainedFixupsBlob(segCount: 5, offsets: [0, 24, 56, 0, 12])
+        let url = try writeTemporary(makeMachO(segments: 4, fixups: blob), name: "pear-fixups-nonempty.bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertFalse(try BinaryPatcher.patchFile(at: url))
+        let result = try Data(contentsOf: url)
+        let segCount = result.withUnsafeBytes { $0.load(fromByteOffset: 4096 + 28, as: UInt32.self) }
+        XCTAssertEqual(segCount, 5)
+    }
+
+    func testMarksUnavailableClassImportWeak() throws {
+        let symbol = "_OBJC_CLASS_$_PHAssetCurationUtilities"
+        var blob = Data()
+        func u32(_ value: UInt32) {
+            blob.append(contentsOf: [UInt8(value & 0xff), UInt8((value >> 8) & 0xff),
+                                     UInt8((value >> 16) & 0xff), UInt8((value >> 24) & 0xff)])
+        }
+        let nameBytes = Array(symbol.utf8) + [0]
+        u32(0)          // fixups_version
+        u32(28)         // starts_offset
+        u32(56)         // imports_offset
+        u32(60)         // symbols_offset
+        u32(1)          // imports_count
+        u32(1)          // imports_format (DYLD_CHAINED_IMPORT)
+        u32(0)          // symbols_format
+        u32(1)          // seg_count
+        u32(0)          // seg_info_offset[0] = none
+        blob.append(Data(count: 56 - blob.count))
+        u32(30)         // lib_ordinal 30, weak = 0, name_offset = 0
+        blob.append(contentsOf: nameBytes)
+
+        let url = try writeTemporary(makeMachO(segments: 1, fixups: blob), name: "pear-fixups-weak.bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertTrue(try BinaryPatcher.patchFile(at: url))
+
+        let result = try Data(contentsOf: url)
+        let raw = result.withUnsafeBytes { $0.load(fromByteOffset: 4096 + 56, as: UInt32.self) }
+        XCTAssertEqual(raw & 0x100, 0x100, "weak bit is set on the import")
+        XCTAssertEqual(raw >> 9, 0, "name offset is unchanged")
+
+        XCTAssertFalse(try BinaryPatcher.patchFile(at: url), "second pass is a no-op")
+    }
 }

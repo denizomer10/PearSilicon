@@ -859,8 +859,10 @@ static void LogViewTree(void) {
             if (depth > 40) return;
             NSMutableString *indent = [NSMutableString string];
             for (int i = 0; i < depth; i++) [indent appendString:@"  "];
-            PearLog(@"[PearRuntime][views] %@%@ frame=%@ hidden=%d alpha=%.2f layer=%@",
+            PearLog(@"[PearRuntime][views] %@%@ frame=%@ bounds=%@ transform=%@ scale=%.2f hidden=%d alpha=%.2f layer=%@",
                   indent, NSStringFromClass(view.class), NSStringFromCGRect(view.frame),
+                  NSStringFromCGRect(view.bounds),
+                  NSStringFromCGAffineTransform(view.transform), view.contentScaleFactor,
                   view.hidden, view.alpha, NSStringFromClass(view.layer.class));
             for (UIView *sub in view.subviews) dump(sub, depth + 1);
         };
@@ -886,6 +888,16 @@ static void LogViewTree(void) {
             }
         }
 
+        // Modal legacy alerts can live on their own window and are not part of
+        // the scene's window list. Include them so a blocking alert that never
+        // became visible is still discoverable.
+        for (UIWindow *window in UIApplication.sharedApplication.windows) {
+            PearLog(@"[PearRuntime][views] app window %@ level=%.0f hidden=%d key=%d alpha=%.2f frame=%@",
+                  NSStringFromClass(window.class), window.windowLevel, window.hidden,
+                  window.isKeyWindow, window.alpha, NSStringFromCGRect(window.frame));
+            dump(window, 1);
+        }
+
         __block void (^dumpLayer)(CALayer *, int) = nil;
         dumpLayer = ^(CALayer *layer, int depth) {
             if (depth > 40) return;
@@ -898,9 +910,10 @@ static void LogViewTree(void) {
                  NSStringFromCGSize(metal.drawableSize), metal.device ? @"yes" : @"nil",
                  (int)metal.pixelFormat, metal.framebufferOnly];
             }
-            PearLog(@"[PearRuntime][layers] %@%@ bounds=%@ pos=%@ opacity=%.2f hidden=%d%@",
+            PearLog(@"[PearRuntime][layers] %@%@ bounds=%@ pos=%@ transform=[%.3f %.3f %.3f %.3f] opacity=%.2f hidden=%d%@",
                   indent, NSStringFromClass(layer.class), NSStringFromCGRect(layer.bounds),
-                  NSStringFromCGPoint(layer.position), layer.opacity, layer.hidden, extra);
+                  NSStringFromCGPoint(layer.position), layer.transform.m11, layer.transform.m12,
+                  layer.transform.m21, layer.transform.m22, layer.opacity, layer.hidden, extra);
             for (CALayer *sub in layer.sublayers) dumpLayer(sub, depth + 1);
         };
         for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -925,6 +938,10 @@ static void LogScreenMetrics(void) {
             PearLog(@"[PearRuntime][screen] scene=%@ coords=%@",
                   windowScene.activationState == UISceneActivationStateForegroundActive ? @"active" : @"other",
                   NSStringFromCGRect(windowScene.coordinateSpace.bounds));
+            PearLog(@"[PearRuntime][screen] orientation statusBar=%ld scene=%ld device=%ld",
+                  (long)UIApplication.sharedApplication.statusBarOrientation,
+                  (long)windowScene.interfaceOrientation,
+                  (long)UIDevice.currentDevice.orientation);
             for (UIWindow *window in windowScene.windows) {
                 PearLog(@"[PearRuntime][screen] window frame=%@ bounds=%@ key=%d",
                       NSStringFromCGRect(window.frame), NSStringFromCGRect(window.bounds),

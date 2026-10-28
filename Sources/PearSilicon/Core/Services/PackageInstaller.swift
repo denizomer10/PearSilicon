@@ -210,6 +210,7 @@ final class PackageInstaller: @unchecked Sendable {
         unpreparedBinaries = []
         try patchInfoPlist(at: bundleURL)
         removeLegacySignatureArtifacts(at: bundleURL)
+        try installMarketplaceKitStubIfNeeded(at: bundleURL)
         _ = try patchMachOBinaries(at: bundleURL)
         if mode == .compatibility {
             try loadRuntime(at: bundleURL)
@@ -378,14 +379,26 @@ final class PackageInstaller: @unchecked Sendable {
     /// Patch every Mach-O image that participates in loading.
     @discardableResult
     private func patchMachOBinaries(at bundleURL: URL) throws -> Int {
+        var count = 0
+        for file in machOTargets(in: bundleURL) {
+            guard BinaryPatcher.fileIsMachO64(file) else { continue }
+            if BinaryPatcher.hasLegacyGuardMarkers(at: file) {
+                unpreparedBinaries.append(file.lastPathComponent)
+            }
+            if try BinaryPatcher.patchFile(at: file) { count += 1 }
+        }
+        return count
+    }
+
+    /// Every Mach-O image in the bundle that participates in loading: the main
+    /// executable, frameworks and plugins, and loose dylibs.
+    private func machOTargets(in bundleURL: URL) -> [URL] {
         var targets = Set<URL>()
 
-        // main executable
         if let app = try? makeInstalledApp(fromBundleAt: bundleURL) {
             targets.insert(app.executableURL)
         }
 
-        // frameworks and plugins
         for sub in ["Frameworks", "PlugIns"] {
             let dir = bundleURL.appendingPathComponent(sub)
             guard fileManager.fileExists(atPath: dir.path),
@@ -398,7 +411,6 @@ final class PackageInstaller: @unchecked Sendable {
             }
         }
 
-        // loose dylibs anywhere in the bundle
         if let enumerator = fileManager.enumerator(
             at: bundleURL, includingPropertiesForKeys: [.isRegularFileKey]
         ) {
@@ -407,15 +419,62 @@ final class PackageInstaller: @unchecked Sendable {
             }
         }
 
-        var count = 0
-        for file in targets {
-            guard BinaryPatcher.fileIsMachO64(file) else { continue }
-            if BinaryPatcher.hasLegacyGuardMarkers(at: file) {
-                unpreparedBinaries.append(file.lastPathComponent)
-            }
-            if try BinaryPatcher.patchFile(at: file) { count += 1 }
+        return Array(targets)
+    }
+
+    /// Store builds may link `MarketplaceKit`, which macOS provides as
+    /// resources only. When an image references the framework, copy the stub
+    /// shipped with the runtime into the bundle and point the reference at
+    /// that copy. A weak reference to a missing Swift framework otherwise
+    /// aborts the process while it registers metadata, before `main` runs.
+    private func installMarketplaceKitStubIfNeeded(at bundleURL: URL) throws {
+        let stubDirectory = bundleURL.appendingPathComponent(
+            "Frameworks/MarketplaceKit.framework", isDirectory: true
+        )
+        let stubBinary = stubDirectory.appendingPathComponent("MarketplaceKit")
+
+        let referencing = machOTargets(in: bundleURL).filter { file in
+            let path = file.standardizedFileURL.path
+            let stubRoot = stubDirectory.standardizedFileURL.path
+            guard path != stubRoot, !path.hasPrefix(stubRoot + "/") else { return false }
+            return BinaryPatcher.hasLoadDylib(at: file, containing: "MarketplaceKit.framework")
+                || BinaryPatcher.containsSymbol(at: file, withPrefix: "_$s14MarketplaceKit")
         }
-        return count
+        guard !referencing.isEmpty else { return }
+
+        if !fileManager.fileExists(atPath: stubDirectory.path) {
+            guard let source = AppLauncher.marketplaceKitStubURL() else {
+                throw PearError.missingRuntimeComponent("MarketplaceKit.framework")
+            }
+            try fileManager.createDirectory(
+                at: bundleURL.appendingPathComponent("Frameworks", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            try fileManager.copyItem(at: source, to: stubDirectory)
+        }
+
+        // Absolute paths avoid any dependency on the app's run-path setup and
+        // match how the compatibility runtime itself is loaded.
+        let replacement = stubBinary.path
+        for file in referencing {
+            if BinaryPatcher.hasLoadDylib(at: file, containing: "MarketplaceKit.framework") {
+                let listing = try Shell.run("/usr/bin/otool", ["-L", file.path])
+                var stale = Set<String>()
+                for line in listing.split(separator: "\n").dropFirst() {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    guard let end = trimmed.range(of: " (compatibility version") else { continue }
+                    let path = String(trimmed[..<end.lowerBound])
+                    if path.contains("MarketplaceKit.framework") { stale.insert(path) }
+                }
+                for path in stale where path != replacement {
+                    _ = try? Shell.run("/usr/bin/install_name_tool", [
+                        "-change", path, replacement, file.path
+                    ])
+                }
+            } else {
+                try BinaryPatcher.addLoadDylib(at: file, path: replacement)
+            }
+        }
     }
 
     // MARK: - Helpers

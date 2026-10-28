@@ -296,6 +296,10 @@ extern "C" DIR *PearSandboxOpendir(const char *path) {
 // the trace records them (without changing the result) to identify a false
 // positive.
 extern "C" int PearTraceOpen(const char *path, int flags, mode_t mode);
+extern "C" int PearTraceOpenAt(int dirfd, const char *path, int flags, mode_t mode);
+extern "C" int PearTraceCreat(const char *path, mode_t mode);
+extern "C" FILE *PearTraceFopen(const char *path, const char *mode);
+extern "C" mode_t PearTraceUmask(mode_t mask);
 extern "C" pid_t PearTraceFork(void);
 extern "C" FILE *PearTracePopen(const char *command, const char *mode);
 
@@ -306,6 +310,42 @@ __attribute__((used)) static struct {
     __attribute__((section("__DATA,__interpose"))) = {
         (const void *)(uintptr_t)&PearTraceOpen,
         (const void *)(uintptr_t)&open
+    };
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeOpenAt
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearTraceOpenAt,
+        (const void *)(uintptr_t)&openat
+    };
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeCreat
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearTraceCreat,
+        (const void *)(uintptr_t)&creat
+    };
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeFopen
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearTraceFopen,
+        (const void *)(uintptr_t)&fopen
+    };
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeUmask
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearTraceUmask,
+        (const void *)(uintptr_t)&umask
     };
 
 __attribute__((used)) static struct {
@@ -326,11 +366,42 @@ __attribute__((used)) static struct {
         (const void *)(uintptr_t)&popen
     };
 
+/// A port that passes mode 0 (or runs with a 0777 umask) creates files its own
+/// process cannot reopen, and some titles then retry forever. Owner read/write
+/// is the minimum an app needs for data in its own container.
+static BOOL PearRepairFileMode(const char *path, int descriptor) {
+    if (descriptor >= 0) {
+        struct stat info;
+        if (fstat(descriptor, &info) != 0 || (info.st_mode & 0777) != 0) return NO;
+        return fchmod(descriptor, 0644) == 0;
+    }
+    if (!path) return NO;
+    struct stat info;
+    if (stat(path, &info) != 0 || (info.st_mode & 0777) != 0) return NO;
+    return chmod(path, 0644) == 0;
+}
+
 extern "C" int PearTraceOpen(const char *path, int flags, mode_t mode) {
     int (*original)(const char *, int, mode_t) =
         (int (*)(const char *, int, mode_t))kInterposeOpen.replacee;
+
+    // A few Mono/.NET file paths pass mode 0 together with O_CREAT. That
+    // produces an unreadable 000 file which the same app cannot open on its
+    // next launch. Give newly created files the normal owner read/write mode.
+    BOOL creating = (flags & O_CREAT) != 0;
+    if (creating && mode == 0) {
+        mode = 0644;
+    }
+
     int result = original ? original(path, flags, mode) : -1;
-    int saved = errno;
+    if (result < 0 && errno == EACCES && PearRepairFileMode(path, -1)) {
+        result = original ? original(path, flags, mode) : -1;
+    }
+    if (result >= 0 && creating) {
+        PearRepairFileMode(NULL, result);
+    }
+
+    int saved = result < 0 ? errno : 0;
     if (result < 0) {
         PearTracePath("open", path, result, saved);
     } else if ((flags & (O_CREAT | O_WRONLY | O_RDWR)) != 0) {
@@ -338,6 +409,83 @@ extern "C" int PearTraceOpen(const char *path, int flags, mode_t mode) {
     }
     errno = saved;
     return result;
+}
+
+extern "C" int PearTraceOpenAt(int dirfd, const char *path, int flags, mode_t mode) {
+    int (*original)(int, const char *, int, mode_t) =
+        (int (*)(int, const char *, int, mode_t))kInterposeOpenAt.replacee;
+
+    // The path trace writes through openat; do not route it back here.
+    if (path && strcmp(path, "/tmp/pear-fs.log") == 0) {
+        return original ? original(dirfd, path, flags, mode) : -1;
+    }
+
+    BOOL creating = (flags & O_CREAT) != 0;
+    if (creating && mode == 0) mode = 0644;
+
+    int result = original ? original(dirfd, path, flags, mode) : -1;
+    if (result < 0 && errno == EACCES && PearRepairFileMode(path, -1)) {
+        result = original ? original(dirfd, path, flags, mode) : -1;
+    }
+    if (result >= 0 && creating) {
+        PearRepairFileMode(NULL, result);
+    }
+
+    int saved = result < 0 ? errno : 0;
+    if (result < 0) {
+        PearTracePath("openat", path, result, saved);
+    } else if ((flags & (O_CREAT | O_WRONLY | O_RDWR)) != 0) {
+        PearTracePath("openat-write", path, result, 0);
+    }
+    errno = saved;
+    return result;
+}
+
+extern "C" int PearTraceCreat(const char *path, mode_t mode) {
+    int (*original)(const char *, mode_t) =
+        (int (*)(const char *, mode_t))kInterposeCreat.replacee;
+
+    if (mode == 0) mode = 0644;
+    int result = original ? original(path, mode) : -1;
+    if (result < 0 && errno == EACCES && PearRepairFileMode(path, -1)) {
+        result = original ? original(path, mode) : -1;
+    }
+    if (result >= 0) {
+        PearRepairFileMode(NULL, result);
+    }
+
+    int saved = result < 0 ? errno : 0;
+    PearTracePath("creat", path, result, saved);
+    errno = saved;
+    return result;
+}
+
+extern "C" FILE *PearTraceFopen(const char *path, const char *mode) {
+    FILE *(*original)(const char *, const char *) =
+        (FILE *(*)(const char *, const char *))kInterposeFopen.replacee;
+
+    FILE *result = original ? original(path, mode) : NULL;
+    if (result == NULL && errno == EACCES && PearRepairFileMode(path, -1)) {
+        result = original ? original(path, mode) : NULL;
+    }
+    if (result != NULL && mode != NULL && strpbrk(mode, "wa+") != NULL) {
+        int descriptor = fileno(result);
+        if (descriptor >= 0) PearRepairFileMode(NULL, descriptor);
+    }
+
+    int saved = result == NULL ? errno : 0;
+    if (result == NULL) PearTracePath("fopen", path, 0, saved);
+    errno = saved;
+    return result;
+}
+
+extern "C" mode_t PearTraceUmask(mode_t mask) {
+    mode_t (*original)(mode_t) = (mode_t (*)(mode_t))kInterposeUmask.replacee;
+
+    // Never mask the owner's own access. A port that sets 0777 otherwise
+    // writes files and directories that it cannot read itself.
+    mode_t sanitized = mask & 0077;
+    return original ? original(sanitized) : sanitized;
 }
 
 extern "C" int PearTraceFaccessat(int dirfd, const char *path, int mode, int flags);

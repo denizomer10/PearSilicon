@@ -113,6 +113,7 @@ xcrun --sdk macosx clang++ \
   -framework CoreGraphics \
   -framework Security \
   -framework AppKit \
+  -framework AudioToolbox \
   -install_name @rpath/libPearRuntime.dylib \
   -o "$OUT" \
   "$ROOT/runtime/PearRuntime.mm" \
@@ -170,3 +171,36 @@ SWIFTC="$(xcrun --find swiftc)"
   "$ROOT/runtime/swift/PearSwiftUIKit.swift" \
   "$OUT_DIR/PearSwiftUIKitSupport.o"
 file "$SWIFT_OVERLAY"
+
+# Some store builds link MarketplaceKit, which the host ships as resources
+# only. Without a binary the dynamic linker cannot resolve the weak Swift
+# references and aborts while registering metadata. The installer copies this
+# stub into apps that need it; `-enable-library-evolution` is required for the
+# enum case constructors the already-compiled client binds to.
+echo ">> Building MarketplaceKit.framework (distribution metadata stub)"
+MARKETPLACE="$OUT_DIR/MarketplaceKit.framework"
+rm -rf "$MARKETPLACE"
+mkdir -p "$MARKETPLACE/Versions/A/Resources"
+"$SWIFTC" -target "$CLANG_TARGET" -sdk "$SDK" -F "$IOS_FRAMEWORKS" \
+  -emit-library -module-name MarketplaceKit -enable-library-evolution \
+  -Xlinker -install_name -Xlinker @rpath/MarketplaceKit.framework/MarketplaceKit \
+  -Xlinker -undefined -Xlinker dynamic_lookup \
+  -o "$MARKETPLACE/Versions/A/MarketplaceKit" \
+  "$ROOT/runtime/swift/MarketplaceKit.swift"
+ln -s A "$MARKETPLACE/Versions/Current"
+ln -s Versions/Current/MarketplaceKit "$MARKETPLACE/MarketplaceKit"
+ln -s Versions/Current/Resources "$MARKETPLACE/Resources"
+cat > "$MARKETPLACE/Versions/A/Resources/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>MarketplaceKit</string>
+  <key>CFBundleIdentifier</key><string>com.pearsilicon.marketplacekit</string>
+  <key>CFBundlePackageType</key><string>FMWK</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+</dict>
+</plist>
+PLIST
+file "$MARKETPLACE/MarketplaceKit"

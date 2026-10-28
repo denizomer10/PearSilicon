@@ -18,7 +18,11 @@
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
+#import <string.h>
+#import <math.h>
 #import "PearRuntime.h"
+
+static BOOL PearGLDebug(void);
 
 static void *OpenGLESHandle(void) {
     static void *handle;
@@ -28,6 +32,93 @@ static void *OpenGLESHandle(void) {
                         RTLD_NOW | RTLD_GLOBAL);
     });
     return handle;
+}
+
+static CGSize gGLDrawableSize = { 0, 0 };
+static __weak CALayer *gDrawableLayer;
+static int gLastCropViewport[4] = { -1, -1, -1, -1 };
+static int gLastPresentViewport[4] = { -1, -1, -1, -1 };
+static BOOL gCropApplied = NO;
+
+/// Shows only the region the engine actually rendered, stretched to the
+/// drawable. Legacy titles keep a design-resolution viewport in the corner of
+/// a window-sized framebuffer; cropping to that viewport makes the visible
+/// image fill the window, and the same scale aligns touch with what is shown.
+/// Opt out with PEAR_NO_GL_VIEWPORT_FIT=1.
+static void PearUpdateDrawableCrop(void) {
+    if (getenv("PEAR_NO_GL_VIEWPORT_FIT")) return;
+    CALayer *layer = gDrawableLayer;
+    if (!layer) return;
+
+    typedef void (*PearGetIntegervFn)(int pname, int *params);
+    static PearGetIntegervFn getIntegerv;
+    if (getIntegerv == NULL) {
+        void *handle = OpenGLESHandle();
+        getIntegerv = (PearGetIntegervFn)dlsym(handle ? handle : RTLD_DEFAULT, "glGetIntegerv");
+    }
+    if (getIntegerv == NULL) return;
+
+    int viewport[4] = { 0, 0, 0, 0 };
+    getIntegerv(0x0BA2 /* GL_VIEWPORT */, viewport);
+    if (viewport[2] <= 0 || viewport[3] <= 0) return;
+
+    int drawableWidth = (int)llround(gGLDrawableSize.width);
+    int drawableHeight = (int)llround(gGLDrawableSize.height);
+    if (drawableWidth <= 0 || drawableHeight <= 0) return;
+
+    if (PearGLDebug() &&
+        (viewport[0] != gLastPresentViewport[0] ||
+         viewport[1] != gLastPresentViewport[1] ||
+         viewport[2] != gLastPresentViewport[2] ||
+         viewport[3] != gLastPresentViewport[3])) {
+        memcpy(gLastPresentViewport, viewport, sizeof(viewport));
+        PearLog(@"[PearRuntime][gl] present viewport=(%d,%d,%d,%d) drawable=%dx%d",
+                viewport[0], viewport[1], viewport[2], viewport[3],
+                drawableWidth, drawableHeight);
+    }
+
+    BOOL small = drawableWidth >= viewport[2] * 1.4 &&
+                 drawableHeight >= viewport[3] * 1.4;
+
+    if (!small) {
+        if (!gCropApplied) return;
+        gCropApplied = NO;
+        gLastCropViewport[0] = -1;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CALayer *current = gDrawableLayer;
+            if (!current) return;
+            current.contentsRect = CGRectMake(0, 0, 1, 1);
+        });
+        return;
+    }
+
+    if (viewport[0] == gLastCropViewport[0] &&
+        viewport[1] == gLastCropViewport[1] &&
+        viewport[2] == gLastCropViewport[2] &&
+        viewport[3] == gLastCropViewport[3]) return;
+
+    memcpy(gLastCropViewport, viewport, sizeof(viewport));
+    gCropApplied = YES;
+
+    int top = drawableHeight - (viewport[1] + viewport[3]);
+    CGRect rect = CGRectMake((CGFloat)viewport[0] / drawableWidth,
+                             (CGFloat)top / drawableHeight,
+                             (CGFloat)viewport[2] / drawableWidth,
+                             (CGFloat)viewport[3] / drawableHeight);
+
+    if (PearGLDebug()) {
+        PearLog(@"[PearRuntime][gl] crop %dx%d at (%d,%d) from drawable %dx%d",
+                viewport[2], viewport[3], viewport[0], viewport[1],
+                drawableWidth, drawableHeight);
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CALayer *current = gDrawableLayer;
+        if (!current) return;
+        current.contentsRect = rect;
+        current.contentsGravity = kCAGravityResize;
+        current.magnificationFilter = kCAFilterLinear;
+    });
 }
 
 extern "C" void *EAGLGetProcAddress(const char *name) {
@@ -99,6 +190,43 @@ static void PearFitDrawable(CALayer *layer) {
 
 
 
+#pragma mark - Legacy touch diagnostics
+
+/// Logs touches the legacy GL view receives, before the engine converts them.
+/// The stream is what tells a delivery problem from a coordinate-scale problem.
+static void PearInstallEAGLTouchLogging(void) {
+    static BOOL installed = NO;
+    if (installed) return;
+    Class viewClass = NSClassFromString(@"EAGLView");
+    if (!viewClass) return;
+    installed = YES;
+
+    SEL selectors[] = {
+        @selector(touchesBegan:withEvent:),
+        @selector(touchesEnded:withEvent:)
+    };
+    for (int i = 0; i < 2; i++) {
+        SEL selector = selectors[i];
+        Method method = class_getInstanceMethod(viewClass, selector);
+        if (!method) continue;
+        IMP original = method_getImplementation(method);
+        const char *types = method_getTypeEncoding(method);
+        IMP replacement = imp_implementationWithBlock(^(id self, NSSet *touches, UIEvent *event) {
+            UITouch *touch = touches.anyObject;
+            CGPoint point = [touch locationInView:self];
+            CGRect bounds = [self bounds];
+            PearLog(@"[PearRuntime][touch] %@ point=(%.1f,%.1f) bounds=%@ scale=%.2f",
+                    NSStringFromSelector(selector), point.x, point.y,
+                    NSStringFromCGRect(bounds), [self contentScaleFactor]);
+            ((void (*)(id, SEL, NSSet *, UIEvent *))original)(self, selector, touches, event);
+        });
+        if (!class_addMethod(viewClass, selector, replacement, types)) {
+            method_setImplementation(method, replacement);
+        }
+    }
+    PearLog(@"[PearRuntime][touch] EAGLView touch logging installed");
+}
+
 #pragma mark - EAGL hook
 
 // Most EAGL apps size their renderbuffer with
@@ -123,6 +251,9 @@ static void PearInstallEAGLHook(void) {
                 PearLog(@"[PearRuntime][gl] renderbufferStorage fromDrawable bounds=%@ pos=%@ contentsScale=%.2f",
                         NSStringFromCGRect(layer.bounds), NSStringFromCGPoint(layer.position), layer.contentsScale);
             }
+            gGLDrawableSize = CGSizeMake(layer.bounds.size.width * layer.contentsScale,
+                                         layer.bounds.size.height * layer.contentsScale);
+            gDrawableLayer = layer;
             PearFitDrawable(layer);
         } else if (PearGLDebug()) {
             PearLog(@"[PearRuntime][gl] renderbufferStorage fromDrawable %@", NSStringFromClass([drawable class]));
@@ -131,6 +262,20 @@ static void PearInstallEAGLHook(void) {
     }));
 
     PearLog(@"[PearRuntime][gl] EAGL drawable fit installed");
+
+    // The viewport is only final while the engine is presenting. Reading it
+    // here catches both directly linked GL calls and engines that resolve GL
+    // through their own table.
+    SEL presentSelector = NSSelectorFromString(@"presentRenderbuffer:");
+    Method presentMethod = class_getInstanceMethod(context, presentSelector);
+    if (presentMethod) {
+        IMP presentOriginal = method_getImplementation(presentMethod);
+        method_setImplementation(presentMethod, imp_implementationWithBlock(^BOOL(id self, NSUInteger target) {
+            PearUpdateDrawableCrop();
+            return ((BOOL (*)(id, SEL, NSUInteger))presentOriginal)(self, presentSelector, target);
+        }));
+        PearLog(@"[PearRuntime][gl] EAGL present hook installed");
+    }
 }
 
 #pragma mark - Legacy touch diagnostics
@@ -192,6 +337,7 @@ static void PearGLShimInit(void) {
     if (getenv("PEAR_DEBUG_TOUCH")) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
+            PearInstallEAGLTouchLogging();
             PearInstallLegacyTouchLogging();
         });
     }

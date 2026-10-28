@@ -7,6 +7,7 @@ enum PearError: LocalizedError {
     case missingExecutable(String)
     case commandFailed(tool: String, status: Int32, output: String)
     case launchFailed(String)
+    case missingRuntimeComponent(String)
     case notImplemented(String)
 
     var errorDescription: String? {
@@ -23,6 +24,8 @@ enum PearError: LocalizedError {
             return "\(tool) başarısız oldu (durum \(status)): \(output)"
         case .launchFailed(let reason):
             return "Uygulama başlatılamadı: \(reason)"
+        case .missingRuntimeComponent(let name):
+            return "Uyumluluk bileşeni bulunamadı: \(name)"
         case .notImplemented(let feature):
             return "Henüz uygulanmadı: \(feature)"
         }

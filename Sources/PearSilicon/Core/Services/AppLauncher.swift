@@ -29,6 +29,15 @@ final class AppLauncher: @unchecked Sendable {
     /// Root of the iOS-on-Mac runtime that ships with macOS.
     private static let iOSSupportRoot = "/System/iOSSupport"
 
+    /// iOS apps own their window layout, so macOS state restoration only ever
+    /// produces a "reopen windows?" prompt after an interrupted session. Passed
+    /// as arguments (not environment) because AppKit reads them from the
+    /// argument domain.
+    private static let noWindowRestoration = [
+        "-ApplePersistenceIgnoreState", "YES",
+        "-NSQuitAlwaysKeepsWindows", "NO"
+    ]
+
     private let libraryURL: URL
     private let logDirectory: URL
     private let fileManager = FileManager.default
@@ -141,6 +150,7 @@ final class AppLauncher: @unchecked Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
         process.arguments = ["-p", Self.nativeIsolationProfile(), app.executableURL.path]
+            + Self.noWindowRestoration
         process.currentDirectoryURL = app.bundleURL
         process.environment = env
 
@@ -194,7 +204,7 @@ final class AppLauncher: @unchecked Sendable {
     private func spawnDirect(_ app: InstalledApp, env: [String: String]) throws {
         let process = Process()
         process.executableURL = app.executableURL
-        process.arguments = []
+        process.arguments = Self.noWindowRestoration
         process.currentDirectoryURL = app.bundleURL
         process.environment = env
 
@@ -231,6 +241,7 @@ final class AppLauncher: @unchecked Sendable {
         configuration.createsNewApplicationInstance = true
         configuration.activates = true
         configuration.environment = env
+        configuration.arguments = Self.noWindowRestoration
 
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NSRunningApplication?, Error>) in
             NSWorkspace.shared.openApplication(at: app.bundleURL, configuration: configuration) { running, error in
@@ -288,5 +299,24 @@ final class AppLauncher: @unchecked Sendable {
         candidates.append(AppPaths.supportRoot.appendingPathComponent("libPearRuntime.dylib"))
 
         return candidates.first { fileManager.fileExists(atPath: $0.path) }
+    }
+
+    /// Locates the MarketplaceKit compatibility stub shipped next to the
+    /// runtime. Store builds link the framework, but the host provides it as
+    /// resources only, so the installer needs this binary to satisfy the
+    /// weak references at launch.
+    static func marketplaceKitStubURL() -> URL? {
+        let fileManager = FileManager.default
+
+        if let override = ProcessInfo.processInfo.environment["PEARSILICON_MARKETPLACEKIT"],
+           !override.isEmpty {
+            let url = URL(fileURLWithPath: override)
+            if fileManager.fileExists(atPath: url.path) { return url }
+        }
+
+        guard let runtime = runtimeLibraryURL() else { return nil }
+        let stub = runtime.deletingLastPathComponent()
+            .appendingPathComponent("MarketplaceKit.framework", isDirectory: true)
+        return fileManager.fileExists(atPath: stub.path) ? stub : nil
     }
 }

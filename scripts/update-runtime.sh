@@ -13,6 +13,7 @@ LIBRARY="$HOME/Library/Application Support/PearSilicon/Applications"
 RUNTIME="$ROOT/build/libPearRuntime.dylib"
 SWIFT_OVERLAY="$ROOT/build/libswiftUIKit.dylib"
 CXX_COMPAT="$ROOT/build/libcxxcompat.dylib"
+MARKETPLACE_STUB="$ROOT/build/MarketplaceKit.framework"
 ENT_DIR="$HOME/Library/Application Support/PearSilicon/Work"
 # Shipping installs carry no extra entitlements. Set PEAR_DEBUG_SIGNING=1 for a
 # short debugging session (get-task-allow and JIT keys) when LLDB is needed.
@@ -43,6 +44,13 @@ for APP in "$LIBRARY"/*.app; do
   cp "$RUNTIME" "$APP/Frameworks/libPearRuntime.dylib"
   if [[ -f "$SWIFT_OVERLAY" ]]; then
     cp "$SWIFT_OVERLAY" "$APP/Frameworks/libswiftUIKit.dylib"
+  fi
+
+  # Only apps that reference MarketplaceKit carry this stub. Refresh it for
+  # those; deleting first keeps the framework's symlink layout intact.
+  if [[ -d "$MARKETPLACE_STUB" && -d "$APP/Frameworks/MarketplaceKit.framework" ]]; then
+    rm -rf "$APP/Frameworks/MarketplaceKit.framework"
+    cp -R "$MARKETPLACE_STUB" "$APP/Frameworks/"
   fi
 
   EXE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist" 2>/dev/null)"

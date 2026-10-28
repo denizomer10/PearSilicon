@@ -80,11 +80,29 @@ static NSString *gKVPath;
 static void PearLoadKV(void) {
     if (gKV) return;
     gKVPath = PearCloudKVPath();
-    id stored = [NSPropertyListSerialization propertyListWithData:
-                 [NSData dataWithContentsOfFile:gKVPath]
+
+    NSData *data = [NSData dataWithContentsOfFile:gKVPath];
+    if (!data) {
+        // A first launch has no local key-value file. Feeding nil to the
+        // property-list parser raises an Objective-C exception, so start from
+        // an empty dictionary instead.
+        gKV = [NSMutableDictionary dictionary];
+        return;
+    }
+
+    id stored = nil;
+    @try {
+        stored = [NSPropertyListSerialization propertyListWithData:data
                                                           options:NSPropertyListMutableContainersAndLeaves
-                                                           format:NULL error:NULL];
-    gKV = [stored isKindOfClass:NSMutableDictionary.class] ? stored : [NSMutableDictionary dictionary];
+                                                           format:NULL
+                                                            error:NULL];
+    } @catch (NSException *exception) {
+        PearLog(@"[PearRuntime][cloud] ignoring unreadable key-value store: %@",
+                exception.reason ?: @"unknown");
+    }
+    gKV = [stored isKindOfClass:NSMutableDictionary.class]
+        ? stored
+        : [NSMutableDictionary dictionary];
 }
 
 static void PearSaveKV(void) {

@@ -13,6 +13,7 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <dlfcn.h>
 #import "PearRuntime.h"
 
 static BOOL PearPlatformDisabled(void) {
@@ -72,10 +73,31 @@ static id PearObject(id object, SEL selector) {
 @protocol PearSKRequestDelegate <NSObject>
 @optional
 - (void)request:(id)request didFailWithError:(NSError *)error;
+- (void)productsRequest:(id)request didReceiveResponse:(id)response;
 @end
 
-/// A product query has no local catalog. Calling the documented failure
-/// callback is preferable to leaving the request pending forever.
+/// A product query has no local catalog. A real store with no matching
+/// products answers with an empty response; reporting that instead of a
+/// transient error keeps IAP initialization from retrying forever. No product
+/// or price is fabricated.
+static Class PearEmptyProductsResponseClass(void) {
+    static Class responseClass;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class base = objc_getClass("SKProductsResponse");
+        if (!base) return;
+        Class subclass = objc_allocateClassPair(base, "PearEmptySKProductsResponse", 0);
+        if (!subclass) return;
+        class_addMethod(subclass, @selector(products),
+                        imp_implementationWithBlock(^NSArray *(id self) { return @[]; }), "@@:");
+        class_addMethod(subclass, @selector(invalidProductIdentifiers),
+                        imp_implementationWithBlock(^NSArray *(id self) { return @[]; }), "@@:");
+        objc_registerClassPair(subclass);
+        responseClass = subclass;
+    });
+    return responseClass;
+}
+
 static void PearInstallStoreRequests(void) {
     Class request = objc_getClass("SKProductsRequest");
     if (!request) return;
@@ -84,6 +106,15 @@ static void PearInstallStoreRequests(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             id<PearSKRequestDelegate> delegate =
                 (id<PearSKRequestDelegate>)PearObject(self, @selector(delegate));
+
+            if ([delegate respondsToSelector:@selector(productsRequest:didReceiveResponse:)]) {
+                Class responseClass = PearEmptyProductsResponseClass();
+                if (responseClass) {
+                    [delegate productsRequest:self didReceiveResponse:[[responseClass alloc] init]];
+                    return;
+                }
+            }
+
             if (![delegate respondsToSelector:@selector(request:didFailWithError:)]) return;
             NSError *error = PearUnavailableError(
                 @"PearSiliconStore",
@@ -93,7 +124,7 @@ static void PearInstallStoreRequests(void) {
         });
     });
 
-    PEAR_PLATFORM_LOG_ONCE(@"[PearRuntime][platform] StoreKit product requests report unavailable");
+    PEAR_PLATFORM_LOG_ONCE(@"[PearRuntime][platform] StoreKit product requests report an empty catalog");
 }
 
 #pragma mark - Local authentication
@@ -293,9 +324,43 @@ static void PearInstallHealthKit(void) {
     PEAR_PLATFORM_LOG_ONCE(@"[PearRuntime][platform] HealthKit reports unavailable");
 }
 
+#pragma mark - MarketplaceKit
+
+/// The Catalyst SDK advertises `MarketplaceKit` at an absolute path, but the
+/// framework actually lives in the iOSSupport tree and carries no binary.
+/// The installer puts a compatibility stub in the app's own Frameworks
+/// directory; loading it into the global namespace before an app's Swift
+/// metadata is resolved keeps weak references to its types from turning into
+/// a fatal demangling error.
+static void PearLoadMarketplaceKit(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *bundlePath = [NSBundle mainBundle].bundlePath;
+        NSString *local = [bundlePath stringByAppendingPathComponent:
+            @"Frameworks/MarketplaceKit.framework/MarketplaceKit"];
+        const char *path = local.fileSystemRepresentation;
+        void *handle = dlopen(path, RTLD_LAZY | RTLD_GLOBAL);
+        if (handle) {
+            PearLog(@"[PearRuntime][platform] loaded MarketplaceKit from the app bundle");
+            return;
+        }
+
+        path = "/System/iOSSupport/System/Library/Frameworks/MarketplaceKit.framework/MarketplaceKit";
+        handle = dlopen(path, RTLD_LAZY | RTLD_GLOBAL);
+        if (handle) {
+            PearLog(@"[PearRuntime][platform] loaded MarketplaceKit from iOSSupport");
+        } else {
+            const char *error = dlerror();
+            PearLog(@"[PearRuntime][platform] MarketplaceKit unavailable: %s",
+                    error ?: "unknown");
+        }
+    });
+}
+
 #pragma mark - Install
 
 static void PearInstallPlatformShims(void) {
+    PearLoadMarketplaceKit();
     PearInstallStoreRequests();
     PearInstallLocalAuthentication();
     PearInstallTelephony();

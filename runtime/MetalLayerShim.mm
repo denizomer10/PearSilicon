@@ -19,6 +19,70 @@ static BOOL PearMetalDebug(void) {
     return getenv("PEAR_DEBUG_METAL") != NULL;
 }
 
+/// Some engines create a texture from a zero-sized backbuffer before the
+/// window exists. Metal's validation then aborts the process. Clamping the
+/// descriptor at the public device entry point keeps the validation pass alive;
+/// the ordinary window/layer path replaces the size once it is available.
+static void PearClampTextureDescriptor(MTLTextureDescriptor *descriptor) {
+    if (!descriptor) return;
+    if (descriptor.width == 0) {
+        descriptor.width = 1;
+        if (PearMetalDebug()) PearLog(@"[PearRuntime][metal] clamped zero texture width");
+    }
+    if (descriptor.height == 0) {
+        descriptor.height = 1;
+        if (PearMetalDebug()) PearLog(@"[PearRuntime][metal] clamped zero texture height");
+    }
+}
+
+static void PearInstallTextureGuard(id<MTLDevice> device) {
+    if (!device) return;
+    static BOOL installed = NO;
+    if (installed) return;
+
+    Class cls = [device class];
+    SEL plain = @selector(newTextureWithDescriptor:);
+    Method method = class_getInstanceMethod(cls, plain);
+    if (!method) return;
+    installed = YES;
+
+    IMP original = method_getImplementation(method);
+    method_setImplementation(method, imp_implementationWithBlock(^id(id self, MTLTextureDescriptor *descriptor) {
+        PearClampTextureDescriptor(descriptor);
+        return ((id (*)(id, SEL, id))original)(self, plain, descriptor);
+    }));
+
+    SEL offset = @selector(newTextureWithDescriptor:offset:bytesPerRow:);
+    Method offsetMethod = class_getInstanceMethod(cls, offset);
+    if (offsetMethod) {
+        IMP offsetOriginal = method_getImplementation(offsetMethod);
+        method_setImplementation(offsetMethod, imp_implementationWithBlock(^
+            id(id self, MTLTextureDescriptor *descriptor, NSUInteger byteOffset, NSUInteger bytesPerRow) {
+                PearClampTextureDescriptor(descriptor);
+                return ((id (*)(id, SEL, id, NSUInteger, NSUInteger))offsetOriginal)(
+                    self, offset, descriptor, byteOffset, bytesPerRow
+                );
+            }
+        ));
+    }
+
+    SEL iosurface = NSSelectorFromString(@"newTextureWithDescriptor:iosurface:plane:");
+    Method surfaceMethod = class_getInstanceMethod(cls, iosurface);
+    if (surfaceMethod) {
+        IMP surfaceOriginal = method_getImplementation(surfaceMethod);
+        method_setImplementation(surfaceMethod, imp_implementationWithBlock(^
+            id(id self, MTLTextureDescriptor *descriptor, IOSurfaceRef surface, NSUInteger plane) {
+                PearClampTextureDescriptor(descriptor);
+                return ((id (*)(id, SEL, id, IOSurfaceRef, NSUInteger))surfaceOriginal)(
+                    self, iosurface, descriptor, surface, plane
+                );
+            }
+        ));
+    }
+
+    if (PearMetalDebug()) PearLog(@"[PearRuntime][metal] zero-size texture guard installed");
+}
+
 static UIWindow *PearKeyWindow(void) {
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
@@ -155,11 +219,24 @@ static void PearInstallNextDrawableFix(void) {
             id<MTLDevice> device = MTLCreateSystemDefaultDevice();
             if (device) {
                 layer.device = device;
+                PearInstallTextureGuard(device);
                 if (PearMetalDebug()) {
                     PearLog(@"[PearRuntime][metal] assigned device before nextDrawable");
                 }
             }
         }
+
+        // Some engines create their backbuffer textures before the layer has
+        // been attached to a window. A zero drawable size makes those textures
+        // zero-sized and Metal aborts validation. Seed a conservative size;
+        // the periodic window scan replaces it as soon as real bounds exist.
+        if (layer.bounds.size.width <= 0 || layer.bounds.size.height <= 0) {
+            layer.bounds = CGRectMake(0, 0, 1920, 1080);
+        }
+        if (layer.drawableSize.width <= 0 || layer.drawableSize.height <= 0) {
+            layer.drawableSize = CGSizeMake(1920, 1080);
+        }
+
         return ((id (*)(id, SEL))original)(self, selector);
     }));
 }
@@ -167,6 +244,7 @@ static void PearInstallNextDrawableFix(void) {
 __attribute__((constructor))
 static void PearMetalLayerShimInit(void) {
     if (NSProcessInfo.processInfo.environment[@"PEAR_NO_METAL_FIX"]) return;
+    PearInstallTextureGuard(MTLCreateSystemDefaultDevice());
     PearInstallNextDrawableFix();
     // CAMetalLayer may not be registered yet during dyld initializers, and the
     // app's main thread can be busy for a long time while it loads content, so

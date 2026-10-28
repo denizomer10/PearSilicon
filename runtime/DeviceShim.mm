@@ -23,6 +23,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
 #import <sys/sysctl.h>
@@ -802,6 +803,23 @@ static void PearInstallDeviceProperties(void) {
             return YES;
         }));
     }
+
+    // Diagnostic only: forcing the trait idiom changes the whole layout mode of
+    // the app and can push a tablet-sized UI offscreen. Asset lookups are
+    // handled narrowly below instead.
+    if (getenv("PEAR_FORCE_TRAIT_IDIOM")) {
+        Class traits = NSClassFromString(@"UITraitCollection");
+        Method idiomMethod = traits
+            ? class_getInstanceMethod(traits, @selector(userInterfaceIdiom)) : NULL;
+        if (idiomMethod) {
+            IMP originalIdiom = method_getImplementation(idiomMethod);
+            method_setImplementation(idiomMethod, imp_implementationWithBlock(^NSInteger(id self) {
+                if (PearWantsPadIdiom()) return 1;
+                NSInteger value = ((NSInteger (*)(id, SEL))originalIdiom)(self, @selector(userInterfaceIdiom));
+                return (value == 1 || value == 5) ? 0 : value; // pad/mac -> phone
+            }));
+        }
+    }
 }
 
 #pragma mark - Foundation version
@@ -931,11 +949,49 @@ static void PearInstallMotionIdentity(void) {
                 imp_implementationWithBlock(^(id self) {}));
 }
 
+#pragma mark - Asset idiom fallback
+
+/// An iPhone-thinned bundle contains only `~iphone` renditions. UIKit resolves
+/// named images against the *scene's* idiom, which on a Mac is pad/mac, so
+/// every phone-only asset comes back nil and apps that force-unwrap it trap.
+/// Keep the layout idiom untouched and only retry the lookup with a phone
+/// trait collection when the normal lookup found nothing. Opt out with
+/// PEAR_NO_ASSET_FALLBACK.
+static void PearInstallAssetIdiomFallback(void) {
+    if (getenv("PEAR_NO_ASSET_FALLBACK")) return;
+    Class imageClass = NSClassFromString(@"UIImage");
+    Class traitsClass = NSClassFromString(@"UITraitCollection");
+    if (!imageClass || !traitsClass) return;
+
+    SEL named = @selector(imageNamed:);
+    SEL namedWithTraits = @selector(imageNamed:inBundle:compatibleWithTraitCollection:);
+    Method plainMethod = class_getClassMethod(imageClass, named);
+    Method traitsMethod = class_getClassMethod(imageClass, namedWithTraits);
+    if (!plainMethod || !traitsMethod) return;
+
+    IMP plain = method_getImplementation(plainMethod);
+    IMP withTraits = method_getImplementation(traitsMethod);
+
+    method_setImplementation(plainMethod, imp_implementationWithBlock(^id(id cls, NSString *name) {
+        id image = ((id (*)(id, SEL, NSString *))plain)(cls, named, name);
+        if (image || !name) return image;
+
+        id (*makeTraits)(id, SEL, NSInteger) = (id (*)(id, SEL, NSInteger))objc_msgSend;
+        id phoneTraits = makeTraits(traitsClass, @selector(traitCollectionWithUserInterfaceIdiom:), 0);
+        if (!phoneTraits) return nil;
+        return ((id (*)(id, SEL, NSString *, NSBundle *, id))withTraits)(
+            cls, namedWithTraits, name, nil, phoneTraits);
+    }));
+
+    PearLog(@"[PearRuntime][device] asset idiom fallback installed");
+}
+
 __attribute__((constructor))
 static void PearDeviceShimInit(void) {
     @autoreleasepool {
         if (PearDeviceShimDisabled()) return;
         PearInstallDeviceProperties();
+        PearInstallAssetIdiomFallback();
         PearInstallMotionIdentity();
         PearInstallProcessInfoIdentity();
         PearInstallOperatingSystemVersion();
