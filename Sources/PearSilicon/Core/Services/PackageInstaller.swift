@@ -11,6 +11,10 @@ import Foundation
 /// starts; nothing is added to the executable's load commands.
  enum PreparationMode: String, Sendable {
     case compatibility
+    /// Same in-process runtime, but loaded by the launcher through
+    /// `DYLD_INSERT_LIBRARIES` instead of an `LC_LOAD_DYLIB` in the app binary.
+    /// Experimental path for the Proton-style host/injection split.
+    case compatibilityEnvironment
     case nativeContainer
 }
 
@@ -212,9 +216,12 @@ final class PackageInstaller: @unchecked Sendable {
         removeLegacySignatureArtifacts(at: bundleURL)
         try installMarketplaceKitStubIfNeeded(at: bundleURL)
         _ = try patchMachOBinaries(at: bundleURL)
-        if mode == .compatibility {
-            try loadRuntime(at: bundleURL)
-        } else {
+        switch mode {
+        case .compatibility:
+            try loadRuntime(at: bundleURL, addLoadCommand: true)
+        case .compatibilityEnvironment:
+            try loadRuntime(at: bundleURL, addLoadCommand: false)
+        case .nativeContainer:
             try removeRuntimeArtifacts(at: bundleURL)
         }
         ensureExecutableBits(at: bundleURL)
@@ -223,8 +230,18 @@ final class PackageInstaller: @unchecked Sendable {
 
     /// The mode an installed app is currently prepared for.
     func currentPreparationMode(for app: InstalledApp) -> PreparationMode {
-        BinaryPatcher.hasLoadDylib(at: app.executableURL, containing: "libPearRuntime")
+        if fileManager.fileExists(atPath: Self.injectionMarkerURL(in: app.bundleURL).path) {
+            return .compatibilityEnvironment
+        }
+        return BinaryPatcher.hasLoadDylib(at: app.executableURL, containing: "libPearRuntime")
             ? .compatibility : .nativeContainer
+    }
+
+    /// Sidecar that records a launcher-injected runtime. It lives next to the
+    /// runtime so both the launcher and `currentPreparationMode` can see it
+    /// without reading the executable.
+    static func injectionMarkerURL(in bundleURL: URL) -> URL {
+        bundleURL.appendingPathComponent("Frameworks/.pear-injection")
     }
 
     /// Switches an installed app between the two preparation modes without
@@ -240,6 +257,10 @@ final class PackageInstaller: @unchecked Sendable {
     /// container adds no load commands to the app's executable.
     private func removeRuntimeArtifacts(at bundleURL: URL) throws {
         let frameworks = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
+        let marker = Self.injectionMarkerURL(in: bundleURL)
+        if fileManager.fileExists(atPath: marker.path) {
+            try fileManager.removeItem(at: marker)
+        }
         for name in ["libPearRuntime.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib"] {
             let url = frameworks.appendingPathComponent(name)
             if fileManager.fileExists(atPath: url.path) {
@@ -272,10 +293,10 @@ final class PackageInstaller: @unchecked Sendable {
         }
     }
 
-    /// Copies the runtime into the bundle and adds an `LC_LOAD_DYLIB` so the
-    /// dynamic linker loads it at launch. The older environment-variable loading
-    /// path is refused for these processes, but a real load command is honored.
-    private func loadRuntime(at bundleURL: URL) throws {
+    /// Copies the runtime into the bundle. With `addLoadCommand` the binary gets
+    /// an `LC_LOAD_DYLIB`; without it the launcher injects the same library via
+    /// `DYLD_INSERT_LIBRARIES` and a marker records the choice.
+    private func loadRuntime(at bundleURL: URL, addLoadCommand: Bool) throws {
         guard let runtime = AppLauncher.runtimeLibraryURL() else { return }
 
         let frameworks = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
@@ -285,6 +306,21 @@ final class PackageInstaller: @unchecked Sendable {
             try fileManager.removeItem(at: destination)
         }
         try fileManager.copyItem(at: runtime, to: destination)
+
+        let marker = Self.injectionMarkerURL(in: bundleURL)
+        if addLoadCommand {
+            if fileManager.fileExists(atPath: marker.path) {
+                try? fileManager.removeItem(at: marker)
+            }
+        } else {
+            // Switching from the load-command mode must not leave the old
+            // command behind; otherwise the runtime is loaded twice.
+            if let app = try? makeInstalledApp(fromBundleAt: bundleURL) {
+                _ = try? BinaryPatcher.removeLoadDylib(at: app.executableURL,
+                                                       containing: "libPearRuntime")
+            }
+            try? Data("environment\n".utf8).write(to: marker)
+        }
 
         // The host does not provide the Swift UIKit overlay. Ship our small
         // clean-room bridge next to the runtime, for frameworks that link it.
@@ -323,10 +359,12 @@ final class PackageInstaller: @unchecked Sendable {
             // security policy that refuses `@` expansion for their dylib load
             // commands. The library is inside the installed bundle, so the path
             // is stable for that installation.
-            try BinaryPatcher.addLoadDylib(
-                at: app.executableURL,
-                path: destination.path
-            )
+            if addLoadCommand {
+                try BinaryPatcher.addLoadDylib(
+                    at: app.executableURL,
+                    path: destination.path
+                )
+            }
             // Store builds commonly reference `@rpath/Foo.framework/Foo` but
             // omit the matching run-path command. Without it dyld stops before
             // the app's entry point with "Library not loaded".

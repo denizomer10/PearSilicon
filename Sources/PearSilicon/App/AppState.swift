@@ -319,7 +319,9 @@ final class AppState: ObservableObject {
 
         let nativeContainer = false
         do {
-            try? packageInstaller.setPreparationMode(.compatibility, for: app)
+            if packageInstaller.currentPreparationMode(for: app) != .compatibilityEnvironment {
+                try? packageInstaller.setPreparationMode(.compatibility, for: app)
+            }
             let running = try await launcher.launch(
                 app, keymapURL: keymapURL, extraEnvironment: extra,
                 nativeContainer: nativeContainer

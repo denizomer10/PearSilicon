@@ -173,7 +173,8 @@ enum CLI {
         let installer = PackageInstaller(libraryURL: CLIPaths.shared.library)
         let extensionName = url.pathExtension.lowercased()
 
-        let mode: PreparationMode = .compatibility
+        let mode: PreparationMode = arguments.flags.contains("env-injection")
+            ? .compatibilityEnvironment : .compatibility
         let app: InstalledApp
         if isDirectory.boolValue && extensionName == "app" {
             app = try awaitBridge { try await installer.installBundle(at: url, mode: mode) }
@@ -279,9 +280,21 @@ enum CLI {
         let launchEnvironment = environment
 
         // A previously prepared native app must be switched back so the
-        // runtime is present before a normal launch.
+        // runtime is present before a normal launch. An app prepared for
+        // launcher injection keeps that mode unless the caller changes it.
         let installer = PackageInstaller(libraryURL: paths.library)
-        try? installer.setPreparationMode(.compatibility, for: app)
+        let currentMode = installer.currentPreparationMode(for: app)
+        if arguments.flags.contains("env-injection") {
+            if currentMode != .compatibilityEnvironment {
+                try? installer.setPreparationMode(.compatibilityEnvironment, for: app)
+            }
+        } else if arguments.flags.contains("load-command") {
+            if currentMode != .compatibility {
+                try? installer.setPreparationMode(.compatibility, for: app)
+            }
+        } else if currentMode != .compatibilityEnvironment {
+            try? installer.setPreparationMode(.compatibility, for: app)
+        }
 
         let launcher = AppLauncher(libraryURL: paths.library)
         let pid: pid_t = try awaitBridge {

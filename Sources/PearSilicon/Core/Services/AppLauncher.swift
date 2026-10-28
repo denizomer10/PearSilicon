@@ -131,9 +131,19 @@ final class AppLauncher: @unchecked Sendable {
             env["PEAR_HOME_DIR"] = containerData.path
         }
 
-        // The runtime is loaded via an `LC_LOAD_DYLIB` entry, not via the
-        // older environment-variable loading path (which is refused for these
-        // processes). It reads the keymap path to know what to map.
+        // The runtime is normally loaded via an `LC_LOAD_DYLIB` entry. The
+        // experimental environment mode keeps that command out of the app
+        // binary and asks the launcher to insert the same library instead.
+        // The app carries a marker written by the installer.
+        let injectionMarker = app.bundleURL
+            .appendingPathComponent("Frameworks/.pear-injection")
+        let injectedRuntime = app.bundleURL
+            .appendingPathComponent("Frameworks/libPearRuntime.dylib")
+        if fileManager.fileExists(atPath: injectionMarker.path),
+           fileManager.fileExists(atPath: injectedRuntime.path) {
+            env["DYLD_INSERT_LIBRARIES"] = injectedRuntime.path
+        }
+
         if let keymapURL, fileManager.fileExists(atPath: keymapURL.path) {
             env["PEAR_KEYMAP"] = keymapURL.path
         }
