@@ -154,6 +154,14 @@ static BOOL PearGLDebug(void) {
     return getenv("PEAR_DEBUG_GL") != NULL;
 }
 
+static UIWindow *PearGLKeyWindow(void);
+
+static UIWindow *PearGLWindowForLayer(CALayer *layer) {
+    id delegate = layer.delegate;
+    if ([delegate isKindOfClass:UIView.class]) return ((UIView *)delegate).window;
+    return nil;
+}
+
 static UIWindow *PearGLKeyWindow(void) {
     UIWindow *first = nil;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -318,17 +326,40 @@ static void PearFitDrawable(CALayer *layer) {
             PearClearScreenOverride();
         }
 
-        // Undo any resize the app (or autoresizing) applied to the view. The
-        // renderbuffer still has the native size, so the engine's coordinates
-        // must stay native too.
-        CGRect bounds = current.bounds;
-        if (fabs(bounds.size.width - native.width) > 0.5 ||
-            fabs(bounds.size.height - native.height) > 0.5) {
-            current.bounds = CGRectMake(0, 0, native.width, native.height);
+        // Undo any resize the app (or autoresizing) applied to the view once the
+        // window is in its full-screen form. The renderbuffer still has the
+        // native size, so the engine's coordinates must stay native too. In the
+        // windowed form the app keeps its normal resize behaviour.
+        CGSize basis = native;
+        if (fullScreenLike) {
+            CGRect bounds = current.bounds;
+            if (fabs(bounds.size.width - native.width) > 0.5 ||
+                fabs(bounds.size.height - native.height) > 0.5) {
+                current.bounds = CGRectMake(0, 0, native.width, native.height);
+            }
+        } else {
+            basis = current.bounds.size;
+            if (basis.width < 1 || basis.height < 1) return;
+
+            // Keep the pre-existing windowed behaviour: shrink an oversized
+            // drawable, but do not enlarge one that already fits.
+            BOOL fits = basis.width <= windowBounds.size.width * 1.02 &&
+                        basis.height <= windowBounds.size.height * 1.02;
+            if (fits) {
+                if (!gFitApplied) return;
+                gFitApplied = NO;
+                gLastFitScale = 0;
+                current.transform = CATransform3DIdentity;
+                if (current.superlayer) {
+                    current.position = CGPointMake(CGRectGetMidX(current.superlayer.bounds),
+                                                   CGRectGetMidY(current.superlayer.bounds));
+                }
+                return;
+            }
         }
 
-        CGFloat scale = MIN(windowBounds.size.width / native.width,
-                            windowBounds.size.height / native.height);
+        CGFloat scale = MIN(windowBounds.size.width / basis.width,
+                            windowBounds.size.height / basis.height);
         if (scale <= 0) return;
 
         // Re-apply the position even when the scale is unchanged: a window
@@ -340,14 +371,14 @@ static void PearFitDrawable(CALayer *layer) {
 
         if (gFitApplied &&
             CGSizeEqualToSize(gLastFitWindowSize, windowBounds.size) &&
-            CGSizeEqualToSize(gLastFitLayerSize, native) &&
+            CGSizeEqualToSize(gLastFitLayerSize, basis) &&
             fabs(gLastFitScale - scale) < 0.001) {
             return;
         }
 
         gFitApplied = YES;
         gLastFitWindowSize = windowBounds.size;
-        gLastFitLayerSize = native;
+        gLastFitLayerSize = basis;
         gLastFitScale = scale;
 
         current.transform = CATransform3DMakeScale(scale, scale, 1);
@@ -430,12 +461,19 @@ static void PearInstallEAGLHook(void) {
             } else if ([NSThread isMainThread] &&
                        (fabs(layer.bounds.size.width - gNativeDrawableSize.width) > 0.5 ||
                         fabs(layer.bounds.size.height - gNativeDrawableSize.height) > 0.5)) {
-                // The app resized its view (window resize/full screen) and is
+                // The app resized its view for a full-screen window and is
                 // allocating a new drawable at the inflated size. Keep the
                 // renderbuffer and the touch space at the engine's native size;
-                // the transform handles the visible size.
-                layer.bounds = CGRectMake(0, 0, gNativeDrawableSize.width,
-                                          gNativeDrawableSize.height);
+                // the transform handles the visible size. A normal windowed
+                // resize is left alone.
+                UIWindow *window = PearGLWindowForLayer(layer);
+                BOOL fullScreenLike = window &&
+                    layer.bounds.size.width > gNativeDrawableSize.width * 1.4 &&
+                    layer.bounds.size.height > gNativeDrawableSize.height * 1.4;
+                if (fullScreenLike) {
+                    layer.bounds = CGRectMake(0, 0, gNativeDrawableSize.width,
+                                              gNativeDrawableSize.height);
+                }
             }
             gGLDrawableSize = CGSizeMake(layer.bounds.size.width * layer.contentsScale,
                                          layer.bounds.size.height * layer.contentsScale);
