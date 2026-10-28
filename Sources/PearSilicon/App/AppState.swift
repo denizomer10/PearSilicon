@@ -61,6 +61,11 @@ final class AppState: ObservableObject {
     /// status once they are gone.
     private var stoppingApps: Set<String> = []
 
+    /// The app whose launch is still being confirmed. A process that dies during
+    /// startup (a crash or a missing runtime component) must not leave the
+    /// status bar showing "Launching …" forever.
+    private var launchingAppID: String?
+
     // MARK: - Lifecycle
 
     init() {
@@ -111,6 +116,13 @@ final class AppState: ObservableObject {
             }
         }
         runningApps = map
+
+        // A launch is only "pending" until the app shows up as running. Once it
+        // does, clear the transient status; the app is now the user's focus.
+        if let launching = launchingAppID, map[launching] != nil {
+            launchingAppID = nil
+            if statusMessage.hasPrefix("Launching ") { statusMessage = L10n.ready }
+        }
 
         // Drop the transient "Stopping …" status once those apps are gone.
         let finished = stoppingApps.filter { map[$0] == nil }
@@ -313,6 +325,22 @@ final class AppState: ObservableObject {
                 nativeContainer: nativeContainer
             )
             statusMessage = L10n.launching(app.displayName)
+            launchingAppID = app.id
+
+            // Reconcile a launch that never becomes visible: if the process is
+            // not running a few seconds later, say so instead of leaving the
+            // status bar stuck on "Launching".
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard let self, self.launchingAppID == app.id else { return }
+                self.refreshRunningApps()
+                if self.launchingAppID == app.id {
+                    self.launchingAppID = nil
+                    if self.statusMessage.hasPrefix("Launching ") {
+                        self.statusMessage = L10n.error("\(app.displayName) exited during launch")
+                    }
+                }
+            }
 
             // Own the keymapper UI from here: a small overlay button + editor over
             // the game window. The game process stays free of added UI.
