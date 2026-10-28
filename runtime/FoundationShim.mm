@@ -112,6 +112,48 @@ static void PearInstallSerializationGuards(void) {
                         self, selector, cls, data, error);
                 }));
         }
+
+        // The streaming initializer is the other common entry point (and the
+        // one several game SDKs use for their cached download manifests).
+        SEL initSelector = @selector(initForReadingFromData:error:);
+        Method initMethod = class_getInstanceMethod(unarchiver, initSelector);
+        if (initMethod) {
+            IMP original = method_getImplementation(initMethod);
+            method_setImplementation(initMethod, imp_implementationWithBlock(
+                ^id(id self, NSData *data, NSError **error) {
+                    if (!data) {
+                        if (error) *error = PearNilDataError(@"initForReadingFromData:error:");
+                        return nil;
+                    }
+                    return ((id (*)(id, SEL, NSData *, NSError **))original)(
+                        self, initSelector, data, error);
+                }));
+        }
+
+        SEL legacySelector = @selector(initForReadingWithData:);
+        Method legacyMethod = class_getInstanceMethod(unarchiver, legacySelector);
+        if (legacyMethod) {
+            IMP original = method_getImplementation(legacyMethod);
+            method_setImplementation(legacyMethod, imp_implementationWithBlock(
+                ^id(id self, NSData *data) {
+                    if (!data) return nil;
+                    return ((id (*)(id, SEL, NSData *))original)(
+                        self, legacySelector, data);
+                }));
+        }
+    }
+
+    Class parser = NSClassFromString(@"NSXMLParser");
+    if (parser) {
+        SEL selector = @selector(initWithData:);
+        Method method = class_getInstanceMethod(parser, selector);
+        if (method) {
+            IMP original = method_getImplementation(method);
+            method_setImplementation(method, imp_implementationWithBlock(^id(id self, NSData *data) {
+                if (!data) return nil;
+                return ((id (*)(id, SEL, NSData *))original)(self, selector, data);
+            }));
+        }
     }
 }
 
