@@ -58,7 +58,6 @@ private let booleanFlags: Set<String> = [
     "launch", "no-launch", "keys", "no-keys", "log", "wait", "follow", "system",
     "lldb", "yes", "print", "path", "generate", "json", "no-keymap", "trace", "help",
     "metal-hud", "no-metal-hud", "pointer-lock", "no-pointer-lock",
-    "container", "no-container",
 ]
 
 /// Result box for the async → sync bridge. `@unchecked Sendable` because the
@@ -275,17 +274,8 @@ enum CLI {
 
         let nativeContainer = false
 
-        let strictContainer: Bool
-        if arguments.flags.contains("container") {
-            strictContainer = true
-        } else if arguments.flags.contains("no-container") {
-            strictContainer = false
-        } else {
-            strictContainer = AppSettings.strictContainerEnabled(for: app.id)
-        }
-        if strictContainer {
-            environment["PEAR_IOS_SANDBOX"] = "1"
-        }
+        // The iOS-like filesystem view is always applied.
+        environment["PEAR_IOS_SANDBOX"] = "1"
         let launchEnvironment = environment
 
         // A previously prepared native app must be switched back so the
@@ -311,7 +301,7 @@ enum CLI {
         print("  metal HUD: \(hudEnabled ? "on" : "off")")
         print("  pointer lock: \(pointerLock ? "allowed" : "disabled")")
         print("  mode: compatibility runtime")
-        print("  container: \(strictContainer ? "iOS-like" : "host") ")
+        print("  container: iOS-like ")
         if let logPath { print("  log:    \(logPath)") }
 
         if arguments.flags.contains("lldb") {
@@ -952,7 +942,6 @@ enum CLI {
           --keys / --no-keys   Force the keymapper on or off for this launch
           --metal-hud / --no-metal-hud  Force the Metal HUD/FPS overlay on or off
           --pointer-lock / --no-pointer-lock  Force the game's pointer lock on or off
-          --container / --no-container  Force the iOS-like filesystem view on or off
           --log                Write a log file and follow it
           --wait               Wait for the app to exit
           --env KEY=VALUE      Extra environment variable (repeatable)

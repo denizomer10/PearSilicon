@@ -26,13 +26,4 @@ enum AppSettings {
     static func setPointerLockAllowed(_ allowed: Bool, for bundleID: String) {
         defaults.set(allowed, forKey: "pointerLock.enabled." + bundleID)
     }
-
-    /// Gives the app an iOS-like filesystem view for the next launch.
-    static func strictContainerEnabled(for bundleID: String) -> Bool {
-        defaults.bool(forKey: "strictContainer.enabled." + bundleID)
-    }
-
-    static func setStrictContainerEnabled(_ enabled: Bool, for bundleID: String) {
-        defaults.set(enabled, forKey: "strictContainer.enabled." + bundleID)
-    }
 }

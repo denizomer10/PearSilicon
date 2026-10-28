@@ -142,7 +142,7 @@ A keymap is a small JSON file per app:
 ## Diagnostics
 
 - `PEAR_LOG_FILE=<path>` writes the runtime log to a file.
-- `PEAR_IOS_SANDBOX=1` enables the iOS-like filesystem view for a launch.
+- The iOS-like filesystem view is applied to every launch.
 - `PEAR_DEBUG_TOUCH`, `PEAR_DEBUG_SCREEN`, `PEAR_DEBUG_GL` and
   `PEAR_DEBUG_CLOUD` add logging.
 - `PEAR_NO_*` disables a shim.
