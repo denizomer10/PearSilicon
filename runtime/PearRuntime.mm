@@ -11,6 +11,28 @@
 #import <objc/runtime.h>
 #import <sys/stat.h>
 #import <os/log.h>
+#import <pwd.h>
+#import <unistd.h>
+
+/// The log file used when the launcher did not pass PEAR_LOG_FILE. GUI launches
+/// need the same trace as `--log` runs, otherwise an exception inside a third
+/// party crash reporter leaves no actionable information behind.
+static NSString *PearDefaultLogPath(void) {
+    static NSString *path;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *home = getpwuid(getuid()) ? getpwuid(getuid())->pw_dir : NULL;
+        NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
+        if (!home || bundleID.length == 0) return;
+        NSString *directory = [NSString stringWithFormat:
+            @"%s/Library/Application Support/PearSilicon/Logs", home];
+        [NSFileManager.defaultManager createDirectoryAtPath:directory
+                               withIntermediateDirectories:YES attributes:nil error:NULL];
+        path = [directory stringByAppendingPathComponent:
+                [bundleID stringByAppendingString:@".log"]];
+    });
+    return path;
+}
 
 void PearLog(NSString *format, ...) {
     va_list args;
@@ -27,6 +49,7 @@ void PearLog(NSString *format, ...) {
     os_log_with_type(handle, OS_LOG_TYPE_DEFAULT, "%{public}s", message.UTF8String);
 
     const char *path = getenv("PEAR_LOG_FILE");
+    if (!path) path = PearDefaultLogPath().fileSystemRepresentation;
     if (path) {
         FILE *file = fopen(path, "a");
         if (file) {
