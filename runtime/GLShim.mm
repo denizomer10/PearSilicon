@@ -241,7 +241,8 @@ static void PearInstallTouchRemap(void) {
         // bounds match the window) is the same space for a full-window GL app.
         CGSize windowSize = CGSizeZero;
         if (!view) {
-            UIWindow *window = PearGLKeyWindow();
+            UIView *glView = gDrawableLayer.delegate;
+            UIWindow *window = glView.window ?: PearGLKeyWindow();
             if (window) windowSize = window.bounds.size;
         } else if ([view isKindOfClass:UIWindow.class]) {
             windowSize = view.bounds.size;
