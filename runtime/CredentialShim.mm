@@ -29,22 +29,25 @@ static PearCredentialInitFn gOriginalInit;
 /// but the app may build the array with a NULL callback); that reaches
 /// CFEqual(NULL) and traps. Drop empty entries before handing the array over.
 static NSArray *PearSanitizedCertificates(NSArray *certificates) {
-    if (!certificates) return nil;
+    // CFNetwork's credential constructor dereferences the array unconditionally
+    // on this platform: passing nil there crashes in CFEqual(NULL). A credential
+    // with an identity and no certificates is valid, so hand it an empty array.
+    if (!certificates) return @[];
     CFArrayRef array = (__bridge CFArrayRef)certificates;
-    if (CFGetTypeID(array) != CFArrayGetTypeID()) return nil;
+    if (CFGetTypeID(array) != CFArrayGetTypeID()) return @[];
 
     CFIndex count = CFArrayGetCount(array);
-    if (count == 0) return nil;
+    if (count == 0) return @[];
 
     CFMutableArrayRef filtered = CFArrayCreateMutable(kCFAllocatorDefault, count,
                                                        &kCFTypeArrayCallBacks);
-    if (!filtered) return nil;
+    if (!filtered) return @[];
     for (CFIndex index = 0; index < count; index++) {
         const void *item = CFArrayGetValueAtIndex(array, index);
         if (item) CFArrayAppendValue(filtered, item);
     }
     NSArray *result = (__bridge_transfer NSArray *)filtered;
-    return result.count > 0 ? result : nil;
+    return result;
 }
 
 /// A non-NULL pointer is not necessarily a valid identity. Asking Security to
