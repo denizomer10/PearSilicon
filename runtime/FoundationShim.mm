@@ -20,6 +20,11 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <execinfo.h>
+#import <fcntl.h>
+#import <signal.h>
+#import <stdio.h>
+#import <unistd.h>
 #import "PearRuntime.h"
 
 static BOOL PearFoundationGuardsDisabled(void) {
@@ -194,11 +199,61 @@ static void PearLogUncaughtException(NSException *exception) {
             [exception.callStackSymbols componentsJoinedByString:@"\n"]);
 }
 
+#pragma mark - Crash signal log
+
+static int gCrashLogFD = -1;
+static struct sigaction gPreviousSignalActions[NSIG];
+static volatile sig_atomic_t gInSignalHandler = 0;
+
+static void PearCrashSignalHandler(int signalNumber) {
+    if (gInSignalHandler) {
+        struct sigaction fallback = {0};
+        fallback.sa_handler = SIG_DFL;
+        sigaction(signalNumber, &fallback, NULL);
+        raise(signalNumber);
+        return;
+    }
+    gInSignalHandler = 1;
+
+    if (gCrashLogFD >= 0) {
+        char header[96];
+        int length = snprintf(header, sizeof(header),
+                              "\n[PearRuntime][signal] received signal %d\n", signalNumber);
+        if (length > 0) write(gCrashLogFD, header, (size_t)length);
+        void *frames[64];
+        int count = backtrace(frames, 64);
+        if (count > 0) backtrace_symbols_fd(frames, count, gCrashLogFD);
+    }
+
+    struct sigaction previous = gPreviousSignalActions[signalNumber];
+    if (previous.sa_handler == SIG_IGN) previous.sa_handler = SIG_DFL;
+    sigaction(signalNumber, &previous, NULL);
+    raise(signalNumber);
+}
+
+static void PearInstallCrashSignalLog(void) {
+    if (getenv("PEAR_NO_SIGNAL_LOG")) return;
+    NSString *path = PearLogFilePath();
+    if (path.length == 0) return;
+    gCrashLogFD = open(path.fileSystemRepresentation, O_WRONLY | O_APPEND | O_CREAT, 0644);
+    if (gCrashLogFD < 0) return;
+
+    const int signals[] = { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGTRAP, SIGFPE };
+    for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) {
+        struct sigaction action = {0};
+        action.sa_handler = PearCrashSignalHandler;
+        sigemptyset(&action.sa_mask);
+        action.sa_flags = SA_RESTART;
+        sigaction(signals[i], &action, &gPreviousSignalActions[signals[i]]);
+    }
+}
+
 static void PearInstallFoundationGuards(void) {
     if (PearFoundationGuardsDisabled()) return;
     PearInstallSerializationGuards();
     PearInstallImageGuards();
     NSSetUncaughtExceptionHandler(&PearLogUncaughtException);
+    PearInstallCrashSignalLog();
     PearLog(@"[PearRuntime][data] Foundation nil-data guards installed");
 }
 

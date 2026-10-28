@@ -17,7 +17,7 @@
 /// The log file used when the launcher did not pass PEAR_LOG_FILE. GUI launches
 /// need the same trace as `--log` runs, otherwise an exception inside a third
 /// party crash reporter leaves no actionable information behind.
-static NSString *PearDefaultLogPath(void) {
+NSString *PearLogFilePath(void) {
     static NSString *path;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -49,7 +49,7 @@ void PearLog(NSString *format, ...) {
     os_log_with_type(handle, OS_LOG_TYPE_DEFAULT, "%{public}s", message.UTF8String);
 
     const char *path = getenv("PEAR_LOG_FILE");
-    if (!path) path = PearDefaultLogPath().fileSystemRepresentation;
+    if (!path) path = PearLogFilePath().fileSystemRepresentation;
     if (path) {
         FILE *file = fopen(path, "a");
         if (file) {

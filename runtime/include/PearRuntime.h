@@ -18,6 +18,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// `<private>`, which makes in-process debugging hard; this gives a readable log.
 void PearLog(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 
+/// The per-app log file used when PEAR_LOG_FILE is not set. Also used by the
+/// crash-signal diagnostic, which cannot call Foundation from a signal handler.
+NSString *PearLogFilePath(void);
+
 /// Reports `size` through the UIScreen geometry and orientation accessors.
 /// Used by the GL shim once an app has a fixed drawable, so a Mac window resize
 /// (including full screen) does not move the app's coordinate space.
