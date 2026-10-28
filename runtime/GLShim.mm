@@ -177,6 +177,11 @@ static BOOL gFitApplied = NO;
 /// reference space or every control is offset by the difference in scale. The
 /// visible image is fitted by the layer transform below.
 static CGSize gReferenceWindowSize = { 0, 0 };
+/// A window resize animates through intermediate sizes. Recording one of those
+/// as the reference would leave every touch slightly offset, so the size only
+/// becomes the reference after it has stayed put briefly.
+static CGSize gPendingWindowSize = { 0, 0 };
+static CFAbsoluteTime gPendingWindowSince = 0;
 static BOOL gTouchRemapInstalled = NO;
 
 /// Maps a point in the current window's space back to the coordinate space the
@@ -292,7 +297,13 @@ static void PearFitDrawable(CALayer *layer) {
         BOOL fullScreenLike = windowBounds.size.width > native.width * 1.4 &&
                               windowBounds.size.height > native.height * 1.4;
         if (!fullScreenLike) {
-            gReferenceWindowSize = windowBounds.size;
+            if (gReferenceWindowSize.width < 1) gReferenceWindowSize = windowBounds.size;
+            if (!CGSizeEqualToSize(gPendingWindowSize, windowBounds.size)) {
+                gPendingWindowSize = windowBounds.size;
+                gPendingWindowSince = CFAbsoluteTimeGetCurrent();
+            } else if (CFAbsoluteTimeGetCurrent() - gPendingWindowSince > 0.4) {
+                gReferenceWindowSize = windowBounds.size;
+            }
         }
 
         // In the windowed form the app keeps following the real window, as it
