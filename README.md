@@ -6,7 +6,7 @@
 
 *A native iOS compatibility layer for macOS.*
 
-**Version 0.1.8**
+**Version 0.1.9**
 
 PearSilicon runs iOS applications natively on arm64 Macs by translating the
 system APIs they expect. It is an independent, clean-room compatibility layer
