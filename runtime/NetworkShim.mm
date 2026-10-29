@@ -31,6 +31,7 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import "PearRuntime.h"
+#import "PearDeviceProfile.h"
 
 static BOOL gInstalled;
 static BOOL gKeepUA;
@@ -51,29 +52,29 @@ static void PearLogRequest(NSString *phase, NSURLRequest *request) {
 #pragma mark - Header values
 
 static NSString *PearDeviceModel(void) {
-    const char *override = getenv("PEAR_DEVICE_MODEL");
-    if (override && override[0]) return [NSString stringWithUTF8String:override];
-    // A current iPhone model identifier. X-Device-Model is a custom header, so
-    // the exact model only has to be plausible and stable.
-    return @"iPhone15,2";
+    const char *text = PearDeviceProfileGet()->model;
+    return text ? [NSString stringWithUTF8String:text] : nil;
 }
 
 static NSString *PearIOSVersion(void) {
-    const char *override = getenv("PEAR_FAKE_IOS_VERSION");
-    if (override && override[0]) return [NSString stringWithUTF8String:override];
-    return @"16.0";
+    const char *text = PearDeviceProfileGet()->systemVersion;
+    return text ? [NSString stringWithUTF8String:text] : nil;
 }
 
 static NSString *PearUserAgent(void) {
     static NSString *agent;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        NSString *iosVersion = PearIOSVersion();
+        if (!iosVersion) return; // An invalid managed snapshot has no fallback UA.
+        const char *idiom = PearDeviceProfileGet()->idiom;
+        NSString *device = idiom && !strcmp(idiom, "pad") ? @"iPad" : @"iPhone";
         NSDictionary *info = NSBundle.mainBundle.infoDictionary ?: @{};
         NSString *name = info[@"CFBundleExecutable"] ?: info[@"CFBundleName"] ?: @"App";
         name = [name stringByReplacingOccurrencesOfString:@" " withString:@""];
         NSString *version = info[@"CFBundleShortVersionString"] ?: @"1.0";
-        agent = [NSString stringWithFormat:@"%@/%@ (iPhone; iOS %@; Scale/3.00)",
-                 name, version, PearIOSVersion()];
+        agent = [NSString stringWithFormat:@"%@/%@ (%@; iOS %@; Scale/3.00)",
+                 name, version, device, iosVersion];
     });
     return agent;
 }
@@ -92,13 +93,17 @@ static NSDictionary *PearMergedHeaders(NSDictionary *headers) {
     NSMutableDictionary *merged = [headers isKindOfClass:[NSDictionary class]]
         ? [headers mutableCopy]
         : [NSMutableDictionary dictionary];
+    if (PearDeviceProfileGet()->status != PearDeviceProfileStatusReady) return merged;
 
     NSString *existing = merged[@"User-Agent"];
     if (!gKeepUA || PearLooksLikeMacUserAgent(existing)) {
-        merged[@"User-Agent"] = PearUserAgent();
+        NSString *agent = PearUserAgent();
+        if (agent) merged[@"User-Agent"] = agent;
     }
-    if (!merged[@"X-Device-Model"]) merged[@"X-Device-Model"] = PearDeviceModel();
-    if (!merged[@"X-OS-Version"]) merged[@"X-OS-Version"] = PearIOSVersion();
+    NSString *model = PearDeviceModel();
+    NSString *version = PearIOSVersion();
+    if (!merged[@"X-Device-Model"] && model) merged[@"X-Device-Model"] = model;
+    if (!merged[@"X-OS-Version"] && version) merged[@"X-OS-Version"] = version;
     return merged;
 }
 
@@ -140,7 +145,8 @@ static SetAllHeadersFn gSetAllHeaders;
 
 static void PearSetValue(id self, SEL _cmd, NSString *value, NSString *field) {
     if ([field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame && !gKeepUA) {
-        value = PearUserAgent();
+        NSString *agent = PearUserAgent();
+        if (agent) value = agent;
     }
     if (gSetValue) gSetValue(self, _cmd, value, field);
 }
@@ -168,11 +174,14 @@ static void PearHeadersSetter(id self, SEL _cmd, NSDictionary *headers) {
 static void PearPatchConfigurationClass(Class cls) {
     if (!cls) return;
 
-    IMP headersGetter = PearSwap(cls, @selector(HTTPAdditionalHeaders), (IMP)PearHeadersGetter);
-    if (headersGetter) gHeadersGetter = (HeadersGetterFn)headersGetter;
-    IMP headersSetter = PearSwap(cls, @selector(setHTTPAdditionalHeaders:), (IMP)PearHeadersSetter);
-    if (headersSetter) gHeadersSetter = (HeadersSetterFn)headersSetter;
+    if (PearDeviceProfileGet()->status == PearDeviceProfileStatusReady) {
+        IMP headersGetter = PearSwap(cls, @selector(HTTPAdditionalHeaders), (IMP)PearHeadersGetter);
+        if (headersGetter) gHeadersGetter = (HeadersGetterFn)headersGetter;
+        IMP headersSetter = PearSwap(cls, @selector(setHTTPAdditionalHeaders:), (IMP)PearHeadersSetter);
+        if (headersSetter) gHeadersSetter = (HeadersSetterFn)headersSetter;
+    }
 
+    // This compatibility policy is independent of profile availability.
     // assumesHTTP3Capable is public since iOS 14.5 / macOS 11.3. Force it off
     // so CFNetwork does not negotiate QUIC for new connections.
     SEL h3GetterSel = NSSelectorFromString(@"assumesHTTP3Capable");
@@ -246,7 +255,7 @@ static NSURLSessionTask *PearUploadTaskWithRequestFromFile(id self, SEL _cmd, NS
 }
 
 static void PearPatchSessionClass(Class cls) {
-    if (!cls) return;
+    if (!cls || PearDeviceProfileGet()->status != PearDeviceProfileStatusReady) return;
     IMP imp;
 
     imp = PearSwap(cls, @selector(dataTaskWithRequest:), (IMP)PearDataTaskWithRequest);
@@ -278,13 +287,16 @@ static void PearInstallNetworkShim(void) {
     @autoreleasepool {
         // Concrete class of mutable requests; patching it covers every request
         // the app creates through any initializer.
-        NSMutableURLRequest *sample =
-            [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://example.com"]];
-        Class requestClass = sample ? object_getClass(sample) : [NSMutableURLRequest class];
-        IMP imp = PearSwap(requestClass, @selector(setValue:forHTTPHeaderField:), (IMP)PearSetValue);
-        if (imp) gSetValue = (SetValueFn)imp;
-        imp = PearSwap(requestClass, @selector(setAllHTTPHeaderFields:), (IMP)PearSetAllHeaders);
-        if (imp) gSetAllHeaders = (SetAllHeadersFn)imp;
+        BOOL profileReady = PearDeviceProfileGet()->status == PearDeviceProfileStatusReady;
+        if (profileReady) {
+            NSMutableURLRequest *sample =
+                [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://example.com"]];
+            Class requestClass = sample ? object_getClass(sample) : [NSMutableURLRequest class];
+            IMP imp = PearSwap(requestClass, @selector(setValue:forHTTPHeaderField:), (IMP)PearSetValue);
+            if (imp) gSetValue = (SetValueFn)imp;
+            imp = PearSwap(requestClass, @selector(setAllHTTPHeaderFields:), (IMP)PearSetAllHeaders);
+            if (imp) gSetAllHeaders = (SetAllHeadersFn)imp;
+        }
 
         // Concrete class of session configurations; the default, ephemeral and
         // shared sessions all use it.
@@ -294,8 +306,10 @@ static void PearInstallNetworkShim(void) {
         PearPatchConfigurationClass(ephemeral ? object_getClass(ephemeral) : NULL);
 
         // Concrete class of the shared session, which is what most code uses.
-        NSURLSession *session = [NSURLSession sharedSession];
-        PearPatchSessionClass(session ? object_getClass(session) : [NSURLSession class]);
+        if (profileReady) {
+            NSURLSession *session = [NSURLSession sharedSession];
+            PearPatchSessionClass(session ? object_getClass(session) : [NSURLSession class]);
+        }
     }
 
     PearLog(@"[PearRuntime][network] shim installed (UA=%@, HTTP/3 off)", PearUserAgent());
@@ -303,8 +317,8 @@ static void PearInstallNetworkShim(void) {
 
 __attribute__((constructor))
 static void PearNetworkShimInit(void) {
+    if (getenv("PEAR_NO_NETWORK_SHIM")) return;
     @autoreleasepool {
-        if (NSProcessInfo.processInfo.environment[@"PEAR_NO_NETWORK_SHIM"]) return;
         PearInstallNetworkShim();
     }
 }

@@ -49,6 +49,13 @@ static NSString *PearODRExternalRoot(void) {
 
     NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
     if (bundleID.length == 0) return nil;
+    // PEAR_SUPPORT_ROOT follows relocated storage and avoids NSHomeDirectory,
+    // which PathShim redirects into the per-game data folder.
+    const char *root = getenv("PEAR_SUPPORT_ROOT");
+    if (root && root[0]) {
+        return [[[NSString stringWithUTF8String:root] stringByAppendingPathComponent:@"ODR"]
+                stringByAppendingPathComponent:bundleID];
+    }
     return [[NSHomeDirectory() stringByAppendingPathComponent:
              @"Library/Application Support/PearSilicon/ODR"]
             stringByAppendingPathComponent:bundleID];

@@ -65,6 +65,7 @@ pearsilicon hud <id|name> [on|off]   Print or set the Metal HUD/FPS overlay
 pearsilicon pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
 pearsilicon logs <id|name>      Print or follow the log (--follow, --system)
 pearsilicon paths               Show the Application Support layout
+pearsilicon storage [move <folder>|remove-previous]  Show or relocate the data folder
 pearsilicon doctor              Check the development toolchain, runtime and library readiness
 pearsilicon link                Symlink this binary to /usr/local/bin
 pearsilicon build <project>     Build a scheme for a device, install, launch
@@ -82,6 +83,10 @@ ambiguous display name lists the candidates instead of guessing.
 | `--pointer-lock` / `--no-pointer-lock` | Force the game's pointer lock on or off for this launch |
 | `--log` | Write `~/Library/Application Support/PearSilicon/Logs/<id>.log` and follow it; the CLI exits when the app exits |
 | `--wait` | Wait for the app to exit without creating a log file |
+| `--background` | Do not activate the app or request foreground focus |
+| `--env-injection` | Experimental A mode: launcher-loaded runtime and a per-app host service |
+| `--load-command` | Explicitly select the legacy runtime `LC_LOAD_DYLIB` mode |
+| `--sandboxed` | Experimental `sandbox-exec` launch; rejected with environment injection on this path |
 | `--env KEY=VALUE` | Extra environment variable for the game (repeatable) |
 | `--trace` | Shorthand for the runtime's touch debugging (`PEAR_DEBUG_TOUCH=1`) |
 | `--lldb` | (`debug` only) attach LLDB to the launched process |
@@ -118,12 +123,16 @@ letting the project builder fail cryptically.
 
 `install` accepts two shapes:
 
-- **package** — unzipped, the `Payload/*.app` is prepared and signed;
+- **package** — an `.ipa` (or the older `.app package`) zip; the `Payload/*.app`
+  is prepared and signed;
 - **`.app`** — a bundle produced by a device build (or any iOS `.app`).
+
+The same packages can be **dragged onto the main window** to install them; the
+window accepts `.ipa` and `.app` files and shows the result in the status bar.
 
 The pipeline is the same as the GUI: `Info.plist` rewrite → legacy metadata
 removal → Mach-O platform patch (iOS → Mac Catalyst, arm64) → loading the
-runtime with `LC_LOAD_DYLIB` → inside-out ad-hoc signing with the loader entitlements.
+runtime with `LC_LOAD_DYLIB` by default (or launcher insertion with `--env-injection`) → inside-out ad-hoc signing with the loader entitlements.
 
 **Simulator builds are rejected** at install time. Their binaries target the
 simulator runtime and cannot be turned into Catalyst binaries; build for a
@@ -133,6 +142,172 @@ A starter keymap is generated if the app has none (disable with `--no-keymap`).
 The keymapper itself stays opt-in: pass `--keys`, or enable it for the app in
 the GUI. Without it, no keymap path is passed and the runtime installs no input
 handlers at all.
+
+---
+
+## Experimental A / Proton-style host split
+
+```sh
+pearsilicon install ~/Downloads/App.ipa --env-injection
+pearsilicon launch com.example.game --background
+# Explicitly return to the legacy preparation mode, while the app is stopped:
+pearsilicon launch com.example.game --load-command --background
+```
+
+An environment-mode app keeps that mode on subsequent GUI/CLI launches; it is
+not silently converted back. `--env-injection` and `--load-command` are mutually
+exclusive. Close a running app before launching it again or changing modes.
+A per-app interprocess lease covers the stopped-state check, preparation, and
+spawn/host attachment, so two GUI/CLI launches cannot race a mode change.
+Mode changes prepare and sign a staging copy, verify it, and atomically swap it
+with the installed copy. Failures leave the installed copy unchanged.
+
+In A mode the installed executable has **no runtime `LC_LOAD_DYLIB`**. The
+launcher supplies `DYLD_INSERT_LIBRARIES`, then connects the runtime to a
+separate, headless host using an authenticated, per-launch Unix socket. The
+launcher waits for a valid readiness response before starting the game. If the
+host fails to start, the launch fails explicitly—there is no automatic binary
+rewrite or local-store fallback. The host tracks the launched PID, survives a
+short-lived CLI, and exits when the game exits. Failed launches stop their host;
+post-spawn attachment failures also roll back the newly launched game process.
+An unattached host expires after 15 seconds.
+
+**Current scope:** the local `NSUbiquitousKeyValueStore` backing state and the
+static device-profile configuration are host-owned. The same full runtime is
+still loaded into the game; UIKit, ObjC bridging, rendering, touch, audio,
+device API hooks and keychain shims remain in-process. Only the device profile's
+configuration/identity policy moved, not the numeric hardware, motion, or IOKit
+implementation. This is not kernel-level iOS emulation, a complete wineserver,
+or a claim of a smaller injected library yet. The original IPA is untouched,
+but the installed copy still needs platform preparation, signing and dependency
+fixups. API shims still intercept calls in the game's process.
+
+The socket's directory is mode `0700`, its endpoint `0600`; peers must have the
+same UID and supply the per-launch capability. Frames are bounded binary plists
+so data/date/nested values retain their types. Current POC limits are 1 MiB per
+frame, 512 KiB per persisted KV store, 1024 UTF-8 bytes per key, and eight clients.
+A corrupt or oversized existing store is preserved and produces an explicit
+startup error, not an empty replacement. Cold KV operations share one deadline
+across lock waits and IPC (100 ms on the main thread, 500 ms on workers).
+The host is the only KV file writer in a managed A session, persists before
+acknowledging, and rejects a
+second host for the same store. During an outage, the runtime may read its last
+confirmed host cache but cannot write a separate local file; failed writes do
+not make `synchronize` succeed. Socket authentication **does not** isolate a
+hostile game from another process with the same UID. The existing user-space
+filesystem view and permissive `sandbox-exec` experiment are not a strong
+per-app security boundary.
+
+Host logs: `Logs/<bundleID>.host.log`. KV data stays at
+`Games/<bundleID>/Library/Cloud/key-values.plist`, or under the selected
+`PEAR_HOME_DIR` (including a migrated native container). Host socket/token
+variables are launcher-managed. Children created after runtime bootstrap do
+not inherit the launcher insertion/capability; earlier library initializers
+are outside that guarantee.
+
+### Startup device profile
+
+After authenticated `ping`, the launcher fetches the read-only `device.get`
+snapshot and verifies its schema, bundle binding, values, and synthetic vendor
+identifier within the **same startup deadline**. Only six explicitly selected
+raw settings are forwarded to the host; inherited profile metadata is stripped.
+Missing, invalid, or mismatched profiles fail before the game is started.
+
+The canonical snapshot is handed to the game through its startup environment.
+`runtime/DeviceProfile.mm` captures it once into bounded C storage, shared by
+`DeviceShim` and `NetworkShim`. Early `sysctl`/`uname` paths do not touch
+Foundation, files, host IPC, or device-profile generation. Repeated API/header
+lookups stay local, and a later host outage does not change the device profile.
+KV outage/write behavior remains as described above.
+
+| Input (`--env KEY=VALUE`) | Default | Managed-mode validation |
+| --- | --- | --- |
+| `PEAR_DEVICE_MODEL` | `iPhone15,2` | 1–63 ASCII bytes; starts with a letter, followed by letters/digits/commas/underscores/hyphens |
+| `PEAR_DEVICE_NAME` | `iPhone` | Nonempty, at most 127 UTF-8 bytes, no Unicode controls |
+| `PEAR_DEVICE_IDIOM` | `phone` | `phone`/`iphone` or `pad`/`ipad`, case-insensitive; normalized to `phone`/`pad` |
+| `PEAR_FAKE_IOS_VERSION` | `16.0` | 1–3 dot-separated numeric components, 1–4 digits each |
+| `PEAR_FAKE_IOS_BUILD` | `20A000` | 1–64 ASCII bytes; alphanumeric first, then letters/digits/dots/underscores/hyphens |
+| `PEAR_FAKE_DARWIN` | `22.6.0` | Same numeric component syntax as the iOS version |
+
+Absent or empty inputs select the defaults. These are compatibility descriptors,
+not evidence of genuine iOS hardware, OS capabilities, or an Apple identity.
+The synthetic vendor UUID preserves the existing bundle-and-model FNV algorithm;
+it is stable for the same inputs, without reading host/Apple device identifiers
+or storing an account token. `PEAR_DEVICE_PROFILE_SOURCE`,
+`PEAR_DEVICE_PROFILE_BUNDLE`, and `PEAR_DEVICE_VENDOR_UUID` are launcher-managed
+handoff fields, not user overrides.
+
+This does **not** enable `PEAR_DEVICE_UI_DETAILS`, `PEAR_FORCE_TRAIT_IDIOM`,
+`PEAR_DEVICE_UNAME`, `PEAR_DEVICE_KERNEL`, or `PEAR_SPOOF_OS_VERSION`; their
+existing opt-in behavior is unchanged. Device/network opt-outs still apply.
+Network identity headers share the profile and use an `iPad` UA token for a pad
+profile, without changing the existing policy for app-supplied headers. A
+malformed manually supplied managed snapshot skips profile-derived overrides
+as a whole, not field-by-field defaults; unrelated compatibility hooks retain
+their original opt-out behavior.
+
+Legacy/load-command mode still accepts its previous permissive overrides, but
+both modes now capture device values once: changing `environ` later is not a
+live update. Restart to change a profile. Legacy text overrides have a 4095-byte
+safety limit; longer values reject the snapshot rather than being truncated.
+Managed bundle metadata is limited to 255 UTF-8 bytes without Unicode controls.
+
+Headless verification (no game/window/screenshot required):
+
+```sh
+swift build
+swift test
+bash runtime/build.sh
+python3 scripts/runtime-client-smoke.py .build/debug/PearSilicon
+python3 scripts/device-profile-smoke.py .build/debug/PearSilicon
+```
+
+These tests use temporary data and headless child processes. Passing them does
+not establish that a particular game starts, downloads content, or is playable.
+
+---
+
+## Storage location
+
+Everything PearSilicon keeps lives in **one folder**: installed apps,
+per-game data, keymaps, ODR packs, the local keychain store, logs and work
+files. By default it is `~/Library/Application Support/PearSilicon`, and it can
+be moved to any folder — including one on an external disk, so games and their
+saves stay together on that disk.
+
+```sh
+pearsilicon storage                        # show the current root and previous copy
+pearsilicon storage move /Volumes/Games    # copy everything there and switch over
+pearsilicon storage remove-previous        # delete the retained rollback copy
+```
+
+The same commands are available in **Settings → Storage location**.
+
+How a move works:
+
+1. Running games must be closed; the move refuses to run while one is active.
+2. The whole root is copied to a staging folder on the target volume. The old
+   copy is never modified or deleted.
+3. Each installed app's absolute compatibility paths (`LC_LOAD_DYLIB`,
+   `LC_ID_DYLIB`, `LC_RPATH` entries pointing at the old root) are rewritten for
+   the new root and the copy is re-signed with the same preparation mode it
+   already had. The runtime version is not updated by a move.
+4. The copy is verified, then the new root is activated and recorded. Any
+   failure discards the staging copy and leaves the old location active.
+5. The old root is kept as a rollback until `remove-previous` deletes it.
+
+A folder is only used as a root if PearSilicon created it or it carries the
+`.pear-storage-root` marker — an unrelated folder is never adopted or merged
+into. If the external disk is not mounted, commands report that instead of
+silently falling back to the internal disk, and no data is written to an
+unrelated path.
+
+Every launch passes the selected root to the runtime, so game data, keychain
+entries, ODR packs and logs all resolve under it even when a game is opened
+directly. A per-app data folder may also live in the macOS container when a
+game last ran in native-container mode; a move copies that data into the new
+root's `Games/<id>` folder so saves come along (the container copy is left
+untouched).
 
 ---
 
@@ -230,6 +405,10 @@ skipped so that it cannot open the GUI by accident.
   Applications/<bundleID>.app
   Keymaps/<bundleID>.json
   Logs/<bundleID>.log
+  Logs/<bundleID>.host.log        (experimental A mode)
+  Games/<bundleID>/Library/Cloud/key-values.plist
+  ODR/<bundleID>/                 (drop ODR packs here)
+  Runtime/LaunchLocks/<hashed-id>.lock
   Work/ProjectBuildData/          (pearsilicon build)
 ```
 

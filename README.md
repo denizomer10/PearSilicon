@@ -76,11 +76,26 @@ swift test
 
 1. The installer prepares the app for macOS: it normalizes the `Info.plist`,
    patches the Mach-O images, and reduces universal binaries to `arm64`.
-2. The runtime is loaded through an `LC_LOAD_DYLIB` entry. It is a clean-room
-   API compatibility layer; it does not modify the app's own logic or memory.
+2. By default, the runtime loads through an `LC_LOAD_DYLIB` entry. Experimental
+   `--env-injection` instead uses launcher-provided `DYLD_INSERT_LIBRARIES` and a
+   separate host for local KV state and static device-profile configuration.
+   The compatibility layer intercepts API calls
+   in-process; the original IPA is untouched, while the installed copy is prepared
+   and signed for macOS.
 3. The app is launched through LaunchServices on the `/System/iOSSupport`
-   runtime, so it behaves like a regular foreground app.
+   runtime, normally activated; `--background` avoids requesting foreground focus.
 4. The runtime supplies the compatibility shims and, when enabled, the keymapper.
+
+IPA packages can be dropped straight onto the app window to install, and the
+whole data folder (apps, saves, keymaps, ODR, keychain, logs) can be moved to
+another disk — see [storage location](docs/CLI.md#storage-location).
+
+The experimental [A / Proton-style split](docs/CLI.md#experimental-a--proton-style-host-split)
+does not yet shrink the injected library: UIKit, input/rendering, device and
+keychain hooks remain in-process. The host-resolved device profile is handed
+off before launch and read from a shared C snapshot, with no IPC on device or
+network-header lookup paths. It is not kernel-level iOS emulation or a security
+sandbox for hostile games.
 
 ### Compatibility shims
 

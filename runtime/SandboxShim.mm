@@ -83,6 +83,13 @@ static BOOL PearTraceInteresting(const char *path) {
     static char supportPrefix[PATH_MAX];
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        // Launcher-selected storage root; the prefix must follow it so a
+        // relocated root is hidden like the default one.
+        const char *root = getenv("PEAR_SUPPORT_ROOT");
+        if (root && root[0]) {
+            snprintf(supportPrefix, sizeof(supportPrefix), "%s/", root);
+            return;
+        }
         const char *home = getenv("HOME");
         if (!home || !home[0]) home = "/tmp";
         snprintf(supportPrefix, sizeof(supportPrefix), "%s/Library/Application Support/PearSilicon/", home);

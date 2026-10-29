@@ -21,6 +21,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
+#include <atomic>
 #import "PearRuntime.h"
 
 static BOOL PearCloudDebug(void) {
@@ -50,9 +51,16 @@ static NSString *PearCloudRoot(void) {
             base = [NSString stringWithUTF8String:override];
         } else {
             NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"unknown";
-            base = [[PearRealHome()
-                stringByAppendingPathComponent:@"Library/Application Support/PearSilicon/Games"]
-                stringByAppendingPathComponent:bundleID];
+            const char *root = getenv("PEAR_SUPPORT_ROOT");
+            if (root && root[0]) {
+                base = [[[NSString stringWithUTF8String:root]
+                    stringByAppendingPathComponent:@"Games"]
+                    stringByAppendingPathComponent:bundleID];
+            } else {
+                base = [[PearRealHome()
+                    stringByAppendingPathComponent:@"Library/Application Support/PearSilicon/Games"]
+                    stringByAppendingPathComponent:bundleID];
+            }
         }
         root = [base stringByAppendingPathComponent:@"Library/Cloud"];
         [NSFileManager.defaultManager createDirectoryAtPath:root
@@ -76,9 +84,55 @@ static NSString *PearUbiquityPath(void) {
 
 static NSMutableDictionary *gKV;
 static NSString *gKVPath;
+// Failed/ambiguous writes are not queued or retried. Only a later explicit,
+// acknowledged write to that key can make synchronize claim success again.
+static NSMutableSet<NSString *> *gHostUnconfirmedWrites;
+
+static dispatch_semaphore_t PearHostKVGate(void) {
+    static dispatch_semaphore_t gate;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ gate = dispatch_semaphore_create(1); });
+    return gate;
+}
+
+// A setter that cannot acquire the operation gate must still record failure,
+// without accessing gate-protected state or waiting for another lock. Only the
+// gate owner consumes this list. Pending failures during an IPC also prevent
+// synchronize from claiming success; a prior in-flight ACK cannot clear them.
+struct PearRejectedHostWrite {
+    NSString *__strong key;
+    PearRejectedHostWrite *next;
+};
+static_assert(std::atomic<PearRejectedHostWrite *>::is_always_lock_free,
+              "Rejected Cloud writes must not wait for another lock");
+static std::atomic<PearRejectedHostWrite *> gRejectedHostWrites{nullptr};
+
+static void PearRejectHostWrite(NSString *key) {
+    auto *write = new PearRejectedHostWrite{[key copy], nullptr};
+    write->next = gRejectedHostWrites.load(std::memory_order_relaxed);
+    while (!gRejectedHostWrites.compare_exchange_weak(write->next, write,
+            std::memory_order_release, std::memory_order_relaxed)) {}
+}
+
+static void PearCollectRejectedHostWrites(void) {
+    auto *write = gRejectedHostWrites.exchange(nullptr, std::memory_order_acquire);
+    if (write && !gHostUnconfirmedWrites) gHostUnconfirmedWrites = [NSMutableSet set];
+    while (write) {
+        [gHostUnconfirmedWrites addObject:write->key];
+        auto *next = write->next;
+        delete write;
+        write = next;
+    }
+}
 
 static void PearLoadKV(void) {
     if (gKV) return;
+    if (PearHostIsConfigured()) {
+        // This is only a cache of confirmed host values. Do not even resolve
+        // the legacy plist path in host mode: the host is its exclusive writer.
+        gKV = [NSMutableDictionary dictionary];
+        return;
+    }
     gKVPath = PearCloudKVPath();
 
     NSData *data = [NSData dataWithContentsOfFile:gKVPath];
@@ -106,28 +160,135 @@ static void PearLoadKV(void) {
 }
 
 static void PearSaveKV(void) {
-    if (!gKV) return;
+    if (PearHostIsConfigured() || !gKV) return;
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:gKV
                                                               format:NSPropertyListBinaryFormat_v1_0
                                                              options:0 error:NULL];
     if (data) [data writeToFile:gKVPath atomically:YES];
 }
 
+// Host cache and write bookkeeping are accessed only under PearHostKVGate;
+// the legacy monitor is never held across host IPC. The caller's entry deadline
+// covers the operation gate, transport gate, and socket work together.
+static BOOL PearRefreshHostKV(uint64_t deadline) {
+    NSDictionary *response = PearHostCallUntil(@{ @"op": @"kv.all" }, deadline);
+    if (![response[@"ok"] boolValue]) return NO;
+    // Replace, do not merge: absent keys in a confirmed snapshot are deletions.
+    gKV = [response[@"value"] mutableCopy];
+    return YES;
+}
+
 static id PearKVObject(NSString *key) {
+    uint64_t deadline = PearHostDeadline();
     if (!key) return nil;
+    if (PearHostIsConfigured()) {
+        if (!PearHostAcquireUntil(PearHostKVGate(), deadline)) return nil;
+        @try {
+            PearCollectRejectedHostWrites();
+            PearLoadKV();
+            NSDictionary *response = PearHostCallUntil(@{ @"op": @"kv.get", @"key": key }, deadline);
+            if ([response[@"ok"] boolValue]) {
+                id value = response[@"value"];
+                if (value) gKV[key] = value;
+                else [gKV removeObjectForKey:key];
+                return value;
+            }
+            // An outage may serve confirmed host cache only while we own it.
+            // A timed-out gate wait must not read this mutable dictionary.
+            return gKV[key];
+        } @finally {
+            dispatch_semaphore_signal(PearHostKVGate());
+        }
+    }
     @synchronized (NSNull.class) {
         PearLoadKV();
         return gKV[key];
     }
 }
 
-static void PearKVSet(NSString *key, id value) {
-    if (!key) return;
+static BOOL PearKVSet(NSString *key, id value) {
+    uint64_t deadline = PearHostDeadline();
+    if (!key) return NO;
+    if (PearHostIsConfigured()) {
+        if (!PearHostAcquireUntil(PearHostKVGate(), deadline)) {
+            PearRejectHostWrite(key);
+            return NO;
+        }
+        @try {
+            // Collect only before this write: failures queued during its IPC
+            // must not be cleared by this earlier operation's success ACK.
+            PearCollectRejectedHostWrites();
+            PearLoadKV();
+            // Keep the acknowledged cache independent of callers' mutable
+            // containers, and send exactly the same immutable value we cache.
+            id snapshot = nil;
+            if (value && [NSPropertyListSerialization propertyList:value
+                                      isValidForFormat:NSPropertyListBinaryFormat_v1_0]) {
+                snapshot = CFBridgingRelease(CFPropertyListCreateDeepCopy(
+                    kCFAllocatorDefault, (__bridge CFPropertyListRef)value, kCFPropertyListImmutable));
+            }
+            NSMutableDictionary *request = [@{ @"op": @"kv.set", @"key": key } mutableCopy];
+            if (snapshot) request[@"value"] = snapshot; // Omission deletes, never NSNull.
+            BOOL saved = (!value || snapshot) && [PearHostCallUntil(request, deadline)[@"ok"] boolValue];
+            if (!saved) {
+                if (!gHostUnconfirmedWrites) gHostUnconfirmedWrites = [NSMutableSet set];
+                [gHostUnconfirmedWrites addObject:key];
+                return NO;
+            }
+            [gHostUnconfirmedWrites removeObject:key];
+            if (snapshot) gKV[key] = snapshot;
+            else [gKV removeObjectForKey:key];
+            return YES;
+        } @finally {
+            dispatch_semaphore_signal(PearHostKVGate());
+        }
+    }
     @synchronized (NSNull.class) {
         PearLoadKV();
         if (value) gKV[key] = value;
         else [gKV removeObjectForKey:key];
         PearSaveKV();
+        return YES;
+    }
+}
+
+static NSDictionary *PearKVRepresentation(void) {
+    uint64_t deadline = PearHostDeadline();
+    if (PearHostIsConfigured()) {
+        if (!PearHostAcquireUntil(PearHostKVGate(), deadline)) return @{};
+        @try {
+            PearCollectRejectedHostWrites();
+            PearLoadKV();
+            PearRefreshHostKV(deadline);
+            return [gKV copy];
+        } @finally {
+            dispatch_semaphore_signal(PearHostKVGate());
+        }
+    }
+    @synchronized (NSNull.class) {
+        PearLoadKV();
+        return [gKV copy];
+    }
+}
+
+static BOOL PearKVSynchronize(void) {
+    uint64_t deadline = PearHostDeadline();
+    if (PearHostIsConfigured()) {
+        if (!PearHostAcquireUntil(PearHostKVGate(), deadline)) return NO;
+        @try {
+            PearCollectRejectedHostWrites();
+            // Every host set persists before its ACK. Healthy reads cannot
+            // turn a rejected/lost write (including gate rejection) into an ACK.
+            BOOL healthy = PearRefreshHostKV(deadline);
+            return healthy && gHostUnconfirmedWrites.count == 0 &&
+                gRejectedHostWrites.load(std::memory_order_acquire) == nullptr;
+        } @finally {
+            dispatch_semaphore_signal(PearHostKVGate());
+        }
+    }
+    @synchronized (NSNull.class) {
+        PearSaveKV();
+        return YES;
     }
 }
 
@@ -165,18 +326,14 @@ static void PearInstallKeyValueStore(void) {
     Method representation = class_getInstanceMethod(cls, @selector(dictionaryRepresentation));
     if (representation) {
         method_setImplementation(representation, imp_implementationWithBlock(^NSDictionary *(id self) {
-            @synchronized (NSNull.class) {
-                PearLoadKV();
-                return [gKV copy];
-            }
+            return PearKVRepresentation();
         }));
     }
 
     Method synchronize = class_getInstanceMethod(cls, @selector(synchronize));
     if (synchronize) {
         method_setImplementation(synchronize, imp_implementationWithBlock(^BOOL(id self) {
-            @synchronized (NSNull.class) { PearSaveKV(); }
-            return YES;
+            return PearKVSynchronize();
         }));
     }
 
@@ -221,7 +378,11 @@ static void PearInstallKeyValueStore(void) {
 
 #undef PEAR_KV_SETTER
 
-    PearLog(@"[PearRuntime][cloud] local key-value store at %@", gKVPath ?: PearCloudKVPath());
+    if (PearHostIsConfigured()) {
+        PearLog(@"[PearRuntime][cloud] host-authoritative key-value store (no local fallback)");
+    } else {
+        PearLog(@"[PearRuntime][cloud] local key-value store at %@", gKVPath ?: PearCloudKVPath());
+    }
 }
 
 #pragma mark - Ubiquity container

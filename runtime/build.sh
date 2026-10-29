@@ -12,6 +12,7 @@ OUT_DIR="$ROOT/build"
 OUT="$OUT_DIR/libPearRuntime.dylib"
 SWIFT_OVERLAY="$OUT_DIR/libswiftUIKit.dylib"
 CXX_COMPAT="$OUT_DIR/libcxxcompat.dylib"
+DEVICE_PROFILE="$OUT_DIR/PearDeviceProfile.o"
 
 SDK="${PEAR_MACOS_SDK:-$(xcrun --sdk macosx --show-sdk-path)}"
 IOS_FRAMEWORKS="$SDK/System/iOSSupport/System/Library/Frameworks"
@@ -73,6 +74,11 @@ cat > "$ROOT/runtime/compile_commands.json" <<JSON
   },
   {
     "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/DeviceProfile.mm",
+    "command": "$CXX -x c++ -target arm64-apple-ios15.0-macabi -isysroot $SDK -std=c++17 -I$ROOT/runtime/include -c DeviceProfile.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
     "file": "$ROOT/runtime/NetworkShim.mm",
     "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c NetworkShim.mm"
   },
@@ -93,6 +99,13 @@ cat > "$ROOT/runtime/compile_commands.json" <<JSON
   }
 ]
 JSON
+
+# Do not force-include PearRuntime.h into the early device snapshot. Compiling
+# it as plain C++ also keeps ObjC/Foundation initialization out of this object.
+xcrun --sdk macosx clang++ \
+  -x c++ -target arm64-apple-ios15.0-macabi -isysroot "$SDK" \
+  -I"$ROOT/runtime/include" -std=c++17 -c "$ROOT/runtime/DeviceProfile.mm" \
+  -o "$DEVICE_PROFILE"
 
 echo ">> Building $OUT (Mac Catalyst)"
 xcrun --sdk macosx clang++ \
@@ -121,6 +134,7 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/CloudShim.mm" \
   "$ROOT/runtime/CredentialShim.mm" \
   "$ROOT/runtime/DeviceShim.mm" \
+  "$DEVICE_PROFILE" \
   "$ROOT/runtime/ScreenShim.mm" \
   "$ROOT/runtime/PathShim.mm" \
   "$ROOT/runtime/MetalLayerShim.mm" \
@@ -136,7 +150,8 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/SandboxShim.mm" \
   "$ROOT/runtime/GLShim.mm" \
   "$ROOT/runtime/WebInputShim.mm" \
-  "$ROOT/runtime/FoundationShim.mm"
+  "$ROOT/runtime/FoundationShim.mm" \
+  "$ROOT/runtime/HostService.mm"
 
 echo ">> Done: $OUT"
 file "$OUT"

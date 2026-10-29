@@ -25,6 +25,12 @@ final class AppState: ObservableObject {
     /// Root directory for installed apps.
     @Published var libraryURL: URL
 
+    /// Where all PearSilicon data lives (apps, game data, keymaps, ODR, logs).
+    @Published private(set) var storageRootURL: URL
+
+    /// Retained copy of the previous storage after a move, if any.
+    @Published private(set) var previousStorageRootURL: URL?
+
     /// Apps from the library that are currently running, keyed by bundle id.
     @Published private(set) var runningApps: [String: NSRunningApplication] = [:]
 
@@ -47,9 +53,9 @@ final class AppState: ObservableObject {
 
     // MARK: - Services
 
-    let packageInstaller: PackageInstaller
-    let launcher: AppLauncher
-    let keymapStore: KeymapStore
+    var packageInstaller: PackageInstaller
+    var launcher: AppLauncher
+    var keymapStore: KeymapStore
 
     /// Keymapper overlays for running games, keyed by bundle id. PearSilicon owns
     /// these windows; no UI code is added to the game.
@@ -75,11 +81,25 @@ final class AppState: ObservableObject {
         let keymaps = base.appendingPathComponent("Keymaps", isDirectory: true)
 
         self.libraryURL = library
+        self.storageRootURL = base
+        self.previousStorageRootURL = StorageLocationStore.shared.previousRootURL
         self.packageInstaller = PackageInstaller(libraryURL: library)
         self.launcher = AppLauncher(libraryURL: library)
         self.keymapStore = KeymapStore(baseURL: keymaps)
 
         observeWorkspace()
+    }
+
+    /// Rebuilds the path-bound services after storage moved.
+    private func reloadStorage() {
+        let base = AppPaths.supportRoot
+        storageRootURL = base
+        previousStorageRootURL = StorageLocationStore.shared.previousRootURL
+        libraryURL = base.appendingPathComponent("Applications", isDirectory: true)
+        packageInstaller = PackageInstaller(libraryURL: libraryURL)
+        launcher = AppLauncher(libraryURL: libraryURL)
+        keymapStore = KeymapStore(baseURL: base.appendingPathComponent("Keymaps", isDirectory: true))
+        currentKeymap = selectedApp.flatMap { try? keymapStore.load(for: $0.id) }
     }
 
     // MARK: - Running apps
@@ -269,6 +289,40 @@ final class AppState: ObservableObject {
         currentKeymap = app.flatMap { try? keymapStore.load(for: $0.id) }
     }
 
+    // MARK: - Storage
+
+    /// Moves every app, save, keymap, ODR pack, keychain entry and log into a
+    /// PearSilicon folder inside `folderURL` (for example on an external disk).
+    /// The previous copy is kept until the user removes it explicitly.
+    func changeStorageLocation(to folderURL: URL) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let result = try await StorageMigration().move(to: folderURL) { message in
+                Task { @MainActor in self.statusMessage = message }
+            }
+            reloadStorage()
+            try await refreshLibrary()
+            statusMessage = "Storage moved to \(result.rootURL.path). The previous copy was kept for rollback."
+        } catch {
+            statusMessage = L10n.error("Storage move failed: \(error.localizedDescription)")
+        }
+    }
+
+    func removePreviousStorageCopy() async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            try await StorageMigration().removePreviousCopy()
+            previousStorageRootURL = StorageLocationStore.shared.previousRootURL
+            statusMessage = "Previous storage copy removed"
+        } catch {
+            statusMessage = L10n.error(error.localizedDescription)
+        }
+    }
+
     // MARK: - Install
 
     func install(packageURLs: [URL]) async {
@@ -319,12 +373,15 @@ final class AppState: ObservableObject {
 
         let nativeContainer = false
         do {
-            if packageInstaller.currentPreparationMode(for: app) != .compatibilityEnvironment {
-                try? packageInstaller.setPreparationMode(.compatibility, for: app)
-            }
+            let launchLease = try AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
+            defer { launchLease.release() }
+            try AppLauncher.requireStopped(app)
+            let mode: PreparationMode = packageInstaller.currentPreparationMode(for: app) == .compatibilityEnvironment
+                ? .compatibilityEnvironment : .compatibility
+            try packageInstaller.setPreparationMode(mode, for: app, launchLease: launchLease)
             let running = try await launcher.launch(
                 app, keymapURL: keymapURL, extraEnvironment: extra,
-                nativeContainer: nativeContainer
+                nativeContainer: nativeContainer, launchLease: launchLease
             )
             statusMessage = L10n.launching(app.displayName)
             launchingAppID = app.id

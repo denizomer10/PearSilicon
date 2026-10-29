@@ -3,12 +3,15 @@ import Foundation
 /// Shared locations for the app's own data, plus a one-time migration from the
 /// previous product name so installed apps, keymaps and per-app data survive
 /// the rename.
+///
+/// Every path derives from one configurable root (see `StorageLocationStore`),
+/// so apps, game data, keymaps, ODR, keychain, logs and work files all move
+/// together when the user relocates storage to, for example, an external disk.
 enum AppPaths {
 
     /// Root of the app's support data (library, logs, keymaps, work files).
     static var supportRoot: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/PearSilicon", isDirectory: true)
+        StorageLocationStore.shared.rootURL
     }
 
     /// Per-app data containers used by the compatibility runtime.
@@ -72,7 +75,10 @@ enum AppPaths {
 
     /// Moves the previous support directory to the new name once. No-op when
     /// the new directory already exists or there is nothing to migrate.
+    /// Only applies to the default root: a custom root already carries its own
+    /// folder name and must never be shadowed by local home data.
     static func migrateLegacySupportDirectoryIfNeeded() {
+        guard !StorageLocationStore.shared.usesCustomRoot else { return }
         let fileManager = FileManager.default
         let support = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support", isDirectory: true)

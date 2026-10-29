@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// How an app is prepared to run on macOS.
@@ -34,9 +35,19 @@ import Foundation
 /// the binary's declared platform and leaves all application logic untouched.
 final class PackageInstaller: @unchecked Sendable {
 
+    /// Injectable operations keep mode-switch failure tests on synthetic bundles.
+    struct PreparationTools {
+        var runtimeLibraryURL: () -> URL? = { AppLauncher.runtimeLibraryURL() }
+        var removeLoadDylib: (URL, String) throws -> Bool = {
+            try BinaryPatcher.removeLoadDylib(at: $0, containing: $1)
+        }
+        var run: (String, [String]) throws -> String = { try Shell.run($0, $1) }
+    }
+
     private let fileManager = FileManager.default
     private let libraryURL: URL
     private let workRoot: URL
+    private let preparationTools: PreparationTools
 
     /// Files that still carried a legacy guard field at the last install. Such
     /// a file was not prepared for this platform and its app may not launch;
@@ -48,8 +59,9 @@ final class PackageInstaller: @unchecked Sendable {
     /// it reads one. Reported instead of aborting the whole install.
     private(set) var corruptedFiles: [String] = []
 
-    init(libraryURL: URL) {
+    init(libraryURL: URL, preparationTools: PreparationTools = PreparationTools()) {
         self.libraryURL = libraryURL
+        self.preparationTools = preparationTools
         self.workRoot = libraryURL
             .deletingLastPathComponent()
             .appendingPathComponent("Work", isDirectory: true)
@@ -131,7 +143,14 @@ final class PackageInstaller: @unchecked Sendable {
         try fileManager.moveItem(at: app, to: destination)
 
         // 4) prepare for macOS and 5) sign
-        try finalizeInstall(at: destination, mode: mode)
+        do {
+            try finalizeInstall(at: destination, mode: mode)
+        } catch {
+            // Never leave a half-prepared bundle in the library: it would show
+            // up as installable but fail at launch.
+            try? fileManager.removeItem(at: destination)
+            throw error
+        }
 
         return try makeInstalledApp(fromBundleAt: destination)
     }
@@ -167,7 +186,12 @@ final class PackageInstaller: @unchecked Sendable {
         }
         try Shell.run("/usr/bin/ditto", [sourceURL.path, destination.path])
 
-        try finalizeInstall(at: destination, mode: mode)
+        do {
+            try finalizeInstall(at: destination, mode: mode)
+        } catch {
+            try? fileManager.removeItem(at: destination)
+            throw error
+        }
         return try makeInstalledApp(fromBundleAt: destination)
     }
 
@@ -178,10 +202,13 @@ final class PackageInstaller: @unchecked Sendable {
 
         // Give the user a place to drop ODR packs that the app package does
         // not carry. The runtime merges this directory into its local resource
-        // view at launch.
+        // view at launch. Derived from this installer's library root so the
+        // packs follow a relocated storage folder.
         let bundleID = destination.deletingPathExtension().lastPathComponent
+        let odrRoot = libraryURL.deletingLastPathComponent()
+            .appendingPathComponent("ODR", isDirectory: true)
         try? fileManager.createDirectory(
-            at: AppPaths.odrDirectory(for: bundleID),
+            at: odrRoot.appendingPathComponent(bundleID, isDirectory: true),
             withIntermediateDirectories: true
         )
     }
@@ -207,30 +234,192 @@ final class PackageInstaller: @unchecked Sendable {
         try fileManager.removeItem(at: app.bundleURL)
     }
 
+    // MARK: - Relocation
+
+    /// Rebases a copied app bundle from one storage root to another and signs
+    /// the copy. The original bundle is never modified.
+    ///
+    /// The installer hard-codes absolute paths for the runtime and compatibility
+    /// dylibs (some binaries reject `@` expansion), so a plain file move would
+    /// leave every load command pointing at the old disk. This rewrites those
+    /// commands inside the staged copy, then re-signs it with the same
+    /// preparation mode it already had.
+    func relocateInstalledBundle(
+        at stagedBundleURL: URL, from originalBundleURL: URL, to targetBundleURL: URL
+    ) throws {
+        let oldRoot = originalBundleURL.deletingLastPathComponent()
+            .deletingLastPathComponent().standardizedFileURL.path
+        let newRoot = targetBundleURL.deletingLastPathComponent()
+            .deletingLastPathComponent().standardizedFileURL.path
+        guard oldRoot != newRoot else { return }
+        try validateStagingIsolation(at: stagedBundleURL)
+
+        let app = try makeInstalledApp(fromBundleAt: stagedBundleURL)
+        var targets = Set<URL>([app.executableURL])
+        targets.formUnion(codeObjects(in: stagedBundleURL))
+        for file in targets {
+            try relocateLoadPaths(at: file, oldRoot: oldRoot, newRoot: newRoot)
+        }
+
+        // Preserve the mode the copy already has; relocation must not update or
+        // replace its runtime, only point its absolute paths at the new root.
+        let mode: PreparationMode
+        if fileManager.fileExists(atPath: Self.injectionMarkerURL(in: stagedBundleURL).path) {
+            mode = .compatibilityEnvironment
+        } else if BinaryPatcher.hasLoadDylib(at: app.executableURL, containing: "libPearRuntime") {
+            mode = .compatibility
+        } else {
+            mode = .nativeContainer
+        }
+        try signBundle(at: stagedBundleURL, mode: mode)
+        _ = try preparationTools.run(
+            "/usr/bin/codesign", ["--verify", "--deep", "--strict", stagedBundleURL.path]
+        )
+        guard !loadPaths(at: stagedBundleURL).contains(where: { $0.hasPrefix(oldRoot + "/") }) else {
+            throw PearError.invalidPackage(
+                "Relocation left a path pointing at the previous location in \(stagedBundleURL.lastPathComponent)"
+            )
+        }
+    }
+
+    private func loadPaths(at bundleURL: URL) -> [String] {
+        let app = try? makeInstalledApp(fromBundleAt: bundleURL)
+        var urls = Set<URL>()
+        if let app { urls.insert(app.executableURL) }
+        urls.formUnion(codeObjects(in: bundleURL))
+        return urls.flatMap { (try? preparationLoadPaths(at: $0))?.flatMap {
+            $0.dependencies.map(\.path) + $0.rpaths
+        } ?? [] }
+    }
+
+    /// Rewrites load commands whose path starts at `oldRoot`. Strings that fit
+    /// are rewritten in place; longer replacements fall back to
+    /// `install_name_tool`, which can grow a load command when header space
+    /// allows. Any failure propagates so the migration can roll back.
+    private func relocateLoadPaths(at url: URL, oldRoot: String, newRoot: String) throws {
+        let data = try Data(contentsOf: url)
+        guard !BinaryPatcher.machO64Offsets(data).isEmpty else { return }
+        var rewritten = data
+        var changed = false
+        var fallback: [(command: UInt32, old: String, new: String)] = []
+
+        for base in BinaryPatcher.machO64Offsets(data) {
+            let count = Int(readU32(data, base + 16))
+            let end = base + 32 + Int(readU32(data, base + 20))
+            guard end <= data.count, count <= (end - base - 32) / 8 else {
+                throw PearError.invalidPackage("Invalid Mach-O load commands: \(url.lastPathComponent)")
+            }
+            var offset = base + 32
+            for _ in 0..<count {
+                guard offset + 8 <= end else {
+                    throw PearError.invalidPackage("Invalid Mach-O load commands: \(url.lastPathComponent)")
+                }
+                let command = readU32(data, offset)
+                let size = Int(readU32(data, offset + 4))
+                guard size >= 8, offset + size <= end else {
+                    throw PearError.invalidPackage("Invalid Mach-O load commands: \(url.lastPathComponent)")
+                }
+                if isPathCommand(command) {
+                    let nameOffset = Int(readU32(data, offset + 8))
+                    let minimum = command == Self.rpathCommand ? 12 : 24
+                    guard nameOffset >= minimum, nameOffset < size,
+                          let terminator = data[(offset + nameOffset)..<(offset + size)].firstIndex(of: 0) else {
+                        throw PearError.invalidPackage("Invalid Mach-O path command: \(url.lastPathComponent)")
+                    }
+                    let path = String(decoding: data[(offset + nameOffset)..<terminator], as: UTF8.self)
+                    if path == oldRoot || path.hasPrefix(oldRoot + "/") {
+                        let replacement = newRoot + path.dropFirst(oldRoot.count)
+                        let bytes = Array(replacement.utf8) + [0]
+                        if bytes.count <= terminator + 1 - (offset + nameOffset) {
+                            rewritten.replaceSubrange(
+                                (offset + nameOffset)..<(offset + nameOffset + bytes.count), with: bytes
+                            )
+                            changed = true
+                        } else {
+                            fallback.append((command, path, replacement))
+                        }
+                    }
+                }
+                offset += size
+            }
+            guard offset == end else {
+                throw PearError.invalidPackage("Invalid Mach-O load commands: \(url.lastPathComponent)")
+            }
+        }
+
+        if changed {
+            let permissions = (try? fileManager.attributesOfItem(atPath: url.path)[.posixPermissions]) as? NSNumber
+            try rewritten.write(to: url, options: .atomic)
+            if let permissions {
+                try? fileManager.setAttributes(
+                    [.posixPermissions: permissions], ofItemAtPath: url.path
+                )
+            }
+        }
+        for entry in fallback {
+            if entry.command == Self.rpathCommand {
+                _ = try preparationTools.run(
+                    "/usr/bin/install_name_tool", ["-rpath", entry.old, entry.new, url.path]
+                )
+            } else if entry.command == Self.idDylibCommand {
+                _ = try preparationTools.run(
+                    "/usr/bin/install_name_tool", ["-id", entry.new, url.path]
+                )
+            } else {
+                _ = try preparationTools.run(
+                    "/usr/bin/install_name_tool", ["-change", entry.old, entry.new, url.path]
+                )
+            }
+        }
+    }
+
+    private static let idDylibCommand: UInt32 = 0x0D
+    private static let rpathCommand: UInt32 = 0x8000_001C
+    private static let dependencyCommands: Set<UInt32> = [0x0C, 0x8000_0018, 0x8000_001F, 0x20, 0x8000_0023]
+
+    private func isPathCommand(_ command: UInt32) -> Bool {
+        command == Self.idDylibCommand || command == Self.rpathCommand
+            || Self.dependencyCommands.contains(command)
+    }
+
+    private func readU32(_ data: Data, _ offset: Int) -> UInt32 {
+        data.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self)) }
+    }
+
     // MARK: - Prepare for macOS
 
     /// Rewrites the bundle so macOS will load it as a Mac Catalyst app.
-    func prepareForMacOS(at bundleURL: URL, mode: PreparationMode = .compatibility) throws {
+    /// Staged preparation uses `targetBundleURL` for all absolute load paths;
+    /// ordinary installs default to the bundle being prepared.
+    func prepareForMacOS(
+        at bundleURL: URL,
+        mode: PreparationMode = .compatibility,
+        targetBundleURL: URL? = nil
+    ) throws {
+        let target = targetBundleURL ?? bundleURL
         unpreparedBinaries = []
         try patchInfoPlist(at: bundleURL)
         removeLegacySignatureArtifacts(at: bundleURL)
-        try installMarketplaceKitStubIfNeeded(at: bundleURL)
+        try installMarketplaceKitStubIfNeeded(at: bundleURL, targetBundleURL: target)
+        if target != bundleURL { try validateStagingIsolation(at: bundleURL) }
         _ = try patchMachOBinaries(at: bundleURL)
         switch mode {
         case .compatibility:
-            try loadRuntime(at: bundleURL, addLoadCommand: true)
+            try loadRuntime(at: bundleURL, targetBundleURL: target, addLoadCommand: true)
         case .compatibilityEnvironment:
-            try loadRuntime(at: bundleURL, addLoadCommand: false)
+            try loadRuntime(at: bundleURL, targetBundleURL: target, addLoadCommand: false)
         case .nativeContainer:
             try removeRuntimeArtifacts(at: bundleURL)
         }
+        try validatePreparationMode(at: bundleURL, mode: mode, targetBundleURL: target)
         ensureExecutableBits(at: bundleURL)
         _ = try? Shell.run("/usr/bin/xattr", ["-cr", bundleURL.path])
     }
 
-    /// The mode an installed app is currently prepared for.
+    /// The selected mode, inferred from the marker/load command. This is only
+    /// a hint for UI/callers; `setPreparationMode` validates the complete state.
     func currentPreparationMode(for app: InstalledApp) -> PreparationMode {
-        if fileManager.fileExists(atPath: Self.injectionMarkerURL(in: app.bundleURL).path) {
+        if (try? itemExists(at: Self.injectionMarkerURL(in: app.bundleURL))) == true {
             return .compatibilityEnvironment
         }
         return BinaryPatcher.hasLoadDylib(at: app.executableURL, containing: "libPearRuntime")
@@ -244,13 +433,193 @@ final class PackageInstaller: @unchecked Sendable {
         bundleURL.appendingPathComponent("Frameworks/.pear-injection")
     }
 
-    /// Switches an installed app between the two preparation modes without
-    /// reinstalling it. Used by the per-app toggle so a launch never mixes a
-    /// runtime load command with the native sandbox signature.
-    func setPreparationMode(_ mode: PreparationMode, for app: InstalledApp) throws {
-        guard currentPreparationMode(for: app) != mode else { return }
-        try prepareForMacOS(at: app.bundleURL, mode: mode)
-        try signBundle(at: app.bundleURL, mode: mode)
+    private func itemExists(at url: URL) throws -> Bool {
+        // fileExists follows symlinks, which would hide a dangling marker or
+        // compatibility artifact from both validation and removal.
+        do {
+            _ = try fileManager.attributesOfItem(atPath: url.path)
+            return true
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            return false
+        }
+    }
+
+    /// Prepares and signs a separate copy before atomically exchanging it with
+    /// the installed bundle. Until that exchange, rollback is just discarding
+    /// the copy; no failed preparation or signature can alter the original.
+    func setPreparationMode(_ mode: PreparationMode, for app: InstalledApp, launchLease: AppLaunchLease? = nil) throws {
+        let lease = try launchLease ?? AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
+        defer { if launchLease == nil { lease.release() } }
+        try lease.validate(appID: app.id, libraryURL: libraryURL)
+        if try preparationModeIsValid(at: app.bundleURL, mode: mode, targetBundleURL: app.bundleURL) {
+            return
+        }
+
+        // A sibling keeps the exchange on the same filesystem. Copy the current
+        // bundle, not the IPA, so user-added resources and third-party changes survive.
+        let transaction = app.bundleURL.deletingLastPathComponent()
+            .appendingPathComponent(".pear-preparation-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: transaction, withIntermediateDirectories: false)
+        defer { try? fileManager.removeItem(at: transaction) }
+        let staged = transaction.appendingPathComponent(app.bundleURL.lastPathComponent, isDirectory: true)
+        _ = try preparationTools.run("/usr/bin/ditto", ["--clone", app.bundleURL.path, staged.path])
+        try validateStagingIsolation(at: staged)
+        let stagedApp = try makeInstalledApp(fromBundleAt: staged)
+        _ = try preparationLoadPaths(at: stagedApp.executableURL)
+
+        let previousUnpreparedBinaries = unpreparedBinaries
+        do {
+            try prepareForMacOS(at: staged, mode: mode, targetBundleURL: app.bundleURL)
+            try signBundle(at: staged, mode: mode)
+            _ = try preparationTools.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", staged.path])
+            try validatePreparationMode(at: staged, mode: mode, targetBundleURL: app.bundleURL)
+
+            // RENAME_SWAP is all-or-nothing, including on failure. The old
+            // bundle ends up in `transaction` and is removed only after commit.
+            guard renamex_np(staged.path, app.bundleURL.path, UInt32(RENAME_SWAP)) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [
+                    NSFilePathErrorKey: app.bundleURL.path
+                ])
+            }
+        } catch {
+            unpreparedBinaries = previousUnpreparedBinaries
+            throw error
+        }
+    }
+
+    private func validateStagingIsolation(at bundleURL: URL) throws {
+        // Relative framework symlinks are fine. An absolute/external symlink
+        // could make patching, xattr or codesign write through to the original.
+        let root = bundleURL.resolvingSymlinksInPath().path
+        var inspectionError: Error?
+        guard let enumerator = fileManager.enumerator(
+            at: bundleURL, includingPropertiesForKeys: [.isSymbolicLinkKey],
+            errorHandler: { _, error in inspectionError = error; return false }
+        ) else {
+            throw PearError.invalidPackage("Could not inspect staged bundle")
+        }
+        for case let item as URL in enumerator {
+            let values = try item.resourceValues(forKeys: [.isSymbolicLinkKey])
+            if values.isSymbolicLink == true {
+                // Canonicalize the existing parent first: a dangling relative
+                // link otherwise keeps aliases such as /private/var unresolved.
+                let parent = URL(
+                    fileURLWithPath: item.deletingLastPathComponent().resolvingSymlinksInPath().path,
+                    isDirectory: true
+                )
+                let destination = try fileManager.destinationOfSymbolicLink(atPath: item.path)
+                let resolved = URL(fileURLWithPath: destination, relativeTo: parent)
+                    .standardizedFileURL.resolvingSymlinksInPath().path
+                guard resolved == root || resolved.hasPrefix(root + "/") else {
+                    throw PearError.invalidPackage("Mode switching cannot safely modify external symlink: \(item.path)")
+                }
+            }
+        }
+        if let inspectionError { throw inspectionError }
+    }
+
+    private struct PreparationLoadPaths {
+        var dependencies: [(command: UInt32, path: String)] = []
+        var rpaths: [String] = []
+    }
+
+    /// Unlike the patcher's best-effort predicates, this reader fails closed on
+    /// unreadable/invalid executables and checks every 64-bit slice and exact path.
+    private func preparationLoadPaths(at executableURL: URL) throws -> [PreparationLoadPaths] {
+        let data = try Data(contentsOf: executableURL)
+        let bases = BinaryPatcher.machO64Offsets(data)
+        func invalid() -> PearError {
+            .invalidPackage("Invalid Mach-O load commands: \(executableURL.lastPathComponent)")
+        }
+        func u32(_ offset: Int) -> UInt32 {
+            data.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self)) }
+        }
+        guard !bases.isEmpty else { throw invalid() }
+        return try bases.map { base in
+            guard base + 32 <= data.count else { throw invalid() }
+            let count = Int(u32(base + 16))
+            let end = base + 32 + Int(u32(base + 20))
+            guard end <= data.count, count <= (end - base - 32) / 8 else { throw invalid() }
+            var paths = PreparationLoadPaths()
+            var offset = base + 32
+            for _ in 0..<count {
+                guard offset + 8 <= end else { throw invalid() }
+                let command = u32(offset)
+                let size = Int(u32(offset + 4))
+                guard size >= 8, offset + size <= end else { throw invalid() }
+                let isDependency = [UInt32(0x0C), 0x8000_0018, 0x8000_001F, 0x20, 0x8000_0023].contains(command)
+                if isDependency || command == BinaryPatcher.LoadCommand.rpath {
+                    let minimum = isDependency ? 24 : 12
+                    guard size >= minimum else { throw invalid() }
+                    let nameOffset = Int(u32(offset + 8))
+                    guard nameOffset >= minimum, nameOffset < size,
+                          let terminator = data[(offset + nameOffset)..<(offset + size)].firstIndex(of: 0),
+                          let path = String(data: data[(offset + nameOffset)..<terminator], encoding: .utf8)
+                    else { throw invalid() }
+                    if isDependency { paths.dependencies.append((command, path)) }
+                    else { paths.rpaths.append(path) }
+                }
+                offset += size
+            }
+            guard offset == end else { throw invalid() }
+            return paths
+        }
+    }
+
+    private func preparationModeIsValid(
+        at bundleURL: URL, mode: PreparationMode, targetBundleURL: URL
+    ) throws -> Bool {
+        let app = try makeInstalledApp(fromBundleAt: bundleURL)
+        let slices = try preparationLoadPaths(at: app.executableURL)
+        let frameworks = bundleURL.appendingPathComponent("Frameworks")
+        let targetFrameworks = targetBundleURL.appendingPathComponent("Frameworks")
+        let marker = Self.injectionMarkerURL(in: bundleURL)
+        let markerExists = try itemExists(at: marker)
+        let artifacts = ["libPearRuntime.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib"]
+        func regularFile(_ url: URL) -> Bool {
+            (try? fileManager.attributesOfItem(atPath: url.path)[.type]) as? FileAttributeType == .typeRegular
+        }
+
+        switch mode {
+        case .compatibility:
+            guard !markerExists, regularFile(frameworks.appendingPathComponent(artifacts[0])) else { return false }
+        case .compatibilityEnvironment:
+            guard regularFile(marker), regularFile(frameworks.appendingPathComponent(artifacts[0])) else { return false }
+            guard try Data(contentsOf: marker) == Data("environment\n".utf8) else { return false }
+        case .nativeContainer:
+            guard !markerExists,
+                  try artifacts.allSatisfy({ try !itemExists(at: frameworks.appendingPathComponent($0)) })
+            else { return false }
+        }
+
+        return slices.allSatisfy { paths in
+            let runtimeLoads = paths.dependencies.filter { $0.path.contains("libPearRuntime") }
+            let cxxLoads = paths.dependencies.filter { $0.path.contains("libcxxcompat") }
+            if mode == .compatibility {
+                guard runtimeLoads.count == 1,
+                      runtimeLoads[0].command == BinaryPatcher.LoadCommand.loadDylib,
+                      runtimeLoads[0].path == targetFrameworks.appendingPathComponent(artifacts[0]).path
+                else { return false }
+            } else if !runtimeLoads.isEmpty { return false }
+            if mode == .nativeContainer { return cxxLoads.isEmpty }
+            guard paths.rpaths.contains(targetFrameworks.path) else { return false }
+            if !cxxLoads.isEmpty {
+                guard regularFile(frameworks.appendingPathComponent("libcxxcompat.dylib")),
+                      cxxLoads.allSatisfy({ $0.path == targetFrameworks.appendingPathComponent("libcxxcompat.dylib").path })
+                else { return false }
+            }
+            // This also catches any accidentally staged MarketplaceKit paths.
+            let allPaths = paths.dependencies.map(\.path) + paths.rpaths
+            return bundleURL == targetBundleURL || !allPaths.contains { $0.hasPrefix(bundleURL.path + "/") }
+        }
+    }
+
+    private func validatePreparationMode(
+        at bundleURL: URL, mode: PreparationMode, targetBundleURL: URL
+    ) throws {
+        guard try preparationModeIsValid(at: bundleURL, mode: mode, targetBundleURL: targetBundleURL) else {
+            throw PearError.invalidPackage("Preparation invariants failed for \(mode.rawValue)")
+        }
     }
 
     /// Ensures no compatibility library is referenced or shipped. The native
@@ -258,21 +627,18 @@ final class PackageInstaller: @unchecked Sendable {
     private func removeRuntimeArtifacts(at bundleURL: URL) throws {
         let frameworks = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
         let marker = Self.injectionMarkerURL(in: bundleURL)
-        if fileManager.fileExists(atPath: marker.path) {
+        if try itemExists(at: marker) {
             try fileManager.removeItem(at: marker)
         }
         for name in ["libPearRuntime.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib"] {
             let url = frameworks.appendingPathComponent(name)
-            if fileManager.fileExists(atPath: url.path) {
+            if try itemExists(at: url) {
                 try fileManager.removeItem(at: url)
             }
         }
-        if let app = try? makeInstalledApp(fromBundleAt: bundleURL) {
-            _ = try BinaryPatcher.removeLoadDylib(at: app.executableURL,
-                                                  containing: "libPearRuntime")
-            _ = try BinaryPatcher.removeLoadDylib(at: app.executableURL,
-                                                  containing: "libcxxcompat")
-        }
+        let app = try makeInstalledApp(fromBundleAt: bundleURL)
+        _ = try preparationTools.removeLoadDylib(app.executableURL, "libPearRuntime")
+        _ = try preparationTools.removeLoadDylib(app.executableURL, "libcxxcompat")
     }
 
     /// `unzip` does not reliably restore the executable bit from an app package, and a
@@ -296,30 +662,30 @@ final class PackageInstaller: @unchecked Sendable {
     /// Copies the runtime into the bundle. With `addLoadCommand` the binary gets
     /// an `LC_LOAD_DYLIB`; without it the launcher injects the same library via
     /// `DYLD_INSERT_LIBRARIES` and a marker records the choice.
-    private func loadRuntime(at bundleURL: URL, addLoadCommand: Bool) throws {
-        guard let runtime = AppLauncher.runtimeLibraryURL() else { return }
-
+    private func loadRuntime(at bundleURL: URL, targetBundleURL: URL, addLoadCommand: Bool) throws {
+        guard let runtime = preparationTools.runtimeLibraryURL() else {
+            throw PearError.missingRuntimeComponent("libPearRuntime.dylib")
+        }
+        let app = try makeInstalledApp(fromBundleAt: bundleURL)
+        let targetFrameworks = targetBundleURL.appendingPathComponent("Frameworks", isDirectory: true)
         let frameworks = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
         try fileManager.createDirectory(at: frameworks, withIntermediateDirectories: true)
         let destination = frameworks.appendingPathComponent("libPearRuntime.dylib")
-        if fileManager.fileExists(atPath: destination.path) {
+        if try itemExists(at: destination) {
             try fileManager.removeItem(at: destination)
         }
-        try fileManager.copyItem(at: runtime, to: destination)
+        try fileManager.copyItem(at: runtime.resolvingSymlinksInPath(), to: destination)
 
+        // Normalize old/duplicate paths in load-command mode too. Environment
+        // mode only removes these commands; it must never create a runtime load.
+        _ = try preparationTools.removeLoadDylib(app.executableURL, "libPearRuntime")
         let marker = Self.injectionMarkerURL(in: bundleURL)
         if addLoadCommand {
-            if fileManager.fileExists(atPath: marker.path) {
-                try? fileManager.removeItem(at: marker)
+            if try itemExists(at: marker) {
+                try fileManager.removeItem(at: marker)
             }
         } else {
-            // Switching from the load-command mode must not leave the old
-            // command behind; otherwise the runtime is loaded twice.
-            if let app = try? makeInstalledApp(fromBundleAt: bundleURL) {
-                _ = try? BinaryPatcher.removeLoadDylib(at: app.executableURL,
-                                                       containing: "libPearRuntime")
-            }
-            try? Data("environment\n".utf8).write(to: marker)
+            try Data("environment\n".utf8).write(to: marker, options: .atomic)
         }
 
         // The host does not provide the Swift UIKit overlay. Ship our small
@@ -328,10 +694,10 @@ final class PackageInstaller: @unchecked Sendable {
             .appendingPathComponent("libswiftUIKit.dylib")
         if fileManager.fileExists(atPath: swiftOverlay.path) {
             let overlayDestination = frameworks.appendingPathComponent("libswiftUIKit.dylib")
-            if fileManager.fileExists(atPath: overlayDestination.path) {
+            if try itemExists(at: overlayDestination) {
                 try fileManager.removeItem(at: overlayDestination)
             }
-            try fileManager.copyItem(at: swiftOverlay, to: overlayDestination)
+            try fileManager.copyItem(at: swiftOverlay.resolvingSymlinksInPath(), to: overlayDestination)
         }
 
         // A few builds carry a weak placeholder for a C++ runtime data symbol
@@ -340,39 +706,34 @@ final class PackageInstaller: @unchecked Sendable {
         let cxxCompat = runtime.deletingLastPathComponent()
             .appendingPathComponent("libcxxcompat.dylib")
         if fileManager.fileExists(atPath: cxxCompat.path),
-           let app = try? makeInstalledApp(fromBundleAt: bundleURL),
            BinaryPatcher.containsSymbol(at: app.executableURL,
                                         named: "__ZNSt3__119piecewise_constructE") {
             let compatDestination = frameworks.appendingPathComponent("libcxxcompat.dylib")
-            if fileManager.fileExists(atPath: compatDestination.path) {
+            if try itemExists(at: compatDestination) {
                 try fileManager.removeItem(at: compatDestination)
             }
-            try fileManager.copyItem(at: cxxCompat, to: compatDestination)
-            _ = try? Shell.run("/usr/bin/install_name_tool", [
-                "-change", "/usr/lib/libc++.1.dylib",
-                compatDestination.path, app.executableURL.path
-            ])
+            try fileManager.copyItem(at: cxxCompat.resolvingSymlinksInPath(), to: compatDestination)
+            let dependencies = try preparationLoadPaths(at: app.executableURL)
+                .flatMap { $0.dependencies.map(\.path) }
+            let replacement = targetFrameworks.appendingPathComponent("libcxxcompat.dylib").path
+            for path in Set(dependencies) where path == "/usr/lib/libc++.1.dylib"
+                || path.contains("libcxxcompat") {
+                if path != replacement {
+                    _ = try preparationTools.run("/usr/bin/install_name_tool", [
+                        "-change", path, replacement, app.executableURL.path
+                    ])
+                }
+            }
         }
 
-        if let app = try? makeInstalledApp(fromBundleAt: bundleURL) {
-            // Use an absolute load path: some store binaries run under a
-            // security policy that refuses `@` expansion for their dylib load
-            // commands. The library is inside the installed bundle, so the path
-            // is stable for that installation.
-            if addLoadCommand {
-                try BinaryPatcher.addLoadDylib(
-                    at: app.executableURL,
-                    path: destination.path
-                )
-            }
-            // Store builds commonly reference `@rpath/Foo.framework/Foo` but
-            // omit the matching run-path command. Without it dyld stops before
-            // the app's entry point with "Library not loaded".
-            try BinaryPatcher.addRPath(
+        // Absolute paths must describe the final installation, never staging.
+        if addLoadCommand {
+            try BinaryPatcher.addLoadDylib(
                 at: app.executableURL,
-                path: frameworks.path
+                path: targetFrameworks.appendingPathComponent("libPearRuntime.dylib").path
             )
         }
+        try BinaryPatcher.addRPath(at: app.executableURL, path: targetFrameworks.path)
     }
 
     private func patchInfoPlist(at bundleURL: URL) throws {
@@ -465,11 +826,11 @@ final class PackageInstaller: @unchecked Sendable {
     /// shipped with the runtime into the bundle and point the reference at
     /// that copy. A weak reference to a missing Swift framework otherwise
     /// aborts the process while it registers metadata, before `main` runs.
-    private func installMarketplaceKitStubIfNeeded(at bundleURL: URL) throws {
+    private func installMarketplaceKitStubIfNeeded(at bundleURL: URL, targetBundleURL: URL) throws {
         let stubDirectory = bundleURL.appendingPathComponent(
             "Frameworks/MarketplaceKit.framework", isDirectory: true
         )
-        let stubBinary = stubDirectory.appendingPathComponent("MarketplaceKit")
+        let stubBinary = targetBundleURL.appendingPathComponent("Frameworks/MarketplaceKit.framework/MarketplaceKit")
 
         let referencing = machOTargets(in: bundleURL).filter { file in
             let path = file.standardizedFileURL.path
@@ -586,16 +947,15 @@ final class PackageInstaller: @unchecked Sendable {
         }
 
         // 2) main executable
-        if let app = try? makeInstalledApp(fromBundleAt: bundleURL) {
-            try sign(app.executableURL, entitlements: entitlements)
-        }
+        let app = try makeInstalledApp(fromBundleAt: bundleURL)
+        try sign(app.executableURL, entitlements: entitlements)
 
         // 3) the bundle itself
         try sign(bundleURL, entitlements: entitlements)
     }
 
     private func sign(_ url: URL, entitlements: String) throws {
-        try Shell.run("/usr/bin/codesign", [
+        _ = try preparationTools.run("/usr/bin/codesign", [
             "--force", "--sign", "-",
             "--entitlements", entitlements,
             url.path

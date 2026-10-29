@@ -26,7 +26,7 @@ struct ContentView: View {
         }
         .fileImporter(
             isPresented: $showingImporter,
-            allowedContentTypes: [UTType(filenameExtension: "app package") ?? .data],
+            allowedContentTypes: packageContentTypes,
             allowsMultipleSelection: true
         ) { result in
             switch result {
@@ -101,18 +101,32 @@ struct ContentView: View {
 
     // MARK: - Drop
 
+    /// IPA packages and toolchain-built `.app` bundles can be dropped anywhere
+    /// on the window.
+    private var packageContentTypes: [UTType] {
+        ["ipa", "app", "app package"].compactMap { UTType(filenameExtension: $0) } + [.data]
+    }
+
+    private static let packageExtensions: Set<String> = ["ipa", "app"]
+
     private func handleDrop(_ providers: [NSItemProvider]) async {
+        guard !state.isBusy else { return }
         var urls: [URL] = []
         for provider in providers {
-            if let url = try? await provider.loadItem(
+            guard let item = try? await provider.loadItem(
                 forTypeIdentifier: UTType.fileURL.identifier,
                 options: nil
-            ) as? URL, url.pathExtension.lowercased() == "app package" {
-                urls.append(url)
-            }
+            ) else { continue }
+            let url = (item as? URL)
+                ?? (item as? NSURL).map { $0 as URL }
+                ?? (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
+            guard let url, Self.packageExtensions.contains(url.pathExtension.lowercased()) else { continue }
+            urls.append(url)
         }
         if !urls.isEmpty {
             await state.install(packageURLs: urls)
+        } else if !providers.isEmpty {
+            state.statusMessage = L10n.error("Drop an .ipa package or an .app bundle to install it")
         }
     }
 }

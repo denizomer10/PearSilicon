@@ -21,11 +21,19 @@ NSString *PearLogFilePath(void) {
     static NSString *path;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        const char *home = getpwuid(getuid()) ? getpwuid(getuid())->pw_dir : NULL;
         NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
-        if (!home || bundleID.length == 0) return;
-        NSString *directory = [NSString stringWithFormat:
-            @"%s/Library/Application Support/PearSilicon/Logs", home];
+        if (bundleID.length == 0) return;
+        NSString *directory = nil;
+        const char *root = getenv("PEAR_SUPPORT_ROOT");
+        if (root && root[0]) {
+            directory = [[NSString stringWithUTF8String:root]
+                stringByAppendingPathComponent:@"Logs"];
+        } else {
+            const char *home = getpwuid(getuid()) ? getpwuid(getuid())->pw_dir : NULL;
+            if (!home) return;
+            directory = [NSString stringWithFormat:
+                @"%s/Library/Application Support/PearSilicon/Logs", home];
+        }
         [NSFileManager.defaultManager createDirectoryAtPath:directory
                                withIntermediateDirectories:YES attributes:nil error:NULL];
         path = [directory stringByAppendingPathComponent:
@@ -716,6 +724,17 @@ static void WatchKeymap(NSString *path) {
 @implementation PearRuntime
 
 + (void)bootstrap {
+    // dyld has already consumed launcher insertion. Avoid propagating it and
+    // the host capability to helpers created after bootstrap. This does not
+    // cover children created by an earlier library initializer.
+    if (getenv("PEAR_LAUNCHER_INJECTION")) {
+        PearHostIsConfigured(); // Capture this process's endpoint before clearing it.
+        unsetenv("DYLD_INSERT_LIBRARIES");
+        unsetenv("PEAR_HOST_SOCKET");
+        unsetenv("PEAR_HOST_TOKEN");
+        unsetenv("PEAR_LAUNCHER_INJECTION");
+    }
+
     // Debug affordance: let a launch disable the runtime entirely so we can tell
     // whether a loaded component is responsible for a misbehaving app.
     if (NSProcessInfo.processInfo.environment[@"PEAR_DISABLE"]) {

@@ -3,6 +3,7 @@ import SwiftUI
 /// Settings window (⌘,).
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
+    @State private var removingPreviousCopy = false
 
     var body: some View {
         TabView {
@@ -11,7 +12,7 @@ struct SettingsView: View {
             keymapper
                 .tabItem { Label("Keymapper", systemImage: "keyboard") }
         }
-        .frame(width: 520, height: 280)
+        .frame(width: 560, height: 420)
         .padding()
     }
 
@@ -22,7 +23,62 @@ struct SettingsView: View {
                     .font(.caption)
                     .textSelection(.enabled)
             }
+
+            Section {
+                LabeledContent("Storage folder") {
+                    Text(state.storageRootURL.path)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                }
+                LabeledContent("Previous copy") {
+                    Text(state.previousStorageRootURL?.path ?? "none")
+                        .font(.caption)
+                        .textSelection(.enabled)
+                }
+                HStack {
+                    Button("Move Storage…") { chooseStorageFolder() }
+                        .disabled(state.isBusy)
+                    if state.previousStorageRootURL != nil {
+                        Button("Remove Previous Copy…", role: .destructive) {
+                            removingPreviousCopy = true
+                        }
+                        .disabled(state.isBusy)
+                    }
+                }
+                Text("Apps, game data, keymaps, ODR packs, keychain entries and logs all live "
+                     + "in this one folder, so it can live on an external disk. Moving copies "
+                     + "everything to the new location and keeps the old copy as a rollback. "
+                     + "Running games must be closed first.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Storage location")
+            }
         }
+        .confirmationDialog(
+            "Remove the previous storage copy? This cannot be undone.",
+            isPresented: $removingPreviousCopy
+        ) {
+            Button("Remove Previous Copy", role: .destructive) {
+                Task { await state.removePreviousStorageCopy() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(state.previousStorageRootURL?.path ?? "")
+        }
+    }
+
+    private func chooseStorageFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Move Storage Here"
+        panel.message = "Choose a folder (for example on an external disk). Apps and game data will be copied into a PearSilicon folder here."
+        panel.directoryURL = state.storageRootURL.deletingLastPathComponent()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await state.changeStorageLocation(to: url) }
     }
 
     private var keymapper: some View {
