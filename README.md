@@ -2,16 +2,44 @@
   <img src="logo.png" alt="PearSilicon" width="160">
 </p>
 
-# PearSilicon
+<h1 align="center">PearSilicon</h1>
 
-*A native iOS compatibility layer for macOS.*
+<p align="center">
+  <strong>Run iOS apps natively on Apple silicon Macs.</strong><br>
+  An independent, clean-room compatibility layer for macOS.
+</p>
 
-**Version 0.2.0**
+<p align="center">
+  <a href="https://github.com/denizomer10/PearSilicon/releases"><img src="https://img.shields.io/github/v/release/denizomer10/PearSilicon?include_prereleases&label=release&style=flat-square" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20arm64-lightgrey?style=flat-square" alt="macOS arm64">
+  <img src="https://img.shields.io/badge/Swift-6-orange?style=flat-square" alt="Swift 6">
+  <a href="https://discord.gg/yRVC5ZCyby"><img src="https://img.shields.io/badge/Discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/denizomer10/PearSilicon/releases">Download</a>
+  &nbsp;·&nbsp;
+  <a href="docs/CLI.md">CLI reference</a>
+  &nbsp;·&nbsp;
+  <a href="#community">Community</a>
+  &nbsp;·&nbsp;
+  <a href="https://discord.gg/yRVC5ZCyby">Discord</a>
+</p>
+
+---
 
 PearSilicon runs iOS applications natively on arm64 Macs by translating the
 system APIs they expect. It is an independent, clean-room compatibility layer
 for applications you legally own and prepare yourself. It does not modify
 application logic or protection systems.
+
+| | |
+| :--- | :--- |
+| **Install** | Drop an `.ipa` or `.app` onto the window — or use the CLI |
+| **Play** | Keymapper (opt-in), real multi-touch, Metal HUD, pointer lock |
+| **Organise** | One data folder that can live on any disk, including external drives |
+| **Extend** | Local shims for keychain, Metal, OpenGL, cloud, device, networking and more |
 
 ## Features
 
@@ -39,7 +67,8 @@ frameworks ship inside the macOS SDK.
 
 ## Install and run
 
-1. Build the app or use a release bundle.
+1. Download the latest build from [Releases](https://github.com/denizomer10/PearSilicon/releases)
+   (the `development beta` is the newest tested build), or build the app yourself.
 2. Open PearSilicon, add an app package or `.app` bundle, and launch it.
 
 The same installer and launcher are available from a terminal:
@@ -191,6 +220,17 @@ headers, frameworks, or binaries.
 The compatibility layer is original work, intended only for applications you
 legally own and prepare yourself. It is provided for interoperability and
 educational use.
+
+## Community
+
+Questions, setup help, compatibility reports and development discussion live on
+Discord:
+
+**[Join the PearSilicon Discord →](https://discord.gg/yRVC5ZCyby)**
+
+When reporting a problem, please include the app name and version, your macOS
+version and the output of `pearsilicon doctor` — that makes it much easier to
+reproduce and fix.
 
 ## License
 
