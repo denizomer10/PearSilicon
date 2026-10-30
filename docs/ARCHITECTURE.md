@@ -12,7 +12,9 @@ for the distinction between source features and published builds.
 
 ## Execution path
 
-1. The installer extracts an IPA or reads an iOS device `.app` bundle. It rejects
+1. The installer admits an IPA only after reading its ZIP central directory and
+   rejecting traversal, absolute, drive-letter and ambiguous entry paths; then it
+   extracts the archive or reads an iOS device `.app` bundle. It rejects
    extraction/CRC failures and preflights the main executable and recognized
    nested Mach-O images before mutation. Encrypted code is rejected, not decrypted
    or relabeled as plaintext. Preparation/signature verification uses a staged
@@ -131,6 +133,9 @@ and [PlayTools: how it works](https://github.com/PlayCover/PlayTools#how-it-work
   downloads, sustained gameplay, rendering correctness or frame pacing.
 - Background GUI startup does not establish that GUI installation, drag-and-drop
   or settings interactions work end to end. A CLI install test is not a GUI test.
+  GUI package imports are serialized and launch/uninstall/storage mutations are
+  gated while an import is active; this prevents library races but does not
+  substitute for a manual drag-and-drop check.
 - The prebuilt bundle includes PearSilicon's libraries, but some app-preparation
   and relocation paths still require Command Line Tools. That is not a fully
   tool-free clean-Mac installation guarantee.
@@ -142,6 +147,6 @@ and [PlayTools: how it works](https://github.com/PlayCover/PlayTools#how-it-work
   isolation from all same-user processes. Do not treat these mechanisms as a
   security boundary for untrusted apps.
 
-For setup and current limitations, see the [README](../README.md) and
-[CLI reference](CLI.md). Release notes identify the tested build separately from
+For setup and current limitations, see the [README](../README.md),
+[testing and validation](TESTING.md) and [CLI reference](CLI.md). Release notes identify the tested build separately from
 ongoing source/documentation changes.

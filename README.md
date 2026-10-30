@@ -131,6 +131,28 @@ Genshin/Telemetry SIGILL investigation. Previously prepared copies whose
 `cryptid` was cleared need a fresh verified input; they cannot be repaired by
 merely updating the launcher.
 
+## Validation
+
+PearSilicon is tested in layers rather than by a single "game works" claim:
+
+```sh
+swift test
+python3 scripts/filesystem-smoke.py
+python3 scripts/keychain-smoke.py --active-interpose
+python3 scripts/runtime-client-smoke.py <path-to-PearSilicon-executable>
+python3 scripts/e2e-games.py --cli <path-to-PearSilicon-executable> --stress
+```
+
+`swift test` covers installer atomicity, archive admission, stopped-app leases,
+storage migration and GUI import routing/FIFO/cancellation. The runtime suites
+use temporary data and exercise permissions, keychain generation, IPC deadlines
+and cloud-identity compatibility. The background app check launches only apps it
+started, skips already-running apps, and verifies process liveness, clean
+shutdown, duplicate-launch rejection and the absence of runtime signal/exception
+markers. It does not verify gameplay, input coordinates, downloads or account
+flows. See [Testing and validation](docs/TESTING.md) for the exact scope and
+manual checklist.
+
 ## Build
 
 ```sh

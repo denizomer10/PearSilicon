@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Foundation-only runtime IPC/KV smoke tests; all data stays in a temporary dir.
+"""Foundation-only IPC/KV and ubiquity-token tests; all data stays in a temporary dir.
 
 Usage: python3 scripts/runtime-client-smoke.py [path/to/pearsilicon]
 The optional executable is invoked ONLY as `host-service`, never as a GUI/app.
@@ -8,6 +8,7 @@ Requires macOS, Xcode/CLT clang++, and Python 3's standard library; no packages.
 """
 
 import argparse
+import base64
 import datetime
 import os
 from pathlib import Path
@@ -30,8 +31,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Import the exact production sources/header. Only UIKit's otherwise unused
 # import is stubbed in the test include path; no production SDK imports change.
-# Disable the Cloud constructor before exec, then install ONLY the KV methods.
-# Invoke their IMPs with nil self instead of instantiating a real iCloud store.
+# Disable the Cloud constructor before exec. Install KV methods, and opt into
+# the local ubiquity surface only for token checks. No real iCloud store/account
+# is instantiated; KV accessors are invoked through their IMPs with nil self.
 HARNESS = r'''
 #import <Foundation/Foundation.h>
 #import <signal.h>
@@ -134,6 +136,24 @@ static NSDictionary *Execute(NSDictionary *command) {
     if ([method isEqual:@"all"]) {
         NSDictionary *result = PearHostKVAll();
         return result ? @{ @"success": @YES, @"value": result } : @{ @"success": @NO };
+    }
+    if ([method isEqual:@"cloud.identity"]) {
+        PearInstallUbiquityContainer();
+        id token = NSFileManager.defaultManager.ubiquityIdentityToken;
+        if (![token isKindOfClass:NSData.class]) return @{ @"isData": @NO };
+        NSError *error = nil;
+        NSData *archive = [NSKeyedArchiver archivedDataWithRootObject:token
+            requiringSecureCoding:YES error:&error];
+        NSData *restored = archive ? [NSKeyedUnarchiver unarchivedObjectOfClass:NSData.class
+            fromData:archive error:&error] : nil;
+        return @{ @"isData": @YES,
+                  @"mutable": @([token isKindOfClass:NSMutableData.class]),
+                  @"stable": @([token isEqual:NSFileManager.defaultManager.ubiquityIdentityToken]),
+                  @"copyEqual": @([token isEqual:[token copy]]),
+                  @"archiveEqual": @(!error && [token isEqual:restored]),
+                  @"bundle": NSBundle.mainBundle.bundleIdentifier ?: @"unknown",
+                  @"value": token,
+                  @"base64": [token base64EncodedStringWithOptions:0] };
     }
     if ([method isEqual:@"cloud.get"]) {
         id result = PearKVObject(key);
@@ -503,6 +523,27 @@ def recovery(client):
     client.untouched()
 
 
+def run_identity_tests(executable, root):
+    previous = None
+    for index, host_path in enumerate((None, root / "unavailable-identity-host.sock")):
+        # A new process and a different data home must keep the same local
+        # identity. No host/iCloud service is needed to encode this opaque token.
+        with Client(executable, root / ("identity-%d" % index), host_path, token=None) as client:
+            result = client.request("cloud.identity")
+            assert result.get("isData"), "ubiquityIdentityToken must support the SDK's NSData/Base64 path"
+            expected = ("pearsilicon-local-" + result["bundle"]).encode("utf-8")
+            assert result["value"] == expected
+            assert result["base64"] == base64.b64encode(expected).decode("ascii")
+            assert not result["mutable"]
+            assert result["stable"] and result["copyEqual"] and result["archiveEqual"]
+            assert client.request("cloud.identity") == result
+            if previous is not None:
+                assert result == previous, "local token changed across processes/storage roots"
+            previous = result
+            client.untouched()
+    print("PASS ubiquity token: immutable NSData, Base64, secure archive/copy, stable across processes/roots; local KV untouched", flush=True)
+
+
 def run_fake_tests(executable, root):
     path = root / "host.sock"
     with FakeHost(path) as host, Client(executable, root / "fake-home", path) as client:
@@ -812,6 +853,7 @@ def main():
                         "-I" + str(root / "include"), "-I" + str(ROOT / "runtime/include"),
                         "-I" + str(ROOT / "runtime"), str(source), "-framework", "Foundation",
                         "-framework", "CoreGraphics", "-o", str(executable)], check=True, timeout=60)
+        run_identity_tests(executable, root)
         run_cloud_deadline_tests(executable, root)
         run_fake_tests(executable, root)
         if args.host:

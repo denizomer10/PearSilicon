@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import PearSilicon
 
+@MainActor
 final class PreparationModeTests: XCTestCase {
     func testEnvironmentRepairsMixedMarkerAndLoadCommandEvenWhenAlreadySelected() throws {
         let fixture = try PreparationFixture()
@@ -423,6 +424,7 @@ private final class PreparationFixture {
     func tools() -> PackageInstaller.PreparationTools {
         var tools = PackageInstaller.PreparationTools()
         tools.runtimeLibraryURL = { [runtimeURL] in runtimeURL }
+        tools.requireStopped = { _ in }
         tools.run = { tool, arguments in
             if tool == "/usr/bin/codesign" { return "" }
             return try Shell.run(tool, arguments)

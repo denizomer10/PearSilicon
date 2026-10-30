@@ -80,6 +80,12 @@ final class PackageInstaller: @unchecked Sendable {
             throw PearError.packageNotFound(url.lastPathComponent)
         }
 
+        // Validate the archive's own entry names before asking an external tool
+        // to extract it. unzip currently confines `..` entries to the destination,
+        // but that is a tool policy, not an admission check: reject traversal,
+        // absolute paths and ambiguous separators as malformed input.
+        try validateArchivePaths(at: url)
+
         let tempDir = workRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: tempDir) }
@@ -104,6 +110,108 @@ final class PackageInstaller: @unchecked Sendable {
         }
 
         return try await installBundle(at: app, mode: mode)
+    }
+
+    /// Reads the ZIP central directory without extracting anything. Only entry
+    /// names are inspected; file contents, CRC and signatures are handled by the
+    /// existing extraction and preparation steps.
+    private func validateArchivePaths(at url: URL) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let fileSize = try handle.seekToEnd()
+        guard fileSize >= 22 else {
+            throw PearError.invalidPackage("\(url.lastPathComponent): not a valid ZIP archive")
+        }
+
+        let tailSize = min(fileSize, 65_557) // EOCD + maximum comment
+        try handle.seek(toOffset: fileSize - tailSize)
+        let tail = try handle.read(upToCount: Int(tailSize)) ?? Data()
+        guard let eocd = tail.range(of: Data([0x50, 0x4B, 0x05, 0x06]), options: .backwards) else {
+            throw PearError.invalidPackage("\(url.lastPathComponent): ZIP end record is missing")
+        }
+        let eocdOffset = eocd.lowerBound
+        guard eocdOffset + 22 <= tail.count else {
+            throw PearError.invalidPackage("\(url.lastPathComponent): truncated ZIP end record")
+        }
+
+        var entries = UInt64(tail.u16(at: eocdOffset + 10))
+        var directorySize = UInt64(tail.u32(at: eocdOffset + 12))
+        var directoryOffset = UInt64(tail.u32(at: eocdOffset + 16))
+
+        if entries == 0xFFFF || directorySize == 0xFFFF_FFFF || directoryOffset == 0xFFFF_FFFF {
+            guard eocdOffset >= 20 else {
+                throw PearError.invalidPackage("\(url.lastPathComponent): ZIP64 locator is missing")
+            }
+            let locator = eocdOffset - 20
+            guard tail.u32(at: locator) == 0x0706_4B50 else {
+                throw PearError.invalidPackage("\(url.lastPathComponent): ZIP64 locator is invalid")
+            }
+            let zip64Offset = tail.u64(at: locator + 8)
+            guard zip64Offset + 56 <= fileSize else {
+                throw PearError.invalidPackage("\(url.lastPathComponent): ZIP64 end record is missing")
+            }
+            try handle.seek(toOffset: zip64Offset)
+            let zip64 = try handle.read(upToCount: 56) ?? Data()
+            guard zip64.count == 56, zip64.u32(at: 0) == 0x0606_4B50 else {
+                throw PearError.invalidPackage("\(url.lastPathComponent): ZIP64 end record is invalid")
+            }
+            entries = zip64.u64(at: 32)
+            directorySize = zip64.u64(at: 40)
+            directoryOffset = zip64.u64(at: 48)
+        }
+
+        guard directoryOffset <= fileSize,
+              directorySize <= fileSize - directoryOffset else {
+            throw PearError.invalidPackage("\(url.lastPathComponent): ZIP directory lies outside the file")
+        }
+
+        var offset = directoryOffset
+        let end = directoryOffset + directorySize
+        var seen: UInt64 = 0
+        while offset < end {
+            guard end - offset >= 46 else {
+                throw PearError.invalidPackage("\(url.lastPathComponent): truncated ZIP directory entry")
+            }
+            try handle.seek(toOffset: offset)
+            let header = try handle.read(upToCount: 46) ?? Data()
+            guard header.count == 46, header.u32(at: 0) == 0x0201_4B50 else {
+                throw PearError.invalidPackage("\(url.lastPathComponent): invalid ZIP directory entry")
+            }
+            let nameLength = UInt64(header.u16(at: 28))
+            let extraLength = UInt64(header.u16(at: 30))
+            let commentLength = UInt64(header.u16(at: 32))
+            let variableLength = nameLength + extraLength + commentLength
+            guard end - offset - 46 >= variableLength else {
+                throw PearError.invalidPackage("\(url.lastPathComponent): truncated ZIP entry name")
+            }
+            let nameData = try handle.read(upToCount: Int(nameLength)) ?? Data()
+            guard nameData.count == Int(nameLength),
+                  let name = String(data: nameData, encoding: .utf8) else {
+                throw PearError.invalidPackage("\(url.lastPathComponent): entry name is not UTF-8")
+            }
+            try validateArchiveEntryName(name, archive: url.lastPathComponent)
+            offset += 46 + variableLength
+            seen += 1
+        }
+        guard offset == end, seen == entries else {
+            throw PearError.invalidPackage("\(url.lastPathComponent): ZIP directory is inconsistent")
+        }
+    }
+
+    private func validateArchiveEntryName(_ name: String, archive: String) throws {
+        let components = name.split(separator: "/", omittingEmptySubsequences: false)
+        let driveLetter = name.count >= 2 && name[name.index(after: name.startIndex)] == ":"
+            && name.first?.isLetter == true
+        guard !name.isEmpty,
+              !name.contains("\0"),
+              !name.contains("\\"),
+              !name.hasPrefix("/"),
+              !driveLetter,
+              !components.contains("..") else {
+            throw PearError.invalidPackage(
+                "\(archive): archive contains an unsafe path. No app was installed."
+            )
+        }
     }
 
     /// Installs an already-built `.app` bundle (for example the product of a
@@ -203,7 +311,11 @@ final class PackageInstaller: @unchecked Sendable {
 
     // MARK: - Removal
 
+    @MainActor
     func uninstall(_ app: InstalledApp) throws {
+        let lease = try AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
+        defer { lease.release() }
+        try preparationTools.requireStopped(app)
         try fileManager.removeItem(at: app.bundleURL)
     }
 
@@ -420,6 +532,7 @@ final class PackageInstaller: @unchecked Sendable {
     /// Prepares and signs a separate copy before atomically exchanging it with
     /// the installed bundle. Until that exchange, rollback is just discarding
     /// the copy; no failed preparation or signature can alter the original.
+    @MainActor
     func setPreparationMode(_ mode: PreparationMode, for app: InstalledApp, launchLease: AppLaunchLease? = nil) throws {
         let lease = try launchLease ?? AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
         defer { if launchLease == nil { lease.release() } }
@@ -428,6 +541,7 @@ final class PackageInstaller: @unchecked Sendable {
         if try preparationModeIsValid(at: app.bundleURL, mode: mode, targetBundleURL: app.bundleURL) {
             return
         }
+        try preparationTools.requireStopped(app)
 
         // A sibling keeps the exchange on the same filesystem. Copy the current
         // bundle, not the IPA, so user-added resources and third-party changes survive.
@@ -442,6 +556,7 @@ final class PackageInstaller: @unchecked Sendable {
         _ = try preparationLoadPaths(at: stagedApp.executableURL)
 
         try finalizeInstall(at: staged, mode: mode, targetBundleURL: app.bundleURL)
+        try preparationTools.requireStopped(app)
         try commitBundle(at: staged, to: app.bundleURL, replacing: true)
     }
 
@@ -1051,5 +1166,26 @@ final class PackageInstaller: @unchecked Sendable {
         """
         try debug.write(to: debugEntitlements, atomically: true, encoding: .utf8)
         return (mode == .nativeContainer ? nativeEntitlements : entitlements).path
+    }
+}
+
+private extension Data {
+    func u16(at offset: Int) -> UInt16 {
+        let start = startIndex + offset
+        return UInt16(self[start]) | UInt16(self[start + 1]) << 8
+    }
+
+    func u32(at offset: Int) -> UInt32 {
+        let start = startIndex + offset
+        return UInt32(self[start]) | UInt32(self[start + 1]) << 8
+            | UInt32(self[start + 2]) << 16 | UInt32(self[start + 3]) << 24
+    }
+
+    func u64(at offset: Int) -> UInt64 {
+        let start = startIndex + offset
+        return UInt64(self[start]) | UInt64(self[start + 1]) << 8
+            | UInt64(self[start + 2]) << 16 | UInt64(self[start + 3]) << 24
+            | UInt64(self[start + 4]) << 32 | UInt64(self[start + 5]) << 40
+            | UInt64(self[start + 6]) << 48 | UInt64(self[start + 7]) << 56
     }
 }

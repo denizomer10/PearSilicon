@@ -56,6 +56,21 @@ final class AppState: ObservableObject {
     var packageInstaller: PackageInstaller
     var launcher: AppLauncher
     var keymapStore: KeymapStore
+    private var packageImports: PackageImportOperations
+    private let observesWorkspace: Bool
+
+    /// Package imports run one at a time, in submission order. A plain `isBusy`
+    /// flag is not enough: `install` suspends at its first await, so a second
+    /// drop can start while the first is still running and later clear the flag
+    /// for both of them.
+    private struct PendingPackageImport {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private var importQueue: [PendingPackageImport] = []
+    private var importRunnerActive = false
+    private var cancelledImportRequests: Set<UUID> = []
 
     /// Keymapper overlays for running games, keyed by bundle id. PearSilicon owns
     /// these windows; no UI code is added to the game.
@@ -74,20 +89,27 @@ final class AppState: ObservableObject {
 
     // MARK: - Lifecycle
 
-    init() {
-        AppPaths.migrateLegacySupportDirectoryIfNeeded()
-        let base = AppPaths.supportRoot
+    init(
+        storageRootURL explicitRoot: URL? = nil,
+        packageImports: PackageImportOperations? = nil,
+        observesWorkspace: Bool = true
+    ) {
+        if explicitRoot == nil { AppPaths.migrateLegacySupportDirectoryIfNeeded() }
+        let base = explicitRoot ?? AppPaths.supportRoot
         let library = base.appendingPathComponent("Applications", isDirectory: true)
         let keymaps = base.appendingPathComponent("Keymaps", isDirectory: true)
 
         self.libraryURL = library
         self.storageRootURL = base
-        self.previousStorageRootURL = StorageLocationStore.shared.previousRootURL
-        self.packageInstaller = PackageInstaller(libraryURL: library)
+        self.previousStorageRootURL = explicitRoot == nil ? StorageLocationStore.shared.previousRootURL : nil
+        let installer = PackageInstaller(libraryURL: library)
+        self.packageInstaller = installer
+        self.packageImports = packageImports ?? .live(installer: installer)
+        self.observesWorkspace = observesWorkspace
         self.launcher = AppLauncher(libraryURL: library)
         self.keymapStore = KeymapStore(baseURL: keymaps)
 
-        observeWorkspace()
+        if observesWorkspace { observeWorkspace() }
     }
 
     /// Rebuilds the path-bound services after storage moved.
@@ -97,6 +119,7 @@ final class AppState: ObservableObject {
         previousStorageRootURL = StorageLocationStore.shared.previousRootURL
         libraryURL = base.appendingPathComponent("Applications", isDirectory: true)
         packageInstaller = PackageInstaller(libraryURL: libraryURL)
+        packageImports = .live(installer: packageInstaller)
         launcher = AppLauncher(libraryURL: libraryURL)
         keymapStore = KeymapStore(baseURL: base.appendingPathComponent("Keymaps", isDirectory: true))
         currentKeymap = selectedApp.flatMap { try? keymapStore.load(for: $0.id) }
@@ -128,6 +151,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshRunningApps() {
+        guard observesWorkspace else { return }
         let ids = Set(installedApps.map(\.id))
         var map: [String: NSRunningApplication] = [:]
         for running in NSWorkspace.shared.runningApplications {
@@ -297,7 +321,7 @@ final class AppState: ObservableObject {
     func changeStorageLocation(to folderURL: URL) async {
         guard !isBusy else { return }
         isBusy = true
-        defer { isBusy = false }
+        defer { finishBusyWork() }
         do {
             let result = try await StorageMigration().move(to: folderURL) { message in
                 Task { @MainActor in self.statusMessage = message }
@@ -313,7 +337,7 @@ final class AppState: ObservableObject {
     func removePreviousStorageCopy() async {
         guard !isBusy else { return }
         isBusy = true
-        defer { isBusy = false }
+        defer { finishBusyWork() }
         do {
             try await StorageMigration().removePreviousCopy()
             previousStorageRootURL = StorageLocationStore.shared.previousRootURL
@@ -326,13 +350,17 @@ final class AppState: ObservableObject {
     // MARK: - Install
 
     func install(packageURLs: [URL]) async {
-        isBusy = true
-        defer { isBusy = false }
+        guard !packageURLs.isEmpty else { return }
+        guard await acquireImportSlot() else { return }
+        defer { releaseImportSlot() }
 
         for url in packageURLs {
+            // Cancellation applies to this request only, and stops the remaining
+            // packages in its batch. It never cancels the active predecessor.
+            if Task.isCancelled { break }
             do {
                 statusMessage = L10n.installing(url.lastPathComponent)
-                let app = try await packageInstaller.install(packageAt: url)
+                let app = try await packageImports.install(at: url)
 
                 // Auto-generate a starting keymap if the app has none yet.
                 if try keymapStore.load(for: app.id) == nil {
@@ -348,9 +376,68 @@ final class AppState: ObservableObject {
         try? await refreshLibrary()
     }
 
+    /// Waits for the previous import to finish. Returns false when this request
+    /// was cancelled while queued, so it must not touch the library.
+    private func acquireImportSlot() async -> Bool {
+        // Storage changes use the same busy flag. Never overlap them with an
+        // import; the user can drop the package again once the move finishes.
+        if importRunnerActive || isBusy {
+            let id = UUID()
+            let acquired = await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    if Task.isCancelled || cancelledImportRequests.remove(id) != nil {
+                        continuation.resume(returning: false)
+                    } else {
+                        importQueue.append(PendingPackageImport(id: id, continuation: continuation))
+                    }
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in self?.cancelQueuedImport(id) }
+            }
+            guard acquired else { return false }
+        } else {
+            importRunnerActive = true
+        }
+        isBusy = true
+        return true
+    }
+
+    private func cancelQueuedImport(_ id: UUID) {
+        if let index = importQueue.firstIndex(where: { $0.id == id }) {
+            importQueue.remove(at: index).continuation.resume(returning: false)
+        } else {
+            // The cancellation handler can run before the continuation body
+            // enqueues the request; remember it so it never waits forever.
+            cancelledImportRequests.insert(id)
+        }
+    }
+
+    private func releaseImportSlot() {
+        importRunnerActive = false
+        finishBusyWork()
+    }
+
+    /// Ends one exclusive operation and immediately hands the busy state to the
+    /// next queued import, if any. Used by both imports and storage migrations,
+    /// because an import may arrive while a storage move still owns the flag.
+    private func finishBusyWork() {
+        guard !importRunnerActive else { return }
+        guard !importQueue.isEmpty else {
+            isBusy = false
+            return
+        }
+        // Keep the busy flag set; the resumed request owns it now.
+        importRunnerActive = true
+        importQueue.removeFirst().continuation.resume(returning: true)
+    }
+
     // MARK: - Launch / uninstall
 
     func launch(_ app: InstalledApp) async {
+        // An import or storage move may be replacing files in the library. Do
+        // not read a half-written bundle or race a preparation swap.
+        guard !isBusy else { return }
+
         // Input translation is opted in per game and default OFF. When disabled,
         // no keymap is passed, so the runtime installs no input handlers.
         let enabled = isKeymapperEnabled(for: app)
@@ -410,6 +497,7 @@ final class AppState: ObservableObject {
     }
 
     func uninstall(_ app: InstalledApp) {
+        guard !isBusy else { return }
         do {
             overlays[app.id]?.detach()
             overlays[app.id] = nil

@@ -95,11 +95,11 @@ static NSArray<NSDictionary *> *LoadAll(void) {
     return items;
 }
 
-static void SaveItem(NSDictionary *item) {
+static BOOL SaveItem(NSDictionary *item) {
     [[NSFileManager defaultManager] createDirectoryAtPath:StoreDir()
                              withIntermediateDirectories:YES attributes:nil error:NULL];
     NSString *key = item[@"__id"];
-    [item writeToFile:ItemPath(key) atomically:YES];
+    return [item writeToFile:ItemPath(key) atomically:YES];
 }
 
 static void DeleteItemWithId(NSString *identifier) {
@@ -180,8 +180,23 @@ static BOOL Matches(NSDictionary *item, NSDictionary *query) {
 // store the key's external representation plus its descriptive attributes, and
 // rebuild a SecKeyRef later with SecKeyCreateWithData.
 
+/// Per-key attributes override shared defaults, including an explicit NO for
+/// persistence. Never let caller metadata change the class of the actual key.
+static NSDictionary *PearAttributesForKey(NSDictionary *params, CFStringRef keyClass) {
+    NSMutableDictionary *attributes = [params mutableCopy] ?: [NSMutableDictionary dictionary];
+    id nestedKey = CFEqual(keyClass, kSecAttrKeyClassPublic)
+        ? (__bridge id)kSecPublicKeyAttrs : (__bridge id)kSecPrivateKeyAttrs;
+    id nested = params[nestedKey];
+    if ([nested isKindOfClass:NSDictionary.class]) [attributes addEntriesFromDictionary:nested];
+    [attributes removeObjectForKey:(__bridge id)kSecPrivateKeyAttrs];
+    [attributes removeObjectForKey:(__bridge id)kSecPublicKeyAttrs];
+    attributes[(__bridge id)kSecAttrKeyClass] = (__bridge id)keyClass;
+    return attributes;
+}
+
 static void StoreSecKey(SecKeyRef key, NSDictionary *params, CFStringRef keyClass) {
     if (!key) return;
+    params = PearAttributesForKey(params, keyClass);
 
     NSMutableDictionary *item = [NSMutableDictionary dictionary];
     item[(__bridge id)kSecClass] = (__bridge id)kSecClassKey;
@@ -190,12 +205,12 @@ static void StoreSecKey(SecKeyRef key, NSDictionary *params, CFStringRef keyClas
     for (id k in params) {
         if (IsControlKey(k)) continue;
         if ([k isEqual:(__bridge id)kSecAttrIsPermanent]) continue;
+        if ([k isEqual:(__bridge id)kSecClass]) continue;
         if ([k isEqual:(__bridge id)kSecAttrKeyClass]) continue;
         if ([k isEqual:(__bridge id)kSecPrivateKeyAttrs]) continue;
         if ([k isEqual:(__bridge id)kSecPublicKeyAttrs]) continue;
         if ([k isEqual:(__bridge id)kSecAttrAccessControl]) continue;
         if ([k isEqual:(__bridge id)kSecAttrTokenID]) continue;
-        if ([k isEqual:(__bridge id)kSecAttrAccessGroup]) continue;
         id value = params[k];
         if (![NSPropertyListSerialization propertyList:value
                                 isValidForFormat:NSPropertyListBinaryFormat_v1_0]) continue;
@@ -214,12 +229,33 @@ static void StoreSecKey(SecKeyRef key, NSDictionary *params, CFStringRef keyClas
     CFDataRef ext = SecKeyCopyExternalRepresentation(key, &err);
     if (!ext) {
         PearLog(@"[PearRuntime][keychain] SecKeyCopyExternalRepresentation failed: %@", err);
+        if (err) CFRelease(err);
         return;
     }
     item[@"__keydata"] = CFBridgingRelease(ext);
 
-    item[@"__id"] = IdentifierForQuery(item);
-    SaveItem(item);
+    // Regenerating a tagged key replaces that logical key, not a new record
+    // whose identity includes the freshly generated private/public bytes.
+    NSMutableDictionary *identity = [item mutableCopy];
+    BOOL tagged = item[(__bridge id)kSecAttrApplicationTag] != nil;
+    if (tagged) {
+        identity = [NSMutableDictionary dictionary];
+        for (id k in @[ (__bridge id)kSecClass, (__bridge id)kSecAttrKeyClass,
+                        (__bridge id)kSecAttrKeyType, (__bridge id)kSecAttrApplicationTag,
+                        (__bridge id)kSecAttrAccessGroup ]) {
+            if (item[k]) identity[k] = item[k];
+        }
+    }
+    item[@"__id"] = IdentifierForQuery(identity);
+    if (SaveItem(item) && tagged) {
+        // Older versions included key bytes in the identifier. Retire only
+        // matching tagged records, and only after the replacement was saved.
+        for (NSDictionary *previous in LoadAll()) {
+            if (![previous[@"__id"] isEqual:item[@"__id"]] && Matches(previous, identity)) {
+                DeleteItemWithId(previous[@"__id"]);
+            }
+        }
+    }
 }
 
 /// Rebuilds a SecKeyRef from a stored key item. Keys may be stored either as a
@@ -279,10 +315,15 @@ static OSStatus PearSecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
         CFDataRef ext = SecKeyCopyExternalRepresentation((__bridge SecKeyRef)valueRef, &err);
         if (ext) {
             item[@"__keydata"] = CFBridgingRelease(ext);
-            CFStringRef keyClass = (__bridge CFStringRef)query[(__bridge id)kSecAttrKeyClass]
-                                   ?: kSecAttrKeyClassPublic;
+            NSDictionary *keyAttrs = CFBridgingRelease(SecKeyCopyAttributes((__bridge SecKeyRef)valueRef));
             item[(__bridge id)kSecClass] = (__bridge id)kSecClassKey;
-            item[(__bridge id)kSecAttrKeyClass] = (__bridge id)keyClass;
+            for (id k in @[ (__bridge id)kSecAttrKeyClass, (__bridge id)kSecAttrKeyType,
+                            (__bridge id)kSecAttrKeySizeInBits ]) {
+                if (keyAttrs[k]) item[k] = keyAttrs[k];
+            }
+            if (!item[(__bridge id)kSecAttrKeyClass]) {
+                item[(__bridge id)kSecAttrKeyClass] = (__bridge id)kSecAttrKeyClassPublic;
+            }
         }
     }
 
@@ -493,20 +534,20 @@ static void PearStripStoreOnlyKeyAttributes(NSMutableDictionary *params) {
                        (__bridge id)kSecAttrApplicationTag ];
     for (id key in keys) [params removeObjectForKey:key];
 
-    id privateAttrs = params[(__bridge id)kSecPrivateKeyAttrs];
-    if ([privateAttrs isKindOfClass:NSDictionary.class]) {
-        NSMutableDictionary *priv = [privateAttrs mutableCopy];
-        priv[(__bridge id)kSecAttrIsPermanent] = @NO;
-        for (id key in keys) [priv removeObjectForKey:key];
-        params[(__bridge id)kSecPrivateKeyAttrs] = priv;
+    for (id nestedKey in @[ (__bridge id)kSecPrivateKeyAttrs, (__bridge id)kSecPublicKeyAttrs ]) {
+        id nested = params[nestedKey];
+        if (![nested isKindOfClass:NSDictionary.class]) continue;
+        NSMutableDictionary *attributes = [nested mutableCopy];
+        attributes[(__bridge id)kSecAttrIsPermanent] = @NO;
+        for (id key in keys) [attributes removeObjectForKey:key];
+        params[nestedKey] = attributes;
     }
 }
 
-static BOOL PearWantsPersistentKey(NSDictionary *params) {
-    if ([params[(__bridge id)kSecAttrIsPermanent] boolValue]) return YES;
-    id privateAttrs = params[(__bridge id)kSecPrivateKeyAttrs];
-    return [privateAttrs isKindOfClass:NSDictionary.class] &&
-           [privateAttrs[(__bridge id)kSecAttrIsPermanent] boolValue];
+static BOOL PearWantsPersistentKey(NSDictionary *params, CFStringRef keyClass, BOOL defaultValue) {
+    NSDictionary *attributes = PearAttributesForKey(params, keyClass);
+    id permanent = attributes[(__bridge id)kSecAttrIsPermanent];
+    return permanent ? [permanent boolValue] : defaultValue;
 }
 
 static SecKeyRef PearSecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error) {
@@ -514,7 +555,7 @@ static SecKeyRef PearSecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRe
     if (!original) return NULL;
 
     NSDictionary *requested = parameters ? (__bridge NSDictionary *)parameters : @{};
-    BOOL persistent = PearWantsPersistentKey(requested);
+    BOOL persistent = PearWantsPersistentKey(requested, kSecAttrKeyClassPrivate, NO);
 
     NSMutableDictionary *params = [requested mutableCopy] ?: [NSMutableDictionary dictionary];
     PearStripStoreOnlyKeyAttributes(params);
@@ -561,15 +602,21 @@ static OSStatus PearSecKeyGeneratePair(CFDictionaryRef parameters, SecKeyRef *pu
             params[(__bridge id)kSecAttrKeyType] ?: @"?",
             params[(__bridge id)kSecAttrKeySizeInBits] ?: @"?");
 
-    OSStatus status = original((__bridge CFDictionaryRef)params, publicKey, privateKey);
-    if (status != errSecSuccess) {
+    // Preserve the legacy shim's default pair persistence, but honor explicit
+    // transient requests independently for each key. RandomKey defaults to NO.
+    BOOL persistPublic = PearWantsPersistentKey(requested, kSecAttrKeyClassPublic, YES);
+    BOOL persistPrivate = PearWantsPersistentKey(requested, kSecAttrKeyClassPrivate, YES);
+    SecKeyRef temporaryPublic = NULL, temporaryPrivate = NULL;
+    SecKeyRef *publicResult = publicKey ?: (persistPublic ? &temporaryPublic : NULL);
+    SecKeyRef *privateResult = privateKey ?: (persistPrivate ? &temporaryPrivate : NULL);
+    OSStatus status = original((__bridge CFDictionaryRef)params, publicResult, privateResult);
+    if (status == errSecSuccess) {
+        if (persistPublic && publicResult) StoreSecKey(*publicResult, requested, kSecAttrKeyClassPublic);
+        if (persistPrivate && privateResult) StoreSecKey(*privateResult, requested, kSecAttrKeyClassPrivate);
+    } else {
         PearLog(@"[PearRuntime][keychain] SecKeyGeneratePair failed: %d", (int)status);
-        return status;
     }
-    if (publicKey && privateKey && *publicKey && *privateKey) {
-        // Persist both keys in our own store so later lookups succeed.
-        StoreSecKey(*publicKey, requested, kSecAttrKeyClassPublic);
-        StoreSecKey(*privateKey, requested, kSecAttrKeyClassPrivate);
-    }
+    if (temporaryPublic) CFRelease(temporaryPublic);
+    if (temporaryPrivate) CFRelease(temporaryPrivate);
     return status;
 }

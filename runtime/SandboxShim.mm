@@ -302,8 +302,8 @@ extern "C" DIR *PearSandboxOpendir(const char *path) {
 // container. Those two capabilities are what most environment checks test, so
 // the trace records them (without changing the result) to identify a false
 // positive.
-extern "C" int PearTraceOpen(const char *path, int flags, mode_t mode);
-extern "C" int PearTraceOpenAt(int dirfd, const char *path, int flags, mode_t mode);
+extern "C" int PearTraceOpen(const char *path, int flags, ...);
+extern "C" int PearTraceOpenAt(int dirfd, const char *path, int flags, ...);
 extern "C" int PearTraceCreat(const char *path, mode_t mode);
 extern "C" FILE *PearTraceFopen(const char *path, const char *mode);
 extern "C" mode_t PearTraceUmask(mode_t mask);
@@ -384,41 +384,112 @@ static mode_t PearSafeMode(mode_t mode) {
     return mode | 0400;
 }
 
-static BOOL PearRepairFileMode(const char *path, int descriptor) {
-    struct stat info;
-    if (descriptor >= 0) {
-        if (fstat(descriptor, &info) != 0) return NO;
-    } else {
-        if (!path || stat(path, &info) != 0) return NO;
-    }
-
-    mode_t perms = info.st_mode & 0777;
-    mode_t repaired = PearSafeMode(perms);
-    if (repaired == perms) return NO;
-    return (descriptor >= 0 ? fchmod(descriptor, repaired) : chmod(path, repaired)) == 0;
+static BOOL PearOpenIsWritable(int flags) {
+    int access = flags & O_ACCMODE;
+    return access == O_WRONLY || access == O_RDWR;
 }
 
-extern "C" int PearTraceOpen(const char *path, int flags, mode_t mode) {
-    int (*original)(const char *, int, mode_t) =
-        (int (*)(const char *, int, mode_t))kInterposeOpen.replacee;
+static BOOL PearPathIsBelow(const char *path, const char *root) {
+    size_t length = strlen(root);
+    return strncmp(path, root, length) == 0 && path[length] == '/';
+}
 
-    // A few Mono/.NET file paths pass mode 0 together with O_CREAT. That
-    // produces an unreadable 000 file which the same app cannot open on its
-    // next launch. Give newly created files the normal owner read/write mode.
+// No Foundation here: resolving a bundle or a home directory can reenter open.
+// Only the launcher-selected data home is a write-repair capability, never HOME
+// or the support root (which also contains installed app bundles).
+static BOOL PearDescriptorInManagedHome(int descriptor) {
+    const char *home = getenv("PEAR_HOME_DIR");
+    char root[PATH_MAX], path[PATH_MAX], resolved[PATH_MAX];
+    if (!home || home[0] != '/' || !realpath(home, root) || strcmp(root, "/") == 0) {
+        return NO;
+    }
+    if (fcntl(descriptor, F_GETPATH, path) != 0 || !PearPathIsBelow(path, root)) return NO;
+    return realpath(path, resolved) != NULL && PearPathIsBelow(resolved, root);
+}
+
+static BOOL PearRepairFileMode(int descriptor, BOOL writable) {
+    struct stat info;
+    if (fstat(descriptor, &info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != geteuid()) {
+        return NO;
+    }
+
+    mode_t perms = info.st_mode & ALLPERMS;
+    mode_t repaired = perms | S_IRUSR;
+    // A writable creation can succeed with a read-only mode, leaving the next
+    // launch unable to reopen it (e.g. a 0405 placeholder pak). Repair both the
+    // first descriptor and EACCES reopens. Hard links can alias unrelated data
+    // outside the home, so they must not acquire write access through this shim.
+    if (writable && !(perms & S_IWUSR) && info.st_nlink == 1 &&
+        PearDescriptorInManagedHome(descriptor)) {
+        repaired |= S_IWUSR;
+    }
+    if (repaired == perms) return NO;
+    return fchmod(descriptor, repaired) == 0;
+}
+
+static BOOL PearRepairOwnerReadAt(int dirfd, const char *path) {
+    struct stat info;
+    if (fstatat(dirfd, path, &info, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISREG(info.st_mode) || info.st_uid != geteuid()) return NO;
+
+    mode_t perms = info.st_mode & ALLPERMS;
+    // Darwin cannot give us an event descriptor without read OR write access.
+    // Retain the legacy owner-read recovery for inaccessible files, but never
+    // copy an owner-write bit onto a pathname that could have been swapped.
+    if (perms & (S_IRUSR | S_IWUSR)) return NO;
+    return fchmodat(dirfd, path, perms | S_IRUSR, AT_SYMLINK_NOFOLLOW) == 0;
+}
+
+static BOOL PearRepairFileModeAt(int dirfd, const char *path, BOOL writable) {
+    int (*original)(int, const char *, int, ...) =
+        (int (*)(int, const char *, int, ...))kInterposeOpenAt.replacee;
+    if (!path || !original) return NO;
+
+    // Pin the actual target without following a final symlink or creating/
+    // truncating anything, and honor the caller's dirfd. O_EVTONLY still checks
+    // access on Darwin; a write-only event descriptor can recover owner read.
+    int probeFlags = O_EVTONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
+    int descriptor = original(dirfd, path, probeFlags, 0);
+    if (descriptor < 0 && errno == EACCES) {
+        descriptor = original(dirfd, path, probeFlags | O_WRONLY, 0);
+    }
+    BOOL readRepaired = NO;
+    if (descriptor < 0 && errno == EACCES && PearRepairOwnerReadAt(dirfd, path)) {
+        readRepaired = YES;
+        descriptor = original(dirfd, path, probeFlags, 0);
+    }
+    if (descriptor < 0) return readRepaired;
+    // Only this pinned descriptor can acquire owner write, never a pathname.
+    BOOL repaired = PearRepairFileMode(descriptor, writable);
+    close(descriptor);
+    return repaired || readRepaired;
+}
+
+extern "C" int PearTraceOpen(const char *path, int flags, ...) {
+    int (*original)(const char *, int, ...) =
+        (int (*)(const char *, int, ...))kInterposeOpen.replacee;
+
+    // Darwin arm64 passes variadic arguments on the stack, not in the fixed
+    // third-argument register. Preserve libc's ABI in both directions, and do
+    // not read a nonexistent mode argument on non-creating opens.
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list args;
+        va_start(args, flags);
+        mode = (mode_t)va_arg(args, int);
+        va_end(args);
+    }
     BOOL creating = (flags & O_CREAT) != 0;
-    if (creating && mode == 0) {
-        mode = 0644;
-    }
-
+    BOOL writable = PearOpenIsWritable(flags);
     int result = original ? original(path, flags, mode) : -1;
-    if (result < 0 && errno == EACCES && PearRepairFileMode(path, -1)) {
-        result = original ? original(path, flags, mode) : -1;
-    }
-    if (result >= 0 && creating) {
-        PearRepairFileMode(NULL, result);
-    }
-
     int saved = result < 0 ? errno : 0;
+    if (result < 0 && saved == EACCES && PearRepairFileModeAt(AT_FDCWD, path, writable)) {
+        result = original ? original(path, flags, mode) : -1;
+        saved = result < 0 ? errno : 0;
+    }
+    if (result >= 0 && (creating || writable)) {
+        PearRepairFileMode(result, writable);
+    }
     if (result < 0) {
         PearTracePath("open", path, result, saved);
     } else if ((flags & (O_CREAT | O_WRONLY | O_RDWR)) != 0) {
@@ -428,27 +499,33 @@ extern "C" int PearTraceOpen(const char *path, int flags, mode_t mode) {
     return result;
 }
 
-extern "C" int PearTraceOpenAt(int dirfd, const char *path, int flags, mode_t mode) {
-    int (*original)(int, const char *, int, mode_t) =
-        (int (*)(int, const char *, int, mode_t))kInterposeOpenAt.replacee;
+extern "C" int PearTraceOpenAt(int dirfd, const char *path, int flags, ...) {
+    int (*original)(int, const char *, int, ...) =
+        (int (*)(int, const char *, int, ...))kInterposeOpenAt.replacee;
 
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list args;
+        va_start(args, flags);
+        mode = (mode_t)va_arg(args, int);
+        va_end(args);
+    }
     // The path trace writes through openat; do not route it back here.
     if (path && strcmp(path, "/tmp/pear-fs.log") == 0) {
         return original ? original(dirfd, path, flags, mode) : -1;
     }
 
     BOOL creating = (flags & O_CREAT) != 0;
-    if (creating && mode == 0) mode = 0644;
-
+    BOOL writable = PearOpenIsWritable(flags);
     int result = original ? original(dirfd, path, flags, mode) : -1;
-    if (result < 0 && errno == EACCES && PearRepairFileMode(path, -1)) {
-        result = original ? original(dirfd, path, flags, mode) : -1;
-    }
-    if (result >= 0 && creating) {
-        PearRepairFileMode(NULL, result);
-    }
-
     int saved = result < 0 ? errno : 0;
+    if (result < 0 && saved == EACCES && PearRepairFileModeAt(dirfd, path, writable)) {
+        result = original ? original(dirfd, path, flags, mode) : -1;
+        saved = result < 0 ? errno : 0;
+    }
+    if (result >= 0 && (creating || writable)) {
+        PearRepairFileMode(result, writable);
+    }
     if (result < 0) {
         PearTracePath("openat", path, result, saved);
     } else if ((flags & (O_CREAT | O_WRONLY | O_RDWR)) != 0) {
@@ -462,16 +539,15 @@ extern "C" int PearTraceCreat(const char *path, mode_t mode) {
     int (*original)(const char *, mode_t) =
         (int (*)(const char *, mode_t))kInterposeCreat.replacee;
 
-    if (mode == 0) mode = 0644;
     int result = original ? original(path, mode) : -1;
-    if (result < 0 && errno == EACCES && PearRepairFileMode(path, -1)) {
+    int saved = result < 0 ? errno : 0;
+    if (result < 0 && saved == EACCES && PearRepairFileModeAt(AT_FDCWD, path, YES)) {
         result = original ? original(path, mode) : -1;
+        saved = result < 0 ? errno : 0;
     }
     if (result >= 0) {
-        PearRepairFileMode(NULL, result);
+        PearRepairFileMode(result, YES);
     }
-
-    int saved = result < 0 ? errno : 0;
     PearTracePath("creat", path, result, saved);
     errno = saved;
     return result;
@@ -481,16 +557,17 @@ extern "C" FILE *PearTraceFopen(const char *path, const char *mode) {
     FILE *(*original)(const char *, const char *) =
         (FILE *(*)(const char *, const char *))kInterposeFopen.replacee;
 
+    BOOL writable = mode != NULL && strpbrk(mode, "wa+") != NULL;
     FILE *result = original ? original(path, mode) : NULL;
-    if (result == NULL && errno == EACCES && PearRepairFileMode(path, -1)) {
-        result = original ? original(path, mode) : NULL;
-    }
-    if (result != NULL && mode != NULL && strpbrk(mode, "wa+") != NULL) {
-        int descriptor = fileno(result);
-        if (descriptor >= 0) PearRepairFileMode(NULL, descriptor);
-    }
-
     int saved = result == NULL ? errno : 0;
+    if (result == NULL && saved == EACCES && PearRepairFileModeAt(AT_FDCWD, path, writable)) {
+        result = original ? original(path, mode) : NULL;
+        saved = result == NULL ? errno : 0;
+    }
+    if (result != NULL && writable) {
+        int descriptor = fileno(result);
+        if (descriptor >= 0) PearRepairFileMode(descriptor, YES);
+    }
     if (result == NULL) PearTracePath("fopen", path, 0, saved);
     errno = saved;
     return result;
