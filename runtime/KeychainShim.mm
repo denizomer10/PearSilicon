@@ -28,6 +28,10 @@ static NSString *StoreDir(void) {
     }
     // Persistent default so credentials survive restarts. Uses the real home
     // (from the environment) because PathShim redirects NSHomeDirectory.
+    const char *root = getenv("PEAR_SUPPORT_ROOT");
+    if (root && root[0]) {
+        return [[NSString stringWithUTF8String:root] stringByAppendingPathComponent:@"Keychain"];
+    }
     const char *home = getenv("HOME");
     NSString *realHome = (home && home[0]) ? [NSString stringWithUTF8String:home] : NSHomeDirectory();
     return [realHome stringByAppendingPathComponent:@"Library/Application Support/PearSilicon/Keychain"];

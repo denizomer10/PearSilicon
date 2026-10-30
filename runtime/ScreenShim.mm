@@ -36,7 +36,10 @@ static UIWindow *PearMainWindow(void) {
 
 /// A legacy GL surface can be larger than its window. When the GL shim fits it,
 /// it publishes that logical size here so UIScreen and the view agree; touch
-/// hit-testing then uses the same coordinate space as the rendered frame.
+/// hit-testing then uses the same coordinate space as the rendered frame. Once
+/// a fixed drawable exists its size is authoritative: a Mac window resize (full
+/// screen in particular) must not rotate or rescale the coordinate space the
+/// engine laid its controls out in.
 static CGSize gReportedOverride = {0, 0};
 
 void PearSetScreenOverride(CGSize size) {
@@ -73,6 +76,15 @@ static CGRect PearReportedBounds(void) {
 /// The orientation implied by the app's actual window shape. Used instead of
 /// the scene wrapper's stale portrait/landscape flag.
 static UIInterfaceOrientation PearDesiredOrientation(void) {
+    // A fixed GL drawable defines the app's coordinate space. Reporting the
+    // window's landscape shape in full screen would make such an engine rotate
+    // its hit-testing while the drawable stays portrait, so every control moves.
+    if (gReportedOverride.width > 0 && gReportedOverride.height > 0) {
+        CGSize size = gReportedOverride;
+        if (size.width > size.height + 1) return UIInterfaceOrientationLandscapeLeft;
+        if (size.height > size.width + 1) return UIInterfaceOrientationPortrait;
+        return UIInterfaceOrientationUnknown;
+    }
     UIWindow *window = PearMainWindow();
     if (!window) return UIInterfaceOrientationUnknown;
     CGSize size = window.bounds.size;

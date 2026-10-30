@@ -11,6 +11,36 @@
 #import <objc/runtime.h>
 #import <sys/stat.h>
 #import <os/log.h>
+#import <pwd.h>
+#import <unistd.h>
+
+/// The log file used when the launcher did not pass PEAR_LOG_FILE. GUI launches
+/// need the same trace as `--log` runs, otherwise an exception inside a third
+/// party crash reporter leaves no actionable information behind.
+NSString *PearLogFilePath(void) {
+    static NSString *path;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
+        if (bundleID.length == 0) return;
+        NSString *directory = nil;
+        const char *root = getenv("PEAR_SUPPORT_ROOT");
+        if (root && root[0]) {
+            directory = [[NSString stringWithUTF8String:root]
+                stringByAppendingPathComponent:@"Logs"];
+        } else {
+            const char *home = getpwuid(getuid()) ? getpwuid(getuid())->pw_dir : NULL;
+            if (!home) return;
+            directory = [NSString stringWithFormat:
+                @"%s/Library/Application Support/PearSilicon/Logs", home];
+        }
+        [NSFileManager.defaultManager createDirectoryAtPath:directory
+                               withIntermediateDirectories:YES attributes:nil error:NULL];
+        path = [directory stringByAppendingPathComponent:
+                [bundleID stringByAppendingString:@".log"]];
+    });
+    return path;
+}
 
 void PearLog(NSString *format, ...) {
     va_list args;
@@ -27,6 +57,7 @@ void PearLog(NSString *format, ...) {
     os_log_with_type(handle, OS_LOG_TYPE_DEFAULT, "%{public}s", message.UTF8String);
 
     const char *path = getenv("PEAR_LOG_FILE");
+    if (!path) path = PearLogFilePath().fileSystemRepresentation;
     if (path) {
         FILE *file = fopen(path, "a");
         if (file) {
@@ -693,8 +724,19 @@ static void WatchKeymap(NSString *path) {
 @implementation PearRuntime
 
 + (void)bootstrap {
-    // Debug affordance: let a launch disable the runtime entirely so we can tell
-    // whether a loaded component is responsible for a misbehaving app.
+    // dyld has already consumed launcher insertion. Avoid propagating it and
+    // the host capability to helpers created after bootstrap. This does not
+    // cover children created by an earlier library initializer.
+    if (getenv("PEAR_LAUNCHER_INJECTION")) {
+        PearHostIsConfigured(); // Capture this process's endpoint before clearing it.
+        unsetenv("DYLD_INSERT_LIBRARIES");
+        unsetenv("PEAR_HOST_SOCKET");
+        unsetenv("PEAR_HOST_TOKEN");
+        unsetenv("PEAR_LAUNCHER_INJECTION");
+    }
+
+    // Skip this bootstrap for input debugging. Other shims have independent
+    // initializers, so this is not a global no-hooks switch.
     if (NSProcessInfo.processInfo.environment[@"PEAR_DISABLE"]) {
         PearLog(@"[PearRuntime] disabled via PEAR_DISABLE");
         return;
@@ -705,7 +747,7 @@ static void WatchKeymap(NSString *path) {
     WatchKeymap(keymapPath);
 
     // Input translation is opt-in: with no keymap (the app did not enable the
-    // keymapper) the runtime installs no input handlers at all.
+    // keymapper) this bootstrap installs no keymapper input handlers.
     if (gBindings.count > 0) {
         InstallMouse();
         InstallKeyboard();
@@ -717,25 +759,32 @@ static void WatchKeymap(NSString *path) {
     // verified without a real mouse/keyboard.
     if (NSProcessInfo.processInfo.environment[@"PEAR_TEST_TAP_AT"]) {
         NSString *spec = NSProcessInfo.processInfo.environment[@"PEAR_TEST_TAP_AT"];
-        NSArray<NSString *> *parts = [spec componentsSeparatedByString:@","];
-        if (parts.count >= 2) {
+        // Several taps can be chained with `;` so a coordinate sweep can be
+        // checked without a second launch or a screenshot tool.
+        NSArray<NSString *> *taps = [spec componentsSeparatedByString:@";"];
+        [taps enumerateObjectsUsingBlock:^(NSString *tap, NSUInteger index, BOOL *stop) {
+            NSArray<NSString *> *parts = [tap componentsSeparatedByString:@","];
+            if (parts.count < 2) return;
             CGFloat nx = parts[0].doubleValue;
             CGFloat ny = parts[1].doubleValue;
             double delay = parts.count >= 3 ? parts[2].doubleValue : 8.0;
+            NSString *key = [NSString stringWithFormat:@"pear-test-at-%lu", (unsigned long)index];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
-                PearLog(@"[PearRuntime][touch] TEST tap at (%.3f,%.3f) after %.1fs", nx, ny, delay);
+                PearLog(@"[PearRuntime][touch] TEST tap %lu at (%.3f,%.3f) after %.1fs state=%ld",
+                        (unsigned long)index, nx, ny, delay,
+                        (long)UIApplication.sharedApplication.applicationState);
                 if (getenv("PEAR_TOUCH_CGEVENT")) {
                     PearSynthesizeTapCGEvent(nx, ny);
                 } else {
-                    PearSynthesizeVirtualFinger(YES, @"pear-test-at", nx, ny);
+                    PearSynthesizeVirtualFinger(YES, key, nx, ny);
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
                                    dispatch_get_main_queue(), ^{
-                        PearSynthesizeVirtualFinger(NO, @"pear-test-at", nx, ny);
+                        PearSynthesizeVirtualFinger(NO, key, nx, ny);
                     });
                 }
             });
-        }
+        }];
     }
     if (NSProcessInfo.processInfo.environment[@"PEAR_TEST_LOOK"]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)),

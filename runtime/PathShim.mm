@@ -44,6 +44,13 @@ static NSString *PearShimRoot(void) {
             return;
         }
         NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"unknown";
+        const char *root = getenv("PEAR_SUPPORT_ROOT");
+        if (root && root[0]) {
+            gShimRoot = [[[NSString stringWithUTF8String:root]
+                stringByAppendingPathComponent:@"Games"]
+                stringByAppendingPathComponent:bundleID];
+            return;
+        }
         gShimRoot = [[PearRealHome()
             stringByAppendingPathComponent:@"Library/Application Support/PearSilicon/Games"]
             stringByAppendingPathComponent:bundleID];

@@ -46,7 +46,7 @@ struct CLIPaths: Sendable {
 
 // MARK: - Argument parsing
 
-struct CLIArguments {
+struct CLIArguments: Sendable {
     var positionals: [String] = []
     var flags: Set<String> = []
     var options: [String: String] = [:]
@@ -58,6 +58,7 @@ private let booleanFlags: Set<String> = [
     "launch", "no-launch", "keys", "no-keys", "log", "wait", "follow", "system",
     "lldb", "yes", "print", "path", "generate", "json", "no-keymap", "trace", "help",
     "metal-hud", "no-metal-hud", "pointer-lock", "no-pointer-lock",
+    "env-injection", "load-command", "sandboxed", "background",
 ]
 
 /// Result box for the async → sync bridge. `@unchecked Sendable` because the
@@ -133,12 +134,88 @@ enum CLI {
         case "pointerlock": return try pointerLockCommand(parsed)
         case "logs": return try logsCommand(parsed)
         case "paths": return try pathsCommand()
+        case "storage": return try storageCommand(parsed)
         case "doctor": return try doctorCommand()
         case "link", "install-cli": return try linkCommand(parsed)
         case "build": return try buildProjectCommand(parsed)
+        case "host-service": return try hostServiceCommand(parsed)
         default:
             throw CLIError.message("unknown command '\(command)'. Run `pearsilicon help`.")
         }
+    }
+
+    // MARK: Host service
+
+    /// Hidden command used by `AppLauncher` to run the out-of-process service.
+    /// No UI: exits when its attached game exits, its startup lease expires,
+    /// or it receives an orderly stop/SIGTERM/SIGINT.
+    private static func hostServiceCommand(_ arguments: CLIArguments) throws -> Int32 {
+        guard let socket = arguments.options["socket"],
+              let bundle = arguments.options["bundle"],
+              let data = arguments.options["data"],
+              let token = ProcessInfo.processInfo.environment["PEAR_HOST_TOKEN"],
+              !token.isEmpty else {
+            throw CLIError.message("host-service requires --socket <path> --bundle <id> --data <dir> and PEAR_HOST_TOKEN")
+        }
+        let deviceProfile = try RuntimeDeviceProfile(
+            bundleID: bundle, environment: ProcessInfo.processInfo.environment
+        )
+        let service = RuntimeHostService(
+            socketPath: socket,
+            bundleID: bundle,
+            dataDirectory: URL(fileURLWithPath: data, isDirectory: true),
+            token: token,
+            deviceProfile: deviceProfile
+        )
+        // Dispatch sources run outside the blocked CLI main thread; do not call
+        // Foundation or Swift cleanup from a POSIX signal handler.
+        signal(SIGTERM, SIG_IGN)
+        signal(SIGINT, SIG_IGN)
+        let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global(qos: .utility))
+        let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global(qos: .utility))
+        termination.setEventHandler { service.stop() }
+        interrupt.setEventHandler { service.stop() }
+        termination.activate()
+        interrupt.activate()
+        defer { termination.cancel(); interrupt.cancel() }
+        try service.run()
+        return 0
+    }
+
+    // MARK: Storage
+
+    /// Shows or relocates the single folder holding apps, game data, keymaps,
+    /// ODR packs, keychain entries, logs and work files.
+    private static func storageCommand(_ arguments: CLIArguments) throws -> Int32 {
+        let store = StorageLocationStore.shared
+        if let action = arguments.positionals.first {
+            switch action {
+            case "move":
+                guard let path = arguments.positionals.dropFirst().first else {
+                    throw CLIError.message("usage: pearsilicon storage move <folder>")
+                }
+                let folder = URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+                print("moving storage to \(folder.path)…")
+                let result = try awaitBridge {
+                    try await StorageMigration().move(to: folder) { message in print("  \(message)") }
+                }
+                print("storage moved to \(result.rootURL.path)")
+                print("previous copy kept at \(result.previousRootURL?.path ?? "-") (remove it with `pearsilicon storage remove-previous`)")
+                notifyLibraryChanged()
+                return 0
+            case "remove-previous":
+                try awaitBridge { try await StorageMigration().removePreviousCopy() }
+                print("previous copy removed")
+                return 0
+            default:
+                throw CLIError.message("usage: pearsilicon storage [move <folder>|remove-previous]")
+            }
+        }
+        print("storage root: \(try store.requireAvailableRoot().path)")
+        if let previous = store.previousRootURL {
+            print("previous copy: \(previous.path)")
+        }
+        return 0
     }
 
     // MARK: Install / run
@@ -173,7 +250,7 @@ enum CLI {
         let installer = PackageInstaller(libraryURL: CLIPaths.shared.library)
         let extensionName = url.pathExtension.lowercased()
 
-        let mode: PreparationMode = .compatibility
+        let mode = try requestedPreparationMode(arguments, current: .compatibility)
         let app: InstalledApp
         if isDirectory.boolValue && extensionName == "app" {
             app = try awaitBridge { try await installer.installBundle(at: url, mode: mode) }
@@ -226,6 +303,9 @@ enum CLI {
 
     private static func launch(app: InstalledApp, arguments: CLIArguments, debug: Bool) throws -> Int32 {
         let paths = CLIPaths.shared
+        let launchLease = try AppLaunchLease.acquire(appID: app.id, libraryURL: paths.library)
+        defer { launchLease.release() }
+        try AppLauncher.requireStopped(app)
         let store = KeymapStore(baseURL: paths.keymaps)
         let enabled = keymapperEnabled(for: app, arguments: arguments)
         let hasKeymap = store.exists(for: app.id)
@@ -279,18 +359,25 @@ enum CLI {
         let launchEnvironment = environment
 
         // A previously prepared native app must be switched back so the
-        // runtime is present before a normal launch.
+        // runtime is present before a normal launch. An app prepared for
+        // launcher injection keeps that mode unless the caller changes it.
         let installer = PackageInstaller(libraryURL: paths.library)
-        try? installer.setPreparationMode(.compatibility, for: app)
+        let currentMode = installer.currentPreparationMode(for: app)
+        let mode = try requestedPreparationMode(arguments, current: currentMode)
+        try installer.setPreparationMode(mode, for: app, launchLease: launchLease)
 
         let launcher = AppLauncher(libraryURL: paths.library)
         let pid: pid_t = try awaitBridge {
             let running = try await launcher.launch(
                 app, keymapURL: keymapURL, extraEnvironment: launchEnvironment,
-                nativeContainer: nativeContainer
+                nativeContainer: nativeContainer,
+                sandboxed: arguments.flags.contains("sandboxed"),
+                activate: !arguments.flags.contains("background"),
+                launchLease: launchLease
             )
             return running?.processIdentifier ?? 0
         }
+        launchLease.release()
 
         if pid > 0 {
             print("launched \(app.displayName) [\(app.id)] pid \(pid)")
@@ -300,8 +387,8 @@ enum CLI {
         print("  keymap: \(keymapState(enabled: enabled, hasFile: hasKeymap, url: keymapURL))")
         print("  metal HUD: \(hudEnabled ? "on" : "off")")
         print("  pointer lock: \(pointerLock ? "allowed" : "disabled")")
-        print("  mode: compatibility runtime")
-        print("  container: iOS-like ")
+        print("  mode: \(mode == .compatibilityEnvironment ? "environment-injected in-process runtime + local KV/device-profile host" : "in-process runtime via LC_LOAD_DYLIB")")
+        print("  container: iOS-like filesystem view (hooks + requested macOS sandbox profile)")
         if let logPath { print("  log:    \(logPath)") }
 
         if arguments.flags.contains("lldb") {
@@ -335,18 +422,38 @@ enum CLI {
         print("stopping \(app.displayName) [\(app.id)]…")
         running.terminate()
 
+        func isGone() -> Bool {
+            guard let current = NSRunningApplication(processIdentifier: running.processIdentifier) else { return true }
+            return current.isTerminated
+        }
         let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline {
-            guard let current = NSRunningApplication(processIdentifier: running.processIdentifier),
-                  !current.isTerminated else { break }
+        while Date() < deadline, !isGone() {
             Thread.sleep(forTimeInterval: 0.1)
         }
-        if let current = NSRunningApplication(processIdentifier: running.processIdentifier),
-           !current.isTerminated {
-            current.forceTerminate()
+        if !isGone() {
+            NSRunningApplication(processIdentifier: running.processIdentifier)?.forceTerminate()
         }
-        print("stopped")
-        return 0
+        // Large games can spend a while saving state; report accurately instead
+        // of claiming success while the process is still alive.
+        let hardDeadline = Date().addingTimeInterval(15)
+        while Date() < hardDeadline, !isGone() {
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        // Some games ignore both Apple-event termination and forceTerminate.
+        // Last resort: kill the process the user explicitly asked to stop.
+        if !isGone() {
+            kill(running.processIdentifier, SIGKILL)
+            let killDeadline = Date().addingTimeInterval(5)
+            while Date() < killDeadline, !isGone() {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+        if isGone() {
+            print("stopped")
+            return 0
+        }
+        print("still shutting down: \(app.displayName) (the process is still saving/closing)")
+        return 1
     }
 
     private static func listCommand(_ arguments: CLIArguments) throws -> Int32 {
@@ -413,6 +520,11 @@ enum CLI {
         print("pointer lock: \(AppSettings.pointerLockAllowed(for: app.id) ? "allowed" : "disabled")")
         print("metal HUD:   \((((AppSettings.defaults.object(forKey: "metalHUD.enabled." + app.id) as? Bool) ?? false) ? "on" : "off"))")
         print("runtime:     \(AppLauncher.runtimeLibraryURL()?.path ?? "not found")")
+        let mode = PackageInstaller(libraryURL: paths.library).currentPreparationMode(for: app)
+        print("preparation: \(mode.rawValue)")
+        if mode == .compatibilityEnvironment {
+            print("host log:    \(paths.logs.appendingPathComponent("\(app.id).host.log").path)")
+        }
         return 0
     }
 
@@ -624,20 +736,21 @@ enum CLI {
 
         switch DeveloperTools.toolchainStatus() {
         case .ready:
-            print("toolchain:ready (\(DeveloperTools.activeDeveloperDirectory() ?? "selected"))")
+            print("build toolchain: ready (\(DeveloperTools.activeDeveloperDirectory() ?? "selected"))")
         case .missing:
-            print("toolchain: NOT INSTALLED")
-            print("          install the full development toolchain, then run:")
-            print("            sudo xcode-select -s /Applications/<Toolchain>.app")
+            print("build toolchain: full Xcode toolchain not found")
+            print("          for source/project builds, install Xcode and select it with xcode-select")
         case .installedButNotSelected(let toolchainPath, let activePath):
-            print("toolchain: installed at \(toolchainPath), but not selected")
+            print("build toolchain: installed at \(toolchainPath), but not selected")
             print("          active: \(activePath ?? "unknown")")
             print("          run: \(DeveloperTools.selectCommand(for: toolchainPath))")
         }
 
         let runtime = AppLauncher.runtimeLibraryURL()?.path
         print("runtime:  \(runtime ?? "NOT FOUND")")
-        print("runtime build: \(DeveloperTools.runtimeBuildAvailable() ? "available" : "missing iOSSupport frameworks")")
+        print("runtime source-build SDK: \(DeveloperTools.runtimeBuildAvailable() ? "available" : "missing iOSSupport frameworks")")
+        print("          the prebuilt GUI does not require Xcode or Command Line Tools")
+        print("          some app preparation/relocation paths require Command Line Tools")
 
         let apps = (try? PackageInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()) ?? []
         print("library:  \(CLIPaths.shared.library.path) (\(apps.count) apps)")
@@ -859,7 +972,25 @@ enum CLI {
         }
     }
 
-    private static func parse(_ arguments: [String]) -> CLIArguments {
+    nonisolated static func requestedPreparationMode(_ arguments: CLIArguments, current: PreparationMode) throws -> PreparationMode {
+        guard !(arguments.flags.contains("env-injection") && arguments.flags.contains("load-command")) else {
+            throw CLIError.message("--env-injection and --load-command are mutually exclusive")
+        }
+        let mode: PreparationMode
+        if arguments.flags.contains("env-injection") {
+            mode = .compatibilityEnvironment
+        } else if arguments.flags.contains("load-command") {
+            mode = .compatibility
+        } else {
+            mode = current == .compatibilityEnvironment ? .compatibilityEnvironment : .compatibility
+        }
+        guard !(arguments.flags.contains("sandboxed") && mode == .compatibilityEnvironment) else {
+            throw CLIError.message("--sandboxed is not supported with launcher injection on this launch path; select --load-command explicitly")
+        }
+        return mode
+    }
+
+    nonisolated static func parse(_ arguments: [String]) -> CLIArguments {
         var parsed = CLIArguments()
         var index = 0
 
@@ -917,7 +1048,8 @@ enum CLI {
 
     private static func printHelp() {
         print("""
-        pearsilicon — install and run iOS apps natively on arm64 macOS
+        pearsilicon — prepare and launch compatible arm64 iOS apps using Mac Catalyst
+        Uses Apple's /System/iOSSupport frameworks and an in-process compatibility runtime.
 
         USAGE
           pearsilicon <command> [options]
@@ -937,7 +1069,8 @@ enum CLI {
           pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
           logs <id|name>       Print or follow the log (--follow, --system)
           paths                Show the Application Support layout
-          doctor               Check toolchain, runtime and library readiness
+          storage [move <folder>|remove-previous]  Show storage or experimentally relocate apps/data
+          doctor               Report build tools, runtime location and library status
           link                 Symlink this binary to /usr/local/bin/pearsilicon
           build <project>      Build a scheme for a device, install and launch it
 
@@ -947,9 +1080,19 @@ enum CLI {
           --pointer-lock / --no-pointer-lock  Force the game's pointer lock on or off
           --log                Write a log file and follow it
           --wait               Wait for the app to exit
+          --background         Launch without activating the app or switching focus
+          --env-injection      Experimental DYLD insertion of the same in-process runtime
+                               with a local KV/static-device-profile host
+          --load-command       Select LC_LOAD_DYLIB runtime loading (new-install default)
+          --sandboxed          Experimental permissive sandbox-exec; not secure isolation
+                               (not supported with --env-injection)
           --env KEY=VALUE      Extra environment variable (repeatable)
           --trace              Shorthand for debug touch logging
           --lldb               (debug) attach LLDB to the launched process
+
+        REQUIREMENTS
+          The prebuilt GUI does not require Xcode. Some app preparation and storage
+          relocation paths require Command Line Tools. Project builds require full Xcode.
 
         PROJECT BUILD
           Build for a device (not the simulator) and hand the product to PearSilicon:
@@ -974,7 +1117,9 @@ enum CLI {
           pearsilicon hud com.example.game on
           pearsilicon pointerlock com.example.game on
           pearsilicon run ~/Downloads/App.app --metal-hud
+          pearsilicon launch com.example.game --env-injection --background
           pearsilicon doctor
+          pearsilicon storage move /Volumes/Games
         """)
     }
 }

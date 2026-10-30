@@ -20,23 +20,20 @@ enum LaunchMethod: Sendable {
 
 /// Launches an app from the library.
 ///
-/// Environment always includes the `/System/iOSSupport` dyld search paths and,
-/// when available, the app's keymap (`PEAR_KEYMAP`) and keychain directory
-/// (`PEAR_KEYCHAIN_DIR`). The runtime itself is loaded via an `LC_LOAD_DYLIB`
-/// entry inside the bundle, not through the environment.
+/// Supplies the iOSSupport search paths and per-app state. Legacy installs use
+/// an `LC_LOAD_DYLIB`; environment-mode installs load the same runtime through
+/// the launcher and delegate persistent KV state to a separate host process.
 final class AppLauncher: @unchecked Sendable {
 
     /// Root of the iOS-on-Mac runtime that ships with macOS.
     private static let iOSSupportRoot = "/System/iOSSupport"
 
-    /// iOS apps own their window layout, so macOS state restoration only ever
-    /// produces a "reopen windows?" prompt after an interrupted session. Passed
-    /// as arguments (not environment) because AppKit reads them from the
-    /// argument domain.
-    private static let noWindowRestoration = [
-        "-ApplePersistenceIgnoreState", "YES",
-        "-NSQuitAlwaysKeepsWindows", "NO"
-    ]
+    /// iOS apps own their window layout. AppKit's `-ApplePersistenceIgnoreState`
+    /// and `-NSQuitAlwaysKeepsWindows` arguments are deliberately NOT passed:
+    /// each one makes several iOS apps (e.g. Candy Crush Soda) quit during
+    /// startup. The rare "reopen windows?" prompt after an interrupted session
+    /// is the far better trade-off.
+    private static let noWindowRestoration: [String] = []
 
     private let libraryURL: URL
     private let logDirectory: URL
@@ -51,9 +48,30 @@ final class AppLauncher: @unchecked Sendable {
 
     // MARK: - Public API
 
-    func launch(_ app: InstalledApp, keymapURL: URL?, extraEnvironment: [String: String] = [:], method: LaunchMethod = .launchServices, nativeContainer: Bool = false) async throws -> NSRunningApplication? {
+    func launch(_ app: InstalledApp, keymapURL: URL?, extraEnvironment: [String: String] = [:], method: LaunchMethod = .launchServices, nativeContainer: Bool = false, sandboxed: Bool = false, activate: Bool = true, launchLease: AppLaunchLease? = nil) async throws -> NSRunningApplication? {
+        let lease = try launchLease ?? AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
+        defer { if launchLease == nil { lease.release() } }
+        try lease.validate(appID: app.id, libraryURL: libraryURL)
         guard fileManager.fileExists(atPath: app.executableURL.path) else {
             throw PearError.missingExecutable(app.executableName)
+        }
+
+        try await Self.requireStopped(app)
+        let environmentMode = fileManager.fileExists(
+            atPath: PackageInstaller.injectionMarkerURL(in: app.bundleURL).path
+        )
+        if environmentMode {
+            guard !nativeContainer && !sandboxed else {
+                throw PearError.launchFailed(
+                    "Launcher injection is not supported by this sandbox-exec launch path. Select --load-command explicitly instead."
+                )
+            }
+            guard fileManager.fileExists(atPath: app.bundleURL
+                .appendingPathComponent("Frameworks/libPearRuntime.dylib").path),
+                  !BinaryPatcher.hasLoadDylib(at: app.executableURL, containing: "libPearRuntime") else {
+                throw PearError.launchFailed("Inconsistent launcher-injection preparation; prepare the app again before launching")
+            }
+
         }
 
         // Some games need a one-line options change to be usable at all (the
@@ -67,26 +85,108 @@ final class AppLauncher: @unchecked Sendable {
             AppPaths.migrateToNativeContainerIfNeeded(for: app.id)
         }
 
-        let env = buildEnvironment(app: app, keymapURL: keymapURL, extra: extraEnvironment,
+        var env = buildEnvironment(app: app, keymapURL: keymapURL, extra: extraEnvironment,
                                    nativeContainer: nativeContainer)
-
-        if nativeContainer {
-            return try spawnSandboxed(app, env: env)
+        let host: RuntimeHostSession?
+        if environmentMode {
+            guard let executable = Bundle.main.executableURL,
+                  let home = env["PEAR_HOME_DIR"] else {
+                throw PearError.launchFailed("Host service launch configuration is incomplete")
+            }
+            // Fail before starting the game if an authenticated host is not
+            // ready. Never silently switch the bundle back to load-command mode.
+            host = try await RuntimeHostSession.start(
+                executableURL: executable, bundleID: app.id,
+                dataDirectory: URL(fileURLWithPath: home, isDirectory: true),
+                logURL: logDirectory.appendingPathComponent("\(app.id).host.log"),
+                deviceEnvironment: env
+            )
+            if let host {
+                env["PEAR_HOST_SOCKET"] = host.socketPath
+                env["PEAR_HOST_TOKEN"] = host.token
+                // Resolved and authenticated before dyld can run early device
+                // hooks. They read this immutable startup snapshot, never IPC.
+                env.merge(host.deviceProfile.runtimeEnvironment) { _, canonical in canonical }
+            }
+        } else {
+            host = nil
         }
 
-        switch method {
-        case .direct:
-            try spawnDirect(app, env: env)
-            return nil
-        case .launchServices:
-            return try await openViaLaunchServices(app, env: env)
+        var running: NSRunningApplication?
+        var spawnedProcess: Process?
+        do {
+            try Task.checkCancellation()
+            let pid: pid_t
+            if nativeContainer || sandboxed {
+                let process = try spawnSandboxed(app, env: env, activate: activate)
+                spawnedProcess = process
+                pid = process.processIdentifier
+                running = NSRunningApplication(processIdentifier: pid)
+            } else {
+                switch method {
+                case .direct:
+                    let process = try spawnDirect(app, env: env)
+                    spawnedProcess = process
+                    pid = process.processIdentifier
+                    running = NSRunningApplication(processIdentifier: pid)
+                case .launchServices:
+                    running = try await openViaLaunchServices(app, env: env, activate: activate)
+                    pid = running?.processIdentifier ?? 0
+                }
+            }
+            if let host {
+                guard pid > 0 else {
+                    throw PearError.launchFailed("Could not determine the process for the host-backed session")
+                }
+                try await host.attach(to: pid)
+            }
+            return running
+        } catch {
+            if let host {
+                // Only roll back the result of this launch attempt. The
+                // preflight rejects existing instances before preparation.
+                if let spawnedProcess {
+                    await Task.detached(priority: .utility) {
+                        RuntimeHostSession.terminateProcess(spawnedProcess)
+                    }.value
+                } else if let running {
+                    await Self.rollBackApplication(running)
+                }
+                await host.stop()
+            }
+            throw error
         }
+    }
+
+    @MainActor
+    static func requireStopped(_ app: InstalledApp) throws {
+        guard !NSRunningApplication.runningApplications(withBundleIdentifier: app.id)
+            .contains(where: { !$0.isTerminated }) else {
+            throw PearError.launchFailed("This app is already running; close it before launching again or changing preparation mode")
+        }
+    }
+
+    @MainActor
+    private static func rollBackApplication(_ running: NSRunningApplication) async {
+        guard !running.isTerminated else { return }
+        running.terminate()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while !running.isTerminated, ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        if !running.isTerminated { running.forceTerminate() }
     }
 
     // MARK: - Environment
 
-    private func buildEnvironment(app: InstalledApp, keymapURL: URL?, extra: [String: String], nativeContainer: Bool) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
+    func buildEnvironment(app: InstalledApp, keymapURL: URL?, extra: [String: String], nativeContainer: Bool, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var env = baseEnvironment
+        let managedProfileKeys = ["PEAR_DEVICE_PROFILE_SOURCE", "PEAR_DEVICE_PROFILE_BUNDLE", "PEAR_DEVICE_VENDOR_UUID"]
+        // A launcher may itself have been started from a compatibility session.
+        // Never forward another game's capability, insertion, or profile metadata.
+        for key in ["PEAR_HOST_SOCKET", "PEAR_HOST_TOKEN", "PEAR_LAUNCHER_INJECTION", "DYLD_INSERT_LIBRARIES"] + managedProfileKeys {
+            env.removeValue(forKey: key)
+        }
 
         // Route iOS framework lookups to the system iOS-on-Mac runtime.
         let frameworks = "\(Self.iOSSupportRoot)/System/Library/Frameworks"
@@ -107,14 +207,21 @@ final class AppLauncher: @unchecked Sendable {
             env["CFFIXED_USER_HOME"] = data.path
             env["HOME"] = data.path
             env["TMPDIR"] = temporary.path
-            for (key, value) in extra { env[key] = value }
+            for (key, value) in extra where !managedProfileKeys.contains(key) { env[key] = value }
             return env
         }
 
         // Where the runtime keeps this app's keychain-backed data.
         let support = libraryURL.deletingLastPathComponent()
+        // The whole support root travels together (apps, data, keymaps, ODR,
+        // keychain, logs); tell the runtime which root this launch uses so its
+        // fallback paths never scatter data back to the internal disk.
+        env["PEAR_SUPPORT_ROOT"] = support.path
         env["PEAR_KEYCHAIN_DIR"] = support
             .appendingPathComponent("Keychain", isDirectory: true)
+            .appendingPathComponent(app.id, isDirectory: true).path
+        env["PEAR_ODR_PATH"] = support
+            .appendingPathComponent("ODR", isDirectory: true)
             .appendingPathComponent(app.id, isDirectory: true).path
 
         // A previous native-container run may have moved the app's data into
@@ -122,31 +229,44 @@ final class AppLauncher: @unchecked Sendable {
         // no longer has the data, so a compatibility launch does not start a
         // fresh download.
         let containerData = AppPaths.nativeContainerData(for: app.id)
-        let oldDocuments = AppPaths.gamesRoot
+        let compatibilityData = support.appendingPathComponent("Games", isDirectory: true)
             .appendingPathComponent(app.id, isDirectory: true)
-            .appendingPathComponent("Documents", isDirectory: true)
+        env["PEAR_HOME_DIR"] = compatibilityData.path
+        let oldDocuments = compatibilityData.appendingPathComponent("Documents", isDirectory: true)
         let containerDocuments = containerData.appendingPathComponent("Documents", isDirectory: true)
         if fileManager.fileExists(atPath: containerDocuments.path),
            !fileManager.fileExists(atPath: oldDocuments.path) {
             env["PEAR_HOME_DIR"] = containerData.path
         }
 
-        // The runtime is loaded via an `LC_LOAD_DYLIB` entry, not via the
-        // older environment-variable loading path (which is refused for these
-        // processes). It reads the keymap path to know what to map.
+        // The runtime is normally loaded via an `LC_LOAD_DYLIB` entry. The
+        // experimental environment mode keeps that command out of the app
+        // binary and asks the launcher to insert the same library instead.
+        // The app carries a marker written by the installer.
+        let injectionMarker = app.bundleURL
+            .appendingPathComponent("Frameworks/.pear-injection")
+        let injectedRuntime = app.bundleURL
+            .appendingPathComponent("Frameworks/libPearRuntime.dylib")
+        if fileManager.fileExists(atPath: injectionMarker.path),
+           fileManager.fileExists(atPath: injectedRuntime.path) {
+            env["DYLD_INSERT_LIBRARIES"] = injectedRuntime.path
+            env["PEAR_LAUNCHER_INJECTION"] = "1"
+        }
+
         if let keymapURL, fileManager.fileExists(atPath: keymapURL.path) {
             env["PEAR_KEYMAP"] = keymapURL.path
         }
-        for (key, value) in extra { env[key] = value }
+        // Only the verified host handoff may add managed profile metadata.
+        for (key, value) in extra where !managedProfileKeys.contains(key) { env[key] = value }
         return env
     }
 
     // MARK: - Native sandbox
 
-    /// Starts the app through `sandbox-exec`, which applies the profile in the
-    /// kernel before the executable runs. No compatibility library is loaded
-    /// and the game bundle is untouched apart from the platform patch.
-    private func spawnSandboxed(_ app: InstalledApp, env: [String: String]) throws -> NSRunningApplication? {
+    /// The experimental sandbox-exec route. A legacy load-command runtime may
+    /// still be present; this permissive profile is not an iOS device emulator
+    /// or a strong per-app isolation boundary.
+    private func spawnSandboxed(_ app: InstalledApp, env: [String: String], activate: Bool) throws -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
         process.arguments = ["-p", Self.nativeIsolationProfile(), app.executableURL.path]
@@ -169,14 +289,16 @@ final class AppLauncher: @unchecked Sendable {
         let pid = process.processIdentifier
         // A directly spawned process is not made frontmost by LaunchServices.
         // Activate it once it has a connection to the window server.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows])
+        if activate {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows])
+            }
         }
-        return NSRunningApplication(processIdentifier: pid)
+        return process
     }
 
-    /// Hides host-only paths and prevents writes outside the app's container.
-    /// The app still reaches its own container through the normal home path.
+    /// Denies selected host paths. `(allow default)` means this does not confine
+    /// all writes to the app's container.
     private static func nativeIsolationProfile() -> String {
         let readDenied = [
             "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/libexec",
@@ -201,7 +323,7 @@ final class AppLauncher: @unchecked Sendable {
 
     // MARK: - Direct spawn
 
-    private func spawnDirect(_ app: InstalledApp, env: [String: String]) throws {
+    private func spawnDirect(_ app: InstalledApp, env: [String: String]) throws -> Process {
         let process = Process()
         process.executableURL = app.executableURL
         process.arguments = Self.noWindowRestoration
@@ -223,6 +345,7 @@ final class AppLauncher: @unchecked Sendable {
         }
 
         try process.run()
+        return process
     }
 
     // MARK: - LaunchServices
@@ -236,10 +359,10 @@ final class AppLauncher: @unchecked Sendable {
     /// `openApplication` calls its completion handler on the main queue, so this
     /// must not block the main thread while waiting for it.
     @MainActor
-    private func openViaLaunchServices(_ app: InstalledApp, env: [String: String]) async throws -> NSRunningApplication? {
+    private func openViaLaunchServices(_ app: InstalledApp, env: [String: String], activate: Bool) async throws -> NSRunningApplication? {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
-        configuration.activates = true
+        configuration.activates = activate
         configuration.environment = env
         configuration.arguments = Self.noWindowRestoration
 

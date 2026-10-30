@@ -83,6 +83,13 @@ static BOOL PearTraceInteresting(const char *path) {
     static char supportPrefix[PATH_MAX];
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        // Launcher-selected storage root; the prefix must follow it so a
+        // relocated root is hidden like the default one.
+        const char *root = getenv("PEAR_SUPPORT_ROOT");
+        if (root && root[0]) {
+            snprintf(supportPrefix, sizeof(supportPrefix), "%s/", root);
+            return;
+        }
         const char *home = getenv("HOME");
         if (!home || !home[0]) home = "/tmp";
         snprintf(supportPrefix, sizeof(supportPrefix), "%s/Library/Application Support/PearSilicon/", home);
@@ -366,19 +373,29 @@ __attribute__((used)) static struct {
         (const void *)(uintptr_t)&popen
     };
 
-/// A port that passes mode 0 (or runs with a 0777 umask) creates files its own
-/// process cannot reopen, and some titles then retry forever. Owner read/write
-/// is the minimum an app needs for data in its own container.
+/// A port can create a file with a mode its own process cannot reopen. The
+/// common case is mode 0, but some titles create manifests with modes such as
+/// 0215 (write + stray execute bits, no owner read); their next launch then
+/// cannot read the manifest and the update check waits forever. Owner read is
+/// the minimum any app needs for data in its own container. Modes that already
+/// grant owner read are left alone, and execute/write bits are preserved.
+static mode_t PearSafeMode(mode_t mode) {
+    if (mode == 0) return 0644;
+    return mode | 0400;
+}
+
 static BOOL PearRepairFileMode(const char *path, int descriptor) {
-    if (descriptor >= 0) {
-        struct stat info;
-        if (fstat(descriptor, &info) != 0 || (info.st_mode & 0777) != 0) return NO;
-        return fchmod(descriptor, 0644) == 0;
-    }
-    if (!path) return NO;
     struct stat info;
-    if (stat(path, &info) != 0 || (info.st_mode & 0777) != 0) return NO;
-    return chmod(path, 0644) == 0;
+    if (descriptor >= 0) {
+        if (fstat(descriptor, &info) != 0) return NO;
+    } else {
+        if (!path || stat(path, &info) != 0) return NO;
+    }
+
+    mode_t perms = info.st_mode & 0777;
+    mode_t repaired = PearSafeMode(perms);
+    if (repaired == perms) return NO;
+    return (descriptor >= 0 ? fchmod(descriptor, repaired) : chmod(path, repaired)) == 0;
 }
 
 extern "C" int PearTraceOpen(const char *path, int flags, mode_t mode) {
@@ -486,6 +503,42 @@ extern "C" mode_t PearTraceUmask(mode_t mask) {
     // writes files and directories that it cannot read itself.
     mode_t sanitized = mask & 0077;
     return original ? original(sanitized) : sanitized;
+}
+
+extern "C" int PearTraceChmod(const char *path, mode_t mode);
+extern "C" int PearTraceFchmod(int descriptor, mode_t mode);
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeChmod
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearTraceChmod,
+        (const void *)(uintptr_t)&chmod
+    };
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} kInterposeFchmod
+    __attribute__((section("__DATA,__interpose"))) = {
+        (const void *)(uintptr_t)&PearTraceFchmod,
+        (const void *)(uintptr_t)&fchmod
+    };
+
+/// Some update modules explicitly chmod their manifests to a write-only mode.
+/// Applying the same owner-read floor here makes the repair independent of how
+/// the mode was chosen (open, creat, fopen, chmod or fchmod).
+extern "C" int PearTraceChmod(const char *path, mode_t mode) {
+    int (*original)(const char *, mode_t) =
+        (int (*)(const char *, mode_t))kInterposeChmod.replacee;
+    return original ? original(path, PearSafeMode(mode)) : -1;
+}
+
+extern "C" int PearTraceFchmod(int descriptor, mode_t mode) {
+    int (*original)(int, mode_t) =
+        (int (*)(int, mode_t))kInterposeFchmod.replacee;
+    return original ? original(descriptor, PearSafeMode(mode)) : -1;
 }
 
 extern "C" int PearTraceFaccessat(int dirfd, const char *path, int mode, int flags);

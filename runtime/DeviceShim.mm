@@ -33,6 +33,7 @@
 #import <sys/socket.h>
 #import <errno.h>
 #import <string.h>
+#import "PearDeviceProfile.h"
 
 // IOKit is present in the process through Metal and the graphics stack. These
 // declarations avoid a link-time dependency on the framework while still
@@ -66,58 +67,43 @@ static BOOL PearDeviceShimDisabled(void) {
     return getenv("PEAR_NO_DEVICE_SHIM") != NULL;
 }
 
-/// C-string variants are used by the sysctl/uname interposers, which can run
-/// during libSystem initialization before Foundation is ready. Touching
-/// Foundation there once caused a recursive initializer crash.
-static const char *PearDeviceModelC(void) {
-    const char *value = getenv("PEAR_DEVICE_MODEL");
-    return (value && value[0]) ? value : "iPhone15,2";
-}
-
-static const char *PearDeviceNameC(void) {
-    const char *value = getenv("PEAR_DEVICE_NAME");
-    return (value && value[0]) ? value : "iPhone";
-}
-
-static const char *PearIOSVersionC(void) {
-    const char *value = getenv("PEAR_FAKE_IOS_VERSION");
-    return (value && value[0]) ? value : "16.0";
-}
-
-static const char *PearIOSBuildC(void) {
-    const char *value = getenv("PEAR_FAKE_IOS_BUILD");
-    return (value && value[0]) ? value : "20A000";
-}
-
-static const char *PearDarwinReleaseC(void) {
-    const char *value = getenv("PEAR_FAKE_DARWIN");
-    return (value && value[0]) ? value : "22.6.0";
-}
+/// These run in early sysctl/uname paths. The shared snapshot is pure C and
+/// never contacts the host or touches Foundation, even on its first access.
+/// NULL means an unavailable snapshot, not permission to pick field defaults.
+static const char *PearDeviceModelC(void) { return PearDeviceProfileGet()->model; }
+static const char *PearDeviceNameC(void) { return PearDeviceProfileGet()->name; }
+static const char *PearIOSVersionC(void) { return PearDeviceProfileGet()->systemVersion; }
+static const char *PearIOSBuildC(void) { return PearDeviceProfileGet()->systemBuild; }
+static const char *PearDarwinReleaseC(void) { return PearDeviceProfileGet()->darwinRelease; }
 
 static NSString *PearDeviceModel(void) {
-    return [NSString stringWithUTF8String:PearDeviceModelC()];
+    const char *text = PearDeviceModelC();
+    return text ? [NSString stringWithUTF8String:text] : nil;
 }
 
 static NSString *PearDeviceName(void) {
-    return [NSString stringWithUTF8String:PearDeviceNameC()];
+    const char *text = PearDeviceNameC();
+    return text ? [NSString stringWithUTF8String:text] : nil;
 }
 
 static NSString *PearIOSVersion(void) {
-    return [NSString stringWithUTF8String:PearIOSVersionC()];
+    const char *text = PearIOSVersionC();
+    return text ? [NSString stringWithUTF8String:text] : nil;
 }
 
 static NSString *PearIOSBuild(void) {
-    return [NSString stringWithUTF8String:PearIOSBuildC()];
+    const char *text = PearIOSBuildC();
+    return text ? [NSString stringWithUTF8String:text] : nil;
 }
 
 static NSString *PearDarwinRelease(void) {
-    return [NSString stringWithUTF8String:PearDarwinReleaseC()];
+    const char *text = PearDarwinReleaseC();
+    return text ? [NSString stringWithUTF8String:text] : nil;
 }
 
 static BOOL PearWantsPadIdiom(void) {
-    const char *value = getenv("PEAR_DEVICE_IDIOM");
-    if (!value || !value[0]) return NO;
-    return strcasecmp(value, "pad") == 0 || strcasecmp(value, "ipad") == 0;
+    const char *idiom = PearDeviceProfileGet()->idiom;
+    return idiom && !strcmp(idiom, "pad");
 }
 
 /// Typed override for one device fact. A text value is NUL-terminated; a
@@ -144,7 +130,7 @@ static BOOL PearDeviceValueForName(const char *name, PearDeviceValue *value) {
     if (!strcmp(name, "hw.machine") || !strcmp(name, "hw.model")
         || !strcmp(name, "hw.product") || !strcmp(name, "hw.targettype")) {
         value->text = PearDeviceModelC();
-        return YES;
+        return value->text != NULL;
     }
     if (!strcmp(name, "hw.machinearch")) { value->text = "arm64"; return YES; }
     if (!strcmp(name, "hw.memsize")) {
@@ -201,13 +187,13 @@ static BOOL PearDeviceValueForName(const char *name, PearDeviceValue *value) {
     }
     if (!strcmp(name, "machdep.cpu.vendor")) { value->text = "Apple"; return YES; }
     if (!strcmp(name, "kern.osproductversion")) {
-        return getenv("PEAR_DEVICE_KERNEL") ? (value->text = PearIOSVersionC(), YES) : NO;
+        return getenv("PEAR_DEVICE_KERNEL") && (value->text = PearIOSVersionC()) != NULL;
     }
     if (!strcmp(name, "kern.osversion")) {
-        return getenv("PEAR_DEVICE_KERNEL") ? (value->text = PearIOSBuildC(), YES) : NO;
+        return getenv("PEAR_DEVICE_KERNEL") && (value->text = PearIOSBuildC()) != NULL;
     }
     if (!strcmp(name, "kern.osrelease")) {
-        return getenv("PEAR_DEVICE_KERNEL") ? (value->text = PearDarwinReleaseC(), YES) : NO;
+        return getenv("PEAR_DEVICE_KERNEL") && (value->text = PearDarwinReleaseC()) != NULL;
     }
     if (!strcmp(name, "kern.ostype")) { value->text = "Darwin"; return YES; }
     if (!strcmp(name, "kern.hostname")) { value->text = "iPhone"; return YES; }
@@ -398,7 +384,8 @@ static int PearUname(struct utsname *value) {
     // System frameworks (AppIntents, Swift concurrency) use uname to select a
     // platform code path, so changing it by default asserts inside those
     // frameworks. Keep it behind the explicit switch; sysctl remains spoofed.
-    if (result == 0 && value && !PearDeviceShimDisabled() && getenv("PEAR_DEVICE_UNAME")) {
+    if (result == 0 && value && !PearDeviceShimDisabled() && getenv("PEAR_DEVICE_UNAME")
+            && PearDeviceModelC() && PearDarwinReleaseC()) {
         strlcpy(value->machine, PearDeviceModelC(), sizeof(value->machine));
         strlcpy(value->release, PearDarwinReleaseC(), sizeof(value->release));
     }
@@ -437,7 +424,7 @@ static CFDataRef PearCreateData(const char *bytes, size_t length) {
 /// A value the platform expert would return on an iOS device, or NULL when the
 /// key is not identity-related. Follows the Create rule (caller releases).
 static CFTypeRef PearSpoofedIORegistryValue(CFStringRef key) {
-    if (!key) return NULL;
+    if (!key || !PearDeviceModelC()) return NULL;
     char name[128];
     if (!CFStringGetCString(key, name, sizeof(name), kCFStringEncodingUTF8)) return NULL;
     PearBuildSyntheticIdentifiers();
@@ -731,6 +718,13 @@ static NSUUID *PearSyntheticVendorID(void) {
     static NSUUID *identifier;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        const PearDeviceProfile *profile = PearDeviceProfileGet();
+        if (profile->status != PearDeviceProfileStatusReady) return;
+        if (profile->source == PearDeviceProfileSourceHostV1) {
+            identifier = [[NSUUID alloc] initWithUUIDString:
+                [NSString stringWithUTF8String:profile->vendorIdentifier]];
+            return; // Managed identity is computed by the host, never regenerated.
+        }
         NSString *seed = [NSString stringWithFormat:@"%@:%@",
                           NSBundle.mainBundle.bundleIdentifier ?: @"unknown",
                           PearDeviceModel()];
@@ -762,26 +756,29 @@ static void PearInstallDeviceProperties(void) {
     if (getenv("PEAR_NO_DEVICE_UI")) return;
     Class device = NSClassFromString(@"UIDevice");
     if (!device) return;
+    BOOL profileReady = PearDeviceProfileGet()->status == PearDeviceProfileStatusReady;
 
     // Keep the basic identity consistent. The layout idiom and vendor token are
     // opt-in: system services inside a Catalyst app use them to choose a UIKit
     // code path, and forcing the phone idiom there can trip an availability
     // assertion before the app's first scene.
-    PearSwizzle(device, @selector(model), imp_implementationWithBlock(^NSString *(id self) {
-        return PearDeviceName();
-    }));
-    PearSwizzle(device, @selector(localizedModel), imp_implementationWithBlock(^NSString *(id self) {
-        return PearDeviceName();
-    }));
-    PearSwizzle(device, @selector(systemName), imp_implementationWithBlock(^NSString *(id self) {
-        return @"iOS";
-    }));
-    PearSwizzle(device, @selector(systemVersion), imp_implementationWithBlock(^NSString *(id self) {
-        return PearIOSVersion();
-    }));
-    PearSwizzle(device, @selector(name), imp_implementationWithBlock(^NSString *(id self) {
-        return PearDeviceName();
-    }));
+    if (profileReady) {
+        PearSwizzle(device, @selector(model), imp_implementationWithBlock(^NSString *(id self) {
+            return PearDeviceName();
+        }));
+        PearSwizzle(device, @selector(localizedModel), imp_implementationWithBlock(^NSString *(id self) {
+            return PearDeviceName();
+        }));
+        PearSwizzle(device, @selector(systemName), imp_implementationWithBlock(^NSString *(id self) {
+            return @"iOS";
+        }));
+        PearSwizzle(device, @selector(systemVersion), imp_implementationWithBlock(^NSString *(id self) {
+            return PearIOSVersion();
+        }));
+        PearSwizzle(device, @selector(name), imp_implementationWithBlock(^NSString *(id self) {
+            return PearDeviceName();
+        }));
+    }
 
     PearSwizzle(device, @selector(batteryLevel), imp_implementationWithBlock(^float(id self) {
         return 0.87f;
@@ -793,12 +790,14 @@ static void PearInstallDeviceProperties(void) {
                 imp_implementationWithBlock(^BOOL(id self) { return YES; }));
 
     if (getenv("PEAR_DEVICE_UI_DETAILS")) {
-        PearSwizzle(device, @selector(identifierForVendor), imp_implementationWithBlock(^NSUUID *(id self) {
-            return PearSyntheticVendorID();
-        }));
-        PearSwizzle(device, @selector(userInterfaceIdiom), imp_implementationWithBlock(^NSInteger(id self) {
-            return PearWantsPadIdiom() ? 1 : 0; // pad : phone
-        }));
+        if (profileReady) {
+            PearSwizzle(device, @selector(identifierForVendor), imp_implementationWithBlock(^NSUUID *(id self) {
+                return PearSyntheticVendorID();
+            }));
+            PearSwizzle(device, @selector(userInterfaceIdiom), imp_implementationWithBlock(^NSInteger(id self) {
+                return PearWantsPadIdiom() ? 1 : 0; // pad : phone
+            }));
+        }
         PearSwizzle(device, @selector(isMultitaskingSupported), imp_implementationWithBlock(^BOOL(id self) {
             return YES;
         }));
@@ -807,7 +806,7 @@ static void PearInstallDeviceProperties(void) {
     // Diagnostic only: forcing the trait idiom changes the whole layout mode of
     // the app and can push a tablet-sized UI offscreen. Asset lookups are
     // handled narrowly below instead.
-    if (getenv("PEAR_FORCE_TRAIT_IDIOM")) {
+    if (profileReady && getenv("PEAR_FORCE_TRAIT_IDIOM")) {
         Class traits = NSClassFromString(@"UITraitCollection");
         Method idiomMethod = traits
             ? class_getInstanceMethod(traits, @selector(userInterfaceIdiom)) : NULL;
@@ -830,7 +829,7 @@ static void PearInstallOperatingSystemVersion(void) {
     // example AppIntents registers Swift concurrency executors and asserts if
     // the process claims an iOS version). Keep it opt-in; the kernel facts
     // below are spoofed by default instead.
-    if (!getenv("PEAR_SPOOF_OS_VERSION")) return;
+    if (!getenv("PEAR_SPOOF_OS_VERSION") || !PearIOSVersionC()) return;
     Class processInfo = NSClassFromString(@"NSProcessInfo");
     if (!processInfo) return;
 
@@ -988,8 +987,8 @@ static void PearInstallAssetIdiomFallback(void) {
 
 __attribute__((constructor))
 static void PearDeviceShimInit(void) {
+    if (PearDeviceShimDisabled()) return;
     @autoreleasepool {
-        if (PearDeviceShimDisabled()) return;
         PearInstallDeviceProperties();
         PearInstallAssetIdiomFallback();
         PearInstallMotionIdentity();
@@ -997,9 +996,15 @@ static void PearDeviceShimInit(void) {
         PearInstallOperatingSystemVersion();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            PearLog(@"[PearRuntime][device] identity=%@/%@ model=%@ iOS=%@ build=%@",
-                    PearDeviceModel(), PearDeviceName(), PearDeviceName(),
-                    PearIOSVersion(), PearIOSBuild());
+            const PearDeviceProfile *profile = PearDeviceProfileGet();
+            if (profile->status != PearDeviceProfileStatusReady) {
+                PearLog(@"[PearRuntime][device] profile unavailable (status=%d field=%s); profile overrides skipped",
+                        (int)profile->status, profile->invalidField ?: "unknown");
+            } else {
+                PearLog(@"[PearRuntime][device] identity=%@/%@ model=%@ iOS=%@ build=%@",
+                        PearDeviceModel(), PearDeviceName(), PearDeviceName(),
+                        PearIOSVersion(), PearIOSBuild());
+            }
         });
     }
 }

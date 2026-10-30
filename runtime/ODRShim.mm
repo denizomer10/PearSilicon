@@ -49,6 +49,13 @@ static NSString *PearODRExternalRoot(void) {
 
     NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
     if (bundleID.length == 0) return nil;
+    // PEAR_SUPPORT_ROOT follows relocated storage and avoids NSHomeDirectory,
+    // which PathShim redirects into the per-game data folder.
+    const char *root = getenv("PEAR_SUPPORT_ROOT");
+    if (root && root[0]) {
+        return [[[NSString stringWithUTF8String:root] stringByAppendingPathComponent:@"ODR"]
+                stringByAppendingPathComponent:bundleID];
+    }
     return [[NSHomeDirectory() stringByAppendingPathComponent:
              @"Library/Application Support/PearSilicon/ODR"]
             stringByAppendingPathComponent:bundleID];
@@ -253,18 +260,42 @@ static void PearODRReportMissingTag(NSString *tag) {
             tag, tag, root, packList);
 }
 
+/// The tags whose content is actually available in the local package. A tag
+/// with no local bundle must not be reported as available: apps that trust the
+/// answer then enter their game loop and dereference data that was never
+/// downloaded (Wreckfest crashes at a null member on its first display-link
+/// tick). Reporting the truth lets the app show its download/failure UI.
+static BOOL PearODRTagsAvailable(NSSet *tags) {
+    for (NSString *tag in tags) {
+        if ([tag isKindOfClass:[NSString class]] && !PearODRLocalPathForTag(tag)) return NO;
+    }
+    return YES;
+}
+
 static void PearODRBegin(id self, SEL _cmd, void (^handler)(NSError *)) {
     PearODRCheckForMissingContent();
-    for (NSString *tag in [self tags]) PearODRReportMissingTag(tag);
-    PearLog(@"[PearRuntime][odr] begin tags=%@ -> %@", [self tags], PearODRLocalBundle().bundlePath);
+    NSSet *tags = [self tags];
+    for (NSString *tag in tags) PearODRReportMissingTag(tag);
+    BOOL available = PearODRTagsAvailable(tags);
+    PearLog(@"[PearRuntime][odr] begin tags=%@ -> %@ (%@)", tags,
+            available ? @"available" : @"missing", PearODRLocalBundle().bundlePath);
     if (!handler) return;
-    dispatch_async(gODRQueue, ^{ handler(nil); });
+    if (available) {
+        dispatch_async(gODRQueue, ^{ handler(nil); });
+        return;
+    }
+    NSError *error = [NSError errorWithDomain:NSCocoaErrorDomain code:4994 userInfo:@{
+        NSLocalizedDescriptionKey: @"The requested application data doesn't exist."
+    }];
+    dispatch_async(gODRQueue, ^{ handler(error); });
 }
 
 static void PearODRConditional(id self, SEL _cmd, void (^handler)(BOOL)) {
-    PearLog(@"[PearRuntime][odr] conditional tags=%@ -> YES", [self tags]);
+    NSSet *tags = [self tags];
+    BOOL available = PearODRTagsAvailable(tags);
+    PearLog(@"[PearRuntime][odr] conditional tags=%@ -> %@", tags, available ? @"YES" : @"NO");
     if (!handler) return;
-    dispatch_async(gODRQueue, ^{ handler(YES); });
+    dispatch_async(gODRQueue, ^{ handler(available); });
 }
 
 static NSBundle *PearODRBundle(id self, SEL _cmd) {

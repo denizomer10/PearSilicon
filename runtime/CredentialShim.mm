@@ -24,26 +24,79 @@ typedef id (*PearCredentialInitFn)(id, SEL, SecIdentityRef,
 static PearCredentialFactoryFn gOriginalFactory;
 static PearCredentialInitFn gOriginalInit;
 
+/// CFNetwork compares the identity and every certificate with CFEqual. A
+/// bridged CFArray from an app can contain a NULL entry (NSArray itself cannot,
+/// but the app may build the array with a NULL callback); that reaches
+/// CFEqual(NULL) and traps. Drop empty entries before handing the array over.
+static NSArray *PearSanitizedCertificates(NSArray *certificates) {
+    // CFNetwork's credential constructor dereferences the array unconditionally
+    // on this platform: passing nil there crashes in CFEqual(NULL). A credential
+    // with an identity and no certificates is valid, so hand it an empty array.
+    if (!certificates) return @[];
+    CFArrayRef array = (__bridge CFArrayRef)certificates;
+    if (CFGetTypeID(array) != CFArrayGetTypeID()) return @[];
+
+    CFIndex count = CFArrayGetCount(array);
+    if (count == 0) return @[];
+
+    CFMutableArrayRef filtered = CFArrayCreateMutable(kCFAllocatorDefault, count,
+                                                       &kCFTypeArrayCallBacks);
+    if (!filtered) return @[];
+    for (CFIndex index = 0; index < count; index++) {
+        const void *item = CFArrayGetValueAtIndex(array, index);
+        if (item) CFArrayAppendValue(filtered, item);
+    }
+    NSArray *result = (__bridge_transfer NSArray *)filtered;
+    return result;
+}
+
+/// A non-NULL pointer is not necessarily a valid identity. Asking Security to
+/// copy its certificate rejects an uninitialised value before CFNetwork sees
+/// it; a real identity keeps its normal validation and trust path.
+static BOOL PearIdentityIsUsable(SecIdentityRef identity) {
+    if (!identity) return NO;
+    SecCertificateRef certificate = NULL;
+    OSStatus status = SecIdentityCopyCertificate(identity, &certificate);
+    BOOL hasCertificate = status == errSecSuccess && certificate != NULL;
+    if (certificate) CFRelease(certificate);
+    if (!hasCertificate) return NO;
+
+    // A client-certificate credential also needs its private key. An identity
+    // copied from a server trust or a keychain entry without a key reaches
+    // CFNetwork and crashes while it compares the (missing) certificate chain.
+    SecKeyRef key = NULL;
+    OSStatus keyStatus = SecIdentityCopyPrivateKey(identity, &key);
+    BOOL hasKey = keyStatus == errSecSuccess && key != NULL;
+    if (key) CFRelease(key);
+    return hasKey;
+}
+
 static NSURLCredential *PearCredentialWithIdentity(id self, SEL _cmd,
                                                    SecIdentityRef identity,
                                                    NSArray *certificates,
                                                    NSURLCredentialPersistence persistence) {
-    if (!identity) {
-        PearLog(@"[PearRuntime][credential] ignoring a credential with no identity");
+    if (!PearIdentityIsUsable(identity)) {
+        PearLog(@"[PearRuntime][credential] ignoring a credential with no usable identity");
         return nil;
     }
-    return gOriginalFactory ? gOriginalFactory(self, _cmd, identity, certificates, persistence) : nil;
+    NSArray *safeCertificates = PearSanitizedCertificates(certificates);
+    return gOriginalFactory
+        ? gOriginalFactory(self, _cmd, identity, safeCertificates, persistence)
+        : nil;
 }
 
 static id PearCredentialInitWithIdentity(id self, SEL _cmd,
                                          SecIdentityRef identity,
                                          NSArray *certificates,
                                          NSURLCredentialPersistence persistence) {
-    if (!identity) {
-        PearLog(@"[PearRuntime][credential] refusing to initialize a credential with no identity");
+    if (!PearIdentityIsUsable(identity)) {
+        PearLog(@"[PearRuntime][credential] refusing to initialize a credential with no usable identity");
         return nil;
     }
-    return gOriginalInit ? gOriginalInit(self, _cmd, identity, certificates, persistence) : nil;
+    NSArray *safeCertificates = PearSanitizedCertificates(certificates);
+    return gOriginalInit
+        ? gOriginalInit(self, _cmd, identity, safeCertificates, persistence)
+        : nil;
 }
 
 static void PearInstallCredentialGuard(void) {

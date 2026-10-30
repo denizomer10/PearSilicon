@@ -3,6 +3,7 @@ import SwiftUI
 /// Settings window (⌘,).
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
+    @State private var removingPreviousCopy = false
 
     var body: some View {
         TabView {
@@ -11,7 +12,7 @@ struct SettingsView: View {
             keymapper
                 .tabItem { Label("Keymapper", systemImage: "keyboard") }
         }
-        .frame(width: 520, height: 280)
+        .frame(width: 560, height: 420)
         .padding()
     }
 
@@ -22,7 +23,62 @@ struct SettingsView: View {
                     .font(.caption)
                     .textSelection(.enabled)
             }
+
+            Section {
+                LabeledContent("Storage folder") {
+                    Text(state.storageRootURL.path)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                }
+                LabeledContent("Previous copy") {
+                    Text(state.previousStorageRootURL?.path ?? "none")
+                        .font(.caption)
+                        .textSelection(.enabled)
+                }
+                HStack {
+                    Button("Move Storage…") { chooseStorageFolder() }
+                        .disabled(state.isBusy)
+                    if state.previousStorageRootURL != nil {
+                        Button("Remove Previous Copy…", role: .destructive) {
+                            removingPreviousCopy = true
+                        }
+                        .disabled(state.isBusy)
+                    }
+                }
+                Text("Experimental: copies managed apps and data, retaining the previous copy. "
+                     + "Close games and keep a separate backup first. Launch moved apps through "
+                     + "PearSilicon; direct launches may use default paths. External-disk "
+                     + "operation has not been tested end to end.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Storage location — experimental")
+            }
         }
+        .confirmationDialog(
+            "Remove the previous storage copy? This cannot be undone.",
+            isPresented: $removingPreviousCopy
+        ) {
+            Button("Remove Previous Copy", role: .destructive) {
+                Task { await state.removePreviousStorageCopy() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(state.previousStorageRootURL?.path ?? "")
+        }
+    }
+
+    private func chooseStorageFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Move Storage Here"
+        panel.message = "Experimental move: choose a destination folder. Keep a backup and test the moved apps before removing the previous copy."
+        panel.directoryURL = state.storageRootURL.deletingLastPathComponent()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await state.changeStorageLocation(to: url) }
     }
 
     private var keymapper: some View {
@@ -30,10 +86,10 @@ struct SettingsView: View {
             Section {
                 Toggle("Enable keymapper for new games by default",
                        isOn: $state.keymapperDefaultEnabled)
-                Text("Input translation is off unless a game opts in. Each game also has "
-                     + "its own switch in the Keymap tab. Turning it on enables the "
-                     + "input layer; when off, the game runs with no input translation "
-                     + "and no overlay button.")
+                Text("Keyboard/mouse keymapping is off unless enabled. Each game has "
+                     + "its own switch in the Keymap tab; changing it takes effect "
+                     + "on the next launch. Saved bindings can reload while the "
+                     + "keymapper is active. Other compatibility hooks can still run.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -41,10 +97,10 @@ struct SettingsView: View {
             Section {
                 Text("Repeat-rate protection: always on")
                     .font(.body.weight(.medium))
-                Text("The keymapper rejects implausibly fast repeated presses, both "
-                     + "for one key and across all keys, so it cannot be driven by "
-                     + "a held key or a macro tool. Releases are never blocked. "
-                     + "This protection is not configurable.")
+                Text("The keymapper drops presses less than 120 ms apart for the same key "
+                     + "or 40 ms apart across keys. Releases are not rate-limited. "
+                     + "This limits rapid repeats; it does not detect or prevent macros. "
+                     + "The limits are not configurable.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

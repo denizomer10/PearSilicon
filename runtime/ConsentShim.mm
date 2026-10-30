@@ -268,8 +268,15 @@ static NSString *PearContainedCachesPath(void) {
     const char *home = getenv("HOME");
     NSString *realHome = (home && home[0]) ? [NSString stringWithUTF8String:home] : NSHomeDirectory();
     NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"unknown";
-    NSString *root = [[realHome stringByAppendingPathComponent:@"Library/Application Support/PearSilicon/Games"]
-                      stringByAppendingPathComponent:bundleID];
+    NSString *gamesRoot = nil;
+    const char *supportRoot = getenv("PEAR_SUPPORT_ROOT");
+    if (supportRoot && supportRoot[0]) {
+        gamesRoot = [[NSString stringWithUTF8String:supportRoot]
+                     stringByAppendingPathComponent:@"Games"];
+    } else {
+        gamesRoot = [realHome stringByAppendingPathComponent:@"Library/Application Support/PearSilicon/Games"];
+    }
+    NSString *root = [gamesRoot stringByAppendingPathComponent:bundleID];
     return [root stringByAppendingPathComponent:@"Library/Caches"];
 }
 
