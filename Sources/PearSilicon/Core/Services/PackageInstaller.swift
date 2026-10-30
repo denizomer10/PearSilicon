@@ -3,13 +3,12 @@ import Foundation
 
 /// How an app is prepared to run on macOS.
 ///
-/// `.compatibility` keeps the small in-process compatibility runtime. It is
-/// needed for APIs that cannot be provided from outside a process (Metal layer
-/// device, keychain storage, cloud stores, legacy C++ symbols).
+/// `.compatibility` loads the in-process compatibility runtime through an
+/// `LC_LOAD_DYLIB` entry. Runtime hooks adapt selected API behavior.
 ///
-/// `.nativeContainer` loads no compatibility code into the app at all. The
-/// sandbox and the data container are supplied by macOS itself, before the app
-/// starts; nothing is added to the executable's load commands.
+/// `.nativeContainer` removes PearSilicon's runtime artifacts. Despite the name,
+/// this preparation mode does not itself add App Sandbox entitlements or
+/// establish secure per-app isolation.
  enum PreparationMode: String, Sendable {
     case compatibility
     /// Same in-process runtime, but loaded by the launcher through
@@ -25,23 +24,25 @@ import Foundation
 /// Installation pipeline:
 ///   1. unzip the package (it is a zip) into a temporary directory
 ///   2. locate `Payload/*.app` and read its `Info.plist`
-///   3. move a copy into the app library
-///   4. *prepare for macOS*: rewrite Info.plist, remove stale signature sidecars and
-///      patch every Mach-O platform (iOS → Mac Catalyst)
-///   5. adhoc re-sign with the entitlements the loader needs
+///   3. validate the bundle and clone it into a sibling transaction directory
+///   4. prepare the copy for macOS using its final installation paths
+///   5. adhoc re-sign, verify, and atomically commit the prepared copy
 ///
 /// Steps 4–5 are what allows an arm64 iOS binary to be loaded by macOS via the
 /// `/System/iOSSupport` runtime. This is interoperability work only: it adapts
 /// the binary's declared platform and leaves all application logic untouched.
 final class PackageInstaller: @unchecked Sendable {
 
-    /// Injectable operations keep mode-switch failure tests on synthetic bundles.
+    /// Injectable operations keep installation and mode-switch failure tests on synthetic bundles.
     struct PreparationTools {
         var runtimeLibraryURL: () -> URL? = { AppLauncher.runtimeLibraryURL() }
         var removeLoadDylib: (URL, String) throws -> Bool = {
             try BinaryPatcher.removeLoadDylib(at: $0, containing: $1)
         }
         var run: (String, [String]) throws -> String = { try Shell.run($0, $1) }
+        var requireStopped: @MainActor (InstalledApp) throws -> Void = { app in
+            try AppLauncher.requireStopped(app)
+        }
     }
 
     private let fileManager = FileManager.default
@@ -49,15 +50,6 @@ final class PackageInstaller: @unchecked Sendable {
     private let workRoot: URL
     private let preparationTools: PreparationTools
 
-    /// Files that still carried a legacy guard field at the last install. Such
-    /// a file was not prepared for this platform and its app may not launch;
-    /// surface this to the user instead of failing silently.
-    private(set) var unpreparedBinaries: [String] = []
-
-    /// Files whose ZIP entry failed its CRC check at the last install. `unzip`
-    /// still extracts them, but the bytes are damaged; the app may crash when
-    /// it reads one. Reported instead of aborting the whole install.
-    private(set) var corruptedFiles: [String] = []
 
     init(libraryURL: URL, preparationTools: PreparationTools = PreparationTools()) {
         self.libraryURL = libraryURL
@@ -92,37 +84,15 @@ final class PackageInstaller: @unchecked Sendable {
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: tempDir) }
 
-        // 1) unzip
-        //
-        // `unzip` exits 2 when an entry fails its CRC check, but it still
-        // extracts every other entry. Aborting here would reject an otherwise
-        // usable app package because of one damaged asset, so keep the extracted tree
-        // and report the damaged files instead.
-        corruptedFiles = []
-        let unzip = try Shell.runAllowingFailure(
-            "/usr/bin/unzip", ["-o", "-q", url.path, "-d", tempDir.path]
-        )
-        if unzip.status != 0 {
-            let badCRC = unzip.output
-                .split(separator: "\n")
-                .filter { $0.contains("bad CRC") }
-            corruptedFiles = badCRC.map { line in
-                var text = String(line)
-                if let range = text.range(of: "  bad CRC") {
-                    text = String(text[..<range.lowerBound])
-                }
-                text = text.trimmingCharacters(in: .whitespaces)
-                // Show the path inside the app, not the temporary work dir.
-                if let range = text.range(of: ".app/") {
-                    text = String(text[range.upperBound...])
-                }
-                return text
-            }
-            if corruptedFiles.isEmpty {
-                throw PearError.commandFailed(
-                    tool: "unzip", status: unzip.status, output: unzip.output
-                )
-            }
+        // Even a CRC failure confined to an asset invalidates the extraction.
+        // Shell.run rejects every nonzero status, including unzip's warning status.
+        do {
+            _ = try preparationTools.run("/usr/bin/unzip", ["-o", "-q", url.path, "-d", tempDir.path])
+        } catch PearError.commandFailed(let tool, let status, let output) {
+            let diagnostic = output.range(of: "CRC", options: .caseInsensitive) == nil
+                ? output
+                : "Archive CRC check failed; re-download the package. No app was installed.\n" + output
+            throw PearError.commandFailed(tool: tool, status: status, output: diagnostic)
         }
 
         // 2) find Payload/*.app
@@ -133,26 +103,7 @@ final class PackageInstaller: @unchecked Sendable {
             throw PearError.invalidPackage("no .app inside Payload")
         }
 
-        let probe = try makeInstalledApp(fromBundleAt: app)
-
-        // 3) move into library
-        let destination = libraryURL.appendingPathComponent("\(probe.id).app", isDirectory: true)
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
-        }
-        try fileManager.moveItem(at: app, to: destination)
-
-        // 4) prepare for macOS and 5) sign
-        do {
-            try finalizeInstall(at: destination, mode: mode)
-        } catch {
-            // Never leave a half-prepared bundle in the library: it would show
-            // up as installable but fail at launch.
-            try? fileManager.removeItem(at: destination)
-            throw error
-        }
-
-        return try makeInstalledApp(fromBundleAt: destination)
+        return try await installBundle(at: app, mode: mode)
     }
 
     /// Installs an already-built `.app` bundle (for example the product of a
@@ -163,13 +114,10 @@ final class PackageInstaller: @unchecked Sendable {
     /// Simulator builds are rejected: their binaries target the simulator
     /// runtime and cannot be turned into Mac Catalyst binaries.
     func installBundle(at sourceURL: URL, mode: PreparationMode = .compatibility) async throws -> InstalledApp {
-        // A bundle install never goes through `unzip`, so clear any result
-        // left over from a previous app package install; otherwise the caller would
-        // report that app package's damaged files against this bundle.
-        corruptedFiles = []
         guard fileManager.fileExists(atPath: sourceURL.path) else {
             throw PearError.packageNotFound(sourceURL.lastPathComponent)
         }
+        try validateBundleForPreparation(at: sourceURL)
         if isSimulatorBuild(at: sourceURL) {
             throw PearError.invalidPackage(
                 "\(sourceURL.lastPathComponent) is a simulator build. "
@@ -178,39 +126,64 @@ final class PackageInstaller: @unchecked Sendable {
         }
 
         let probe = try makeInstalledApp(fromBundleAt: sourceURL)
-        try fileManager.createDirectory(at: libraryURL, withIntermediateDirectories: true)
+        guard !probe.id.isEmpty, probe.id != ".", probe.id != "..",
+              !probe.id.contains("/"), !probe.id.contains("\\"), !probe.id.utf8.contains(0) else {
+            throw PearError.invalidPackage("Info.plist: bundle identifier is not a safe library filename")
+        }
+        let lease = try AppLaunchLease.acquire(appID: probe.id, libraryURL: libraryURL)
+        defer { lease.release() }
+        try await preparationTools.requireStopped(probe)
 
         let destination = libraryURL.appendingPathComponent("\(probe.id).app", isDirectory: true)
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
+        let sourcePath = sourceURL.resolvingSymlinksInPath().path
+        let destinationPath = destination.resolvingSymlinksInPath().path
+        guard !destinationPath.hasPrefix(sourcePath + "/"), !sourcePath.hasPrefix(destinationPath + "/") else {
+            throw PearError.invalidPackage("Source and installation bundles must not contain one another")
         }
-        try Shell.run("/usr/bin/ditto", [sourceURL.path, destination.path])
+        let replacing = try itemExists(at: destination)
+        if replacing {
+            let attributes = try fileManager.attributesOfItem(atPath: destination.path)
+            guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+                throw PearError.invalidPackage("Installation target is not a regular bundle directory: \(destination.path)")
+            }
+        }
+        try fileManager.createDirectory(at: libraryURL, withIntermediateDirectories: true)
+        let transaction = libraryURL.appendingPathComponent(".pear-install-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: transaction, withIntermediateDirectories: false)
+        defer { try? fileManager.removeItem(at: transaction) }
+        let staged = transaction.appendingPathComponent(destination.lastPathComponent, isDirectory: true)
+        _ = try preparationTools.run("/usr/bin/ditto", ["--clone", sourceURL.path, staged.path])
+        try finalizeInstall(at: staged, mode: mode, targetBundleURL: destination)
+        let installed = try makeInstalledApp(fromBundleAt: staged, targetBundleURL: destination)
+        guard installed.id == probe.id else { throw PearError.invalidPackage("Bundle identifier changed during preparation") }
+        try await preparationTools.requireStopped(probe)
+        try commitBundle(at: staged, to: destination, replacing: replacing)
 
-        do {
-            try finalizeInstall(at: destination, mode: mode)
-        } catch {
-            try? fileManager.removeItem(at: destination)
-            throw error
-        }
-        return try makeInstalledApp(fromBundleAt: destination)
+        // Nothing after commit may turn a completed replacement into a reported failure.
+        let odrRoot = libraryURL.deletingLastPathComponent().appendingPathComponent("ODR", isDirectory: true)
+        try? fileManager.createDirectory(
+            at: odrRoot.appendingPathComponent(probe.id, isDirectory: true), withIntermediateDirectories: true
+        )
+        return installed
     }
 
-    /// Prepares a bundle that is already in the library and signs it.
-    private func finalizeInstall(at destination: URL, mode: PreparationMode) throws {
-        try prepareForMacOS(at: destination, mode: mode)
-        try signBundle(at: destination, mode: mode)
+    private func finalizeInstall(at staged: URL, mode: PreparationMode, targetBundleURL: URL) throws {
+        try prepareForMacOS(at: staged, mode: mode, targetBundleURL: targetBundleURL)
+        try signBundle(at: staged, mode: mode)
+        _ = try preparationTools.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", staged.path])
+        try validateBundleForPreparation(at: staged)
+        try validatePreparationMode(at: staged, mode: mode, targetBundleURL: targetBundleURL)
+    }
 
-        // Give the user a place to drop ODR packs that the app package does
-        // not carry. The runtime merges this directory into its local resource
-        // view at launch. Derived from this installer's library root so the
-        // packs follow a relocated storage folder.
-        let bundleID = destination.deletingPathExtension().lastPathComponent
-        let odrRoot = libraryURL.deletingLastPathComponent()
-            .appendingPathComponent("ODR", isDirectory: true)
-        try? fileManager.createDirectory(
-            at: odrRoot.appendingPathComponent(bundleID, isDirectory: true),
-            withIntermediateDirectories: true
-        )
+    private func commitBundle(at staged: URL, to destination: URL, replacing: Bool) throws {
+        // Both paths are on the library filesystem. A failed rename leaves the
+        // installed bundle in place; a swap leaves the old copy in staging.
+        let flags = replacing ? UInt32(RENAME_SWAP) : UInt32(RENAME_EXCL)
+        guard renamex_np(staged.path, destination.path, flags) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [
+                NSFilePathErrorKey: destination.path
+            ])
+        }
     }
 
     /// True when the bundle declares itself as an iOS Simulator build.
@@ -256,7 +229,7 @@ final class PackageInstaller: @unchecked Sendable {
 
         let app = try makeInstalledApp(fromBundleAt: stagedBundleURL)
         var targets = Set<URL>([app.executableURL])
-        targets.formUnion(codeObjects(in: stagedBundleURL))
+        targets.formUnion(try machOTargets(in: stagedBundleURL))
         for file in targets {
             try relocateLoadPaths(at: file, oldRoot: oldRoot, newRoot: newRoot)
         }
@@ -286,7 +259,7 @@ final class PackageInstaller: @unchecked Sendable {
         let app = try? makeInstalledApp(fromBundleAt: bundleURL)
         var urls = Set<URL>()
         if let app { urls.insert(app.executableURL) }
-        urls.formUnion(codeObjects(in: bundleURL))
+        urls.formUnion((try? machOTargets(in: bundleURL)) ?? [])
         return urls.flatMap { (try? preparationLoadPaths(at: $0))?.flatMap {
             $0.dependencies.map(\.path) + $0.rpaths
         } ?? [] }
@@ -396,12 +369,11 @@ final class PackageInstaller: @unchecked Sendable {
         mode: PreparationMode = .compatibility,
         targetBundleURL: URL? = nil
     ) throws {
+        try validateBundleForPreparation(at: bundleURL)
         let target = targetBundleURL ?? bundleURL
-        unpreparedBinaries = []
         try patchInfoPlist(at: bundleURL)
         removeLegacySignatureArtifacts(at: bundleURL)
         try installMarketplaceKitStubIfNeeded(at: bundleURL, targetBundleURL: target)
-        if target != bundleURL { try validateStagingIsolation(at: bundleURL) }
         _ = try patchMachOBinaries(at: bundleURL)
         switch mode {
         case .compatibility:
@@ -411,9 +383,10 @@ final class PackageInstaller: @unchecked Sendable {
         case .nativeContainer:
             try removeRuntimeArtifacts(at: bundleURL)
         }
+        try validateBundleForPreparation(at: bundleURL)
         try validatePreparationMode(at: bundleURL, mode: mode, targetBundleURL: target)
         ensureExecutableBits(at: bundleURL)
-        _ = try? Shell.run("/usr/bin/xattr", ["-cr", bundleURL.path])
+        _ = try? preparationTools.run("/usr/bin/xattr", ["-cr", bundleURL.path])
     }
 
     /// The selected mode, inferred from the marker/load command. This is only
@@ -451,6 +424,7 @@ final class PackageInstaller: @unchecked Sendable {
         let lease = try launchLease ?? AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
         defer { if launchLease == nil { lease.release() } }
         try lease.validate(appID: app.id, libraryURL: libraryURL)
+        try validateBundleForPreparation(at: app.bundleURL)
         if try preparationModeIsValid(at: app.bundleURL, mode: mode, targetBundleURL: app.bundleURL) {
             return
         }
@@ -467,55 +441,99 @@ final class PackageInstaller: @unchecked Sendable {
         let stagedApp = try makeInstalledApp(fromBundleAt: staged)
         _ = try preparationLoadPaths(at: stagedApp.executableURL)
 
-        let previousUnpreparedBinaries = unpreparedBinaries
-        do {
-            try prepareForMacOS(at: staged, mode: mode, targetBundleURL: app.bundleURL)
-            try signBundle(at: staged, mode: mode)
-            _ = try preparationTools.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", staged.path])
-            try validatePreparationMode(at: staged, mode: mode, targetBundleURL: app.bundleURL)
+        try finalizeInstall(at: staged, mode: mode, targetBundleURL: app.bundleURL)
+        try commitBundle(at: staged, to: app.bundleURL, replacing: true)
+    }
 
-            // RENAME_SWAP is all-or-nothing, including on failure. The old
-            // bundle ends up in `transaction` and is removed only after commit.
-            guard renamex_np(staged.path, app.bundleURL.path, UInt32(RENAME_SWAP)) == 0 else {
-                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [
-                    NSFilePathErrorKey: app.bundleURL.path
-                ])
-            }
-        } catch {
-            unpreparedBinaries = previousUnpreparedBinaries
-            throw error
+    /// Read-only admission check, not a decryption or runtime-compatibility test.
+    /// Every regular file is inspected, including hidden and extensionless files.
+    /// This deliberately creates no work, library, or transaction directories.
+    func validateBundleForPreparation(at bundleURL: URL) throws {
+        for file in try machOTargets(in: bundleURL) {
+            try validateBinaryForPreparation(at: file, in: bundleURL)
         }
     }
 
-    private func validateStagingIsolation(at bundleURL: URL) throws {
-        // Relative framework symlinks are fine. An absolute/external symlink
-        // could make patching, xattr or codesign write through to the original.
+    private func validateBinaryForPreparation(at file: URL, in bundleURL: URL) throws {
+        do {
+            try BinaryPatcher.validateForPreparation(at: file)
+        } catch {
+            throw preparationError(error, at: file, in: bundleURL)
+        }
+    }
+
+    private func preparationError(_ error: Error, at file: URL, in bundleURL: URL) -> PearError {
+        let path = file.standardizedFileURL.path
+        let roots = [bundleURL.standardizedFileURL.path, bundleURL.resolvingSymlinksInPath().path]
+        let relative: String
+        if let root = roots.first(where: { path.hasPrefix($0 + "/") }) {
+            relative = String(path.dropFirst(root.count + 1))
+        } else {
+            relative = roots.contains(path) ? bundleURL.lastPathComponent : path
+        }
+        let detail: String
+        if case PearError.invalidPackage(let reason) = error { detail = reason }
+        else { detail = error.localizedDescription }
+        return .invalidPackage("\(relative): \(detail)")
+    }
+
+    private struct BundleEntry {
+        let url: URL
+        let kind: FileAttributeType
+    }
+
+    private func bundleEntries(at bundleURL: URL) throws -> [BundleEntry] {
         let root = bundleURL.resolvingSymlinksInPath().path
+        do {
+            let attributes = try fileManager.attributesOfItem(atPath: bundleURL.path)
+            guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+                throw PearError.invalidPackage("Bundle root must be a directory, not a symlink")
+            }
+        } catch { throw preparationError(error, at: bundleURL, in: bundleURL) }
+
         var inspectionError: Error?
         guard let enumerator = fileManager.enumerator(
-            at: bundleURL, includingPropertiesForKeys: [.isSymbolicLinkKey],
-            errorHandler: { _, error in inspectionError = error; return false }
-        ) else {
-            throw PearError.invalidPackage("Could not inspect staged bundle")
-        }
-        for case let item as URL in enumerator {
-            let values = try item.resourceValues(forKeys: [.isSymbolicLinkKey])
-            if values.isSymbolicLink == true {
-                // Canonicalize the existing parent first: a dangling relative
-                // link otherwise keeps aliases such as /private/var unresolved.
-                let parent = URL(
-                    fileURLWithPath: item.deletingLastPathComponent().resolvingSymlinksInPath().path,
-                    isDirectory: true
-                )
-                let destination = try fileManager.destinationOfSymbolicLink(atPath: item.path)
-                let resolved = URL(fileURLWithPath: destination, relativeTo: parent)
-                    .standardizedFileURL.resolvingSymlinksInPath().path
-                guard resolved == root || resolved.hasPrefix(root + "/") else {
-                    throw PearError.invalidPackage("Mode switching cannot safely modify external symlink: \(item.path)")
-                }
+            at: bundleURL, includingPropertiesForKeys: nil, options: [],
+            errorHandler: { item, error in
+                inspectionError = self.preparationError(error, at: item, in: bundleURL)
+                return false
             }
+        ) else {
+            throw PearError.invalidPackage("\(bundleURL.lastPathComponent): could not enumerate bundle")
+        }
+        var entries: [BundleEntry] = []
+        for case let item as URL in enumerator {
+            do {
+                let attributes = try fileManager.attributesOfItem(atPath: item.path)
+                guard let kind = attributes[.type] as? FileAttributeType else {
+                    throw PearError.invalidPackage("Could not determine file type")
+                }
+                if kind == .typeSymbolicLink {
+                    // Directory enumeration does not descend through symlinks.
+                    // Their real internal targets are inspected at their own paths.
+                    enumerator.skipDescendants()
+                    let parent = URL(
+                        fileURLWithPath: item.deletingLastPathComponent().resolvingSymlinksInPath().path,
+                        isDirectory: true
+                    )
+                    let destination = try fileManager.destinationOfSymbolicLink(atPath: item.path)
+                    let resolved = URL(fileURLWithPath: destination, relativeTo: parent)
+                        .standardizedFileURL.resolvingSymlinksInPath().path
+                    guard resolved == root || resolved.hasPrefix(root + "/") else {
+                        throw PearError.invalidPackage("Cannot prepare a bundle containing an external symlink")
+                    }
+                } else if kind != .typeDirectory && kind != .typeRegular {
+                    throw PearError.invalidPackage("Unsupported non-regular bundle entry")
+                }
+                entries.append(BundleEntry(url: item, kind: kind))
+            } catch { throw preparationError(error, at: item, in: bundleURL) }
         }
         if let inspectionError { throw inspectionError }
+        return entries
+    }
+
+    private func validateStagingIsolation(at bundleURL: URL) throws {
+        _ = try bundleEntries(at: bundleURL)
     }
 
     private struct PreparationLoadPaths {
@@ -675,6 +693,7 @@ final class PackageInstaller: @unchecked Sendable {
             try fileManager.removeItem(at: destination)
         }
         try fileManager.copyItem(at: runtime.resolvingSymlinksInPath(), to: destination)
+        try validateBinaryForPreparation(at: destination, in: bundleURL)
 
         // Normalize old/duplicate paths in load-command mode too. Environment
         // mode only removes these commands; it must never create a runtime load.
@@ -698,6 +717,7 @@ final class PackageInstaller: @unchecked Sendable {
                 try fileManager.removeItem(at: overlayDestination)
             }
             try fileManager.copyItem(at: swiftOverlay.resolvingSymlinksInPath(), to: overlayDestination)
+            try validateBinaryForPreparation(at: overlayDestination, in: bundleURL)
         }
 
         // A few builds carry a weak placeholder for a C++ runtime data symbol
@@ -713,6 +733,7 @@ final class PackageInstaller: @unchecked Sendable {
                 try fileManager.removeItem(at: compatDestination)
             }
             try fileManager.copyItem(at: cxxCompat.resolvingSymlinksInPath(), to: compatDestination)
+            try validateBinaryForPreparation(at: compatDestination, in: bundleURL)
             let dependencies = try preparationLoadPaths(at: app.executableURL)
                 .flatMap { $0.dependencies.map(\.path) }
             let replacement = targetFrameworks.appendingPathComponent("libcxxcompat.dylib").path
@@ -775,50 +796,50 @@ final class PackageInstaller: @unchecked Sendable {
         }
     }
 
-    /// Patch every Mach-O image that participates in loading.
     @discardableResult
     private func patchMachOBinaries(at bundleURL: URL) throws -> Int {
         var count = 0
-        for file in machOTargets(in: bundleURL) {
-            guard BinaryPatcher.fileIsMachO64(file) else { continue }
-            if BinaryPatcher.hasLegacyGuardMarkers(at: file) {
-                unpreparedBinaries.append(file.lastPathComponent)
-            }
-            if try BinaryPatcher.patchFile(at: file) { count += 1 }
+        for file in try machOTargets(in: bundleURL) {
+            do {
+                if try BinaryPatcher.patchFile(at: file) { count += 1 }
+            } catch { throw preparationError(error, at: file, in: bundleURL) }
         }
         return count
     }
 
-    /// Every Mach-O image in the bundle that participates in loading: the main
-    /// executable, frameworks and plugins, and loose dylibs.
-    private func machOTargets(in bundleURL: URL) -> [URL] {
-        var targets = Set<URL>()
-
-        if let app = try? makeInstalledApp(fromBundleAt: bundleURL) {
-            targets.insert(app.executableURL)
+    /// Discover by header, not extension or executable permissions. The main
+    /// executable is mandatory even if its bytes have no recognized magic.
+    private func machOTargets(in bundleURL: URL) throws -> [URL] {
+        let entries = try bundleEntries(at: bundleURL)
+        let app: InstalledApp
+        do { app = try makeInstalledApp(fromBundleAt: bundleURL) }
+        catch { throw preparationError(error, at: bundleURL.appendingPathComponent("Info.plist"), in: bundleURL) }
+        let root = bundleURL.resolvingSymlinksInPath().path
+        let main = app.executableURL.resolvingSymlinksInPath().standardizedFileURL
+        guard main.path.hasPrefix(root + "/") else {
+            throw PearError.invalidPackage("\(app.executableName): main executable is outside the bundle")
         }
-
-        for sub in ["Frameworks", "PlugIns"] {
-            let dir = bundleURL.appendingPathComponent(sub)
-            guard fileManager.fileExists(atPath: dir.path),
-                  let enumerator = fileManager.enumerator(
-                      at: dir, includingPropertiesForKeys: [.isRegularFileKey]
-                  ) else { continue }
-            for case let file as URL in enumerator {
-                let isRegular = (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile
-                if isRegular == true { targets.insert(file) }
+        do {
+            let attributes = try fileManager.attributesOfItem(atPath: main.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                throw PearError.invalidPackage("Main executable must be a regular file")
             }
+        } catch { throw preparationError(error, at: app.executableURL, in: bundleURL) }
+        var targets: Set<URL> = [main]
+        let magics: Set<UInt32> = [0xFEEDFACE, 0xCEFAEDFE, 0xFEEDFACF, 0xCFFAEDFE,
+                                    0xCAFEBABE, 0xBEBAFECA, 0xCAFEBABF, 0xBFBAFECA]
+        for entry in entries where entry.kind == .typeRegular {
+            do {
+                let handle = try FileHandle(forReadingFrom: entry.url)
+                defer { try? handle.close() }
+                let head = try handle.read(upToCount: 4) ?? Data()
+                if head.count == 4 {
+                    let magic = head.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+                    if magics.contains(magic) { targets.insert(entry.url.resolvingSymlinksInPath().standardizedFileURL) }
+                }
+            } catch { throw preparationError(error, at: entry.url, in: bundleURL) }
         }
-
-        if let enumerator = fileManager.enumerator(
-            at: bundleURL, includingPropertiesForKeys: [.isRegularFileKey]
-        ) {
-            for case let file as URL in enumerator where file.pathExtension == "dylib" {
-                targets.insert(file)
-            }
-        }
-
-        return Array(targets)
+        return targets.sorted { $0.path < $1.path }
     }
 
     /// Store builds may link `MarketplaceKit`, which macOS provides as
@@ -832,7 +853,7 @@ final class PackageInstaller: @unchecked Sendable {
         )
         let stubBinary = targetBundleURL.appendingPathComponent("Frameworks/MarketplaceKit.framework/MarketplaceKit")
 
-        let referencing = machOTargets(in: bundleURL).filter { file in
+        let referencing = try machOTargets(in: bundleURL).filter { file in
             let path = file.standardizedFileURL.path
             let stubRoot = stubDirectory.standardizedFileURL.path
             guard path != stubRoot, !path.hasPrefix(stubRoot + "/") else { return false }
@@ -851,13 +872,14 @@ final class PackageInstaller: @unchecked Sendable {
             )
             try fileManager.copyItem(at: source, to: stubDirectory)
         }
+        try validateBundleForPreparation(at: bundleURL)
 
         // Absolute paths avoid any dependency on the app's run-path setup and
         // match how the compatibility runtime itself is loaded.
         let replacement = stubBinary.path
         for file in referencing {
             if BinaryPatcher.hasLoadDylib(at: file, containing: "MarketplaceKit.framework") {
-                let listing = try Shell.run("/usr/bin/otool", ["-L", file.path])
+                let listing = try preparationTools.run("/usr/bin/otool", ["-L", file.path])
                 var stale = Set<String>()
                 for line in listing.split(separator: "\n").dropFirst() {
                     let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -866,7 +888,7 @@ final class PackageInstaller: @unchecked Sendable {
                     if path.contains("MarketplaceKit.framework") { stale.insert(path) }
                 }
                 for path in stale where path != replacement {
-                    _ = try? Shell.run("/usr/bin/install_name_tool", [
+                    _ = try preparationTools.run("/usr/bin/install_name_tool", [
                         "-change", path, replacement, file.path
                     ])
                 }
@@ -879,7 +901,7 @@ final class PackageInstaller: @unchecked Sendable {
     // MARK: - Helpers
 
     /// Builds an `InstalledApp` from a bundle's `Info.plist`.
-    func makeInstalledApp(fromBundleAt bundleURL: URL) throws -> InstalledApp {
+    func makeInstalledApp(fromBundleAt bundleURL: URL, targetBundleURL: URL? = nil) throws -> InstalledApp {
         let infoURL = bundleURL.appendingPathComponent("Info.plist")
         guard let info = NSDictionary(contentsOf: infoURL) as? [String: Any] else {
             throw PearError.invalidPackage("Info.plist could not be read: \(bundleURL.lastPathComponent)")
@@ -918,9 +940,11 @@ final class PackageInstaller: @unchecked Sendable {
             shortVersion: (info["CFBundleShortVersionString"] as? String) ?? "—",
             bundleVersion: (info["CFBundleVersion"] as? String) ?? "—",
             minimumOSVersion: info["MinimumOSVersion"] as? String,
-            bundleURL: bundleURL,
+            bundleURL: targetBundleURL ?? bundleURL,
             executableName: executable,
-            iconURL: iconURL,
+            iconURL: iconURL.map { icon in
+                (targetBundleURL ?? bundleURL).appendingPathComponent(String(icon.path.dropFirst(bundleURL.path.count + 1)))
+            },
             installedAt: installedAt
         )
     }
@@ -942,7 +966,7 @@ final class PackageInstaller: @unchecked Sendable {
         let entitlements = try ensureEntitlementsPath(for: bundleURL, mode: mode)
 
         // 1) nested code objects (frameworks, plugins, dylibs)
-        for object in codeObjects(in: bundleURL) {
+        for object in try codeObjects(in: bundleURL) {
             try sign(object, entitlements: entitlements)
         }
 
@@ -962,34 +986,28 @@ final class PackageInstaller: @unchecked Sendable {
         ])
     }
 
-    /// Nested code objects, shallowest-first per group: frameworks, then
-    /// plugins, then loose dylibs.
-    private func codeObjects(in bundleURL: URL) -> [URL] {
-        var result: [URL] = []
-
-        let frameworks = bundleURL.appendingPathComponent("Frameworks")
-        if let items = try? fileManager.contentsOfDirectory(at: frameworks, includingPropertiesForKeys: nil) {
-            result += items.filter { $0.pathExtension == "framework" }
-        }
-
-        let plugins = bundleURL.appendingPathComponent("PlugIns")
-        if let items = try? fileManager.contentsOfDirectory(at: plugins, includingPropertiesForKeys: nil) {
-            result += items.filter { ["appex", "framework"].contains($0.pathExtension) }
-        }
-
-        if let enumerator = fileManager.enumerator(at: bundleURL, includingPropertiesForKeys: nil) {
-            for case let file as URL in enumerator where file.pathExtension == "dylib" {
-                result.append(file)
+    /// Sign discovered binaries and their code containers inside-out, including
+    /// extensionless code outside the usual Frameworks/PlugIns directories.
+    private func codeObjects(in bundleURL: URL) throws -> [URL] {
+        var result = Set(try machOTargets(in: bundleURL))
+        let app = try makeInstalledApp(fromBundleAt: bundleURL)
+        result.remove(app.executableURL.resolvingSymlinksInPath().standardizedFileURL)
+        for entry in try bundleEntries(at: bundleURL) where entry.kind == .typeDirectory {
+            if ["framework", "appex", "app", "xpc"].contains(entry.url.pathExtension.lowercased()) {
+                result.insert(entry.url)
             }
         }
-        return result
+        return result.sorted {
+            if $0.pathComponents.count != $1.pathComponents.count {
+                return $0.pathComponents.count > $1.pathComponents.count
+            }
+            return $0.path < $1.path
+        }
     }
 
-    /// Shipping entitlements (empty), the native container's App Sandbox set,
-    /// and the optional debug set.
-    ///
-    /// The native container's isolation is applied by macOS from these
-    /// entitlements at exec time. No library is loaded into the app.
+    /// Writes empty shipping/native-mode entitlements and a separate debug set.
+    /// Neither shipping set enables App Sandbox isolation; debug entitlements
+    /// are not selected automatically.
     private func ensureEntitlementsPath(for bundleURL: URL, mode: PreparationMode) throws -> String {
         try fileManager.createDirectory(at: workRoot, withIntermediateDirectories: true)
 

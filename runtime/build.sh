@@ -8,7 +8,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT_DIR="$ROOT/build"
+OUT_DIR="${PEAR_BUILD_DIR:-$ROOT/build}"
+case "$OUT_DIR" in /*) ;; *) OUT_DIR="$ROOT/$OUT_DIR" ;; esac
 OUT="$OUT_DIR/libPearRuntime.dylib"
 SWIFT_OVERLAY="$OUT_DIR/libswiftUIKit.dylib"
 CXX_COMPAT="$OUT_DIR/libcxxcompat.dylib"

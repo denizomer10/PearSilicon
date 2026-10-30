@@ -12,8 +12,10 @@ cd "$ROOT"
 
 APP_NAME="PearSilicon"
 CONFIG="${1:-release}"
-APP="$ROOT/build/$APP_NAME.app"
-ZIP="$ROOT/build/$APP_NAME.zip"
+BUILD_DIR="${PEAR_BUILD_DIR:-$ROOT/build}"
+case "$BUILD_DIR" in /*) ;; *) BUILD_DIR="$ROOT/$BUILD_DIR" ;; esac
+APP="$BUILD_DIR/$APP_NAME.app"
+ZIP="$BUILD_DIR/$APP_NAME.zip"
 
 # --- 1) Build the app -----------------------------------------------------
 echo ">> Building app ($CONFIG)"

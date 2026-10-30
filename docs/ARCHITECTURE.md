@@ -5,9 +5,18 @@ iOS apps on macOS. It prepares installed app copies and adds an in-process
 compatibility runtime on top of Apple's frameworks. It is not an independent
 implementation of iOS, UIKit or a device kernel.
 
+This document tracks development source. Experimental host/environment loading,
+IPA drop handling and storage relocation are not part of stable v0.2.0. See
+[release channels](../README.md#release-channels) and each artifact's release notes
+for the distinction between source features and published builds.
+
 ## Execution path
 
-1. The installer extracts an IPA or copies an iOS device `.app` bundle.
+1. The installer extracts an IPA or reads an iOS device `.app` bundle. It rejects
+   extraction/CRC failures and preflights the main executable and recognized
+   nested Mach-O images before mutation. Encrypted code is rejected, not decrypted
+   or relabeled as plaintext. Preparation/signature verification uses a staged
+   copy; installation is committed atomically only after those checks.
 2. It prepares that copy: normalizes metadata, thins supported binaries to
    `arm64`, changes relevant Mach-O platform metadata to **Mac Catalyst (6)**,
    adds compatibility dependencies and ad-hoc signs the result.
@@ -29,6 +38,12 @@ Implementation references:
 [`runtime/build.sh`](../runtime/build.sh). The runtime build target is
 `arm64-apple-ios15.0-macabi`, linked against Apple frameworks including UIKit,
 Foundation, Metal and QuartzCore.
+
+The read-only `pearsilicon validate <App.app|Mach-O>` command exposes input
+preflight without launching a game or creating app-data directories. It does not
+prove decryption, complete ABI correctness or GPU compatibility. See
+[startup diagnostics](STARTUP_DIAGNOSTICS.md) for the proven preparation defects
+and the still-unconfirmed Genshin/Telemetry crash cause.
 
 ## Runtime loading modes
 
