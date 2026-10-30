@@ -6,6 +6,11 @@ signer, launcher and keymap code with the app. The supported inputs and options
 differ in places; for example, `.app` directory installation is currently a CLI
 workflow. See [Architecture](ARCHITECTURE.md) for the execution model.
 
+This reference tracks development source. Host/environment injection, storage
+relocation and GUI IPA drop handling are not in stable v0.2.0; published artifacts
+can lag behind the source. See [release channels](../README.md#release-channels)
+and the notes for the build you downloaded.
+
 It is designed for two workflows:
 
 - **installing** an IPA archive (or a device-built `.app`) and launching it;
@@ -194,9 +199,9 @@ configuration/identity policy moved, not the numeric hardware, motion, or IOKit
 implementation. The Wine/Proton analogy is limited to separating some state
 management from in-process hooks, not the loader/API architecture. This is not
 kernel-level iOS emulation, a wineserver equivalent, or a smaller injected
-library. The original IPA is untouched,
-but the installed copy still needs platform preparation, signing and dependency
-fixups. API shims still intercept calls in the game's process.
+library. The original IPA is untouched, but the installed copy still needs
+platform preparation, signing and dependency fixups. API shims still intercept
+calls in the game's process.
 
 The socket's directory is mode `0700`, its endpoint `0600`; peers must have the
 same UID and supply the per-launch capability. Frames are bounded binary plists
@@ -205,10 +210,10 @@ frame, 512 KiB per persisted KV store, 1024 UTF-8 bytes per key, and eight clien
 A corrupt or oversized existing store is preserved and produces an explicit
 startup error, not an empty replacement. Cold KV operations share one deadline
 across lock waits and IPC (100 ms on the main thread, 500 ms on workers).
-The host is the only KV file writer in a managed environment-injection session, persists before
-acknowledging, and rejects a
-second host for the same store. During an outage, the runtime may read its last
-confirmed host cache but cannot write a separate local file; failed writes do
+The host is the only KV file writer in a managed environment-injection session.
+It persists before acknowledging and rejects a second host for the same store.
+During an outage, the runtime may read its last confirmed host cache but cannot
+write a separate local file; failed writes do
 not make `synchronize` succeed. Socket authentication **does not** isolate a
 hostile game from another process with the same UID. Directory hooks and
 permissive macOS sandbox profiles, including the `sandbox-exec` experiment, are

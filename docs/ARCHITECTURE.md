@@ -5,6 +5,11 @@ iOS apps on macOS. It prepares installed app copies and adds an in-process
 compatibility runtime on top of Apple's frameworks. It is not an independent
 implementation of iOS, UIKit or a device kernel.
 
+This document tracks development source. Experimental host/environment loading,
+IPA drop handling and storage relocation are not part of stable v0.2.0. See
+[release channels](../README.md#release-channels) and each artifact's release notes
+for the distinction between source features and published builds.
+
 ## Execution path
 
 1. The installer extracts an IPA or copies an iOS device `.app` bundle.

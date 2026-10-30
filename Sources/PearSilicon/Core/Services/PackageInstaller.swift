@@ -3,13 +3,12 @@ import Foundation
 
 /// How an app is prepared to run on macOS.
 ///
-/// `.compatibility` keeps the small in-process compatibility runtime. It is
-/// needed for APIs that cannot be provided from outside a process (Metal layer
-/// device, keychain storage, cloud stores, legacy C++ symbols).
+/// `.compatibility` loads the in-process compatibility runtime through an
+/// `LC_LOAD_DYLIB` entry. Runtime hooks adapt selected API behavior.
 ///
-/// `.nativeContainer` loads no compatibility code into the app at all. The
-/// sandbox and the data container are supplied by macOS itself, before the app
-/// starts; nothing is added to the executable's load commands.
+/// `.nativeContainer` removes PearSilicon's runtime artifacts. Despite the name,
+/// this preparation mode does not itself add App Sandbox entitlements or
+/// establish secure per-app isolation.
  enum PreparationMode: String, Sendable {
     case compatibility
     /// Same in-process runtime, but loaded by the launcher through
@@ -985,11 +984,9 @@ final class PackageInstaller: @unchecked Sendable {
         return result
     }
 
-    /// Shipping entitlements (empty), the native container's App Sandbox set,
-    /// and the optional debug set.
-    ///
-    /// The native container's isolation is applied by macOS from these
-    /// entitlements at exec time. No library is loaded into the app.
+    /// Writes empty shipping/native-mode entitlements and a separate debug set.
+    /// Neither shipping set enables App Sandbox isolation; debug entitlements
+    /// are not selected automatically.
     private func ensureEntitlementsPath(for bundleURL: URL, mode: PreparationMode) throws -> String {
         try fileManager.createDirectory(at: workRoot, withIntermediateDirectories: true)
 
