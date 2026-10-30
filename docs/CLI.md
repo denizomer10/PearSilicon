@@ -60,6 +60,7 @@ app target (`Sources/PearSilicon/App/CLI.swift`).
 
 ```
 pearsilicon install <package|app>   Prepare and install an app package or a toolchain-built .app
+pearsilicon validate <app|Mach-O> Read-only structure/platform/encryption-marker preflight
 pearsilicon run <package|app>       install + launch (--no-launch to stop after install)
 pearsilicon launch <id|name>    Launch an installed app
 pearsilicon debug <id|name>     Launch with touch logging and follow the log
@@ -142,17 +143,21 @@ IPA archives can also be **dragged onto the main window**. For `.app` directorie
 use `pearsilicon install <path-to-app>`: the GUI currently routes accepted URLs
 through the archive installer and does not implement the directory-install path.
 
-The pipeline is the same as the GUI: `Info.plist` rewrite → legacy metadata
-removal → Mach-O platform patch (iOS → Mac Catalyst, arm64) → loading the
-runtime with `LC_LOAD_DYLIB` by default (or launcher insertion with
-`--env-injection`) → inside-out ad-hoc signing. Both modes still modify the
-installed copy and rely on Apple's `/System/iOSSupport` frameworks; neither
-provides an independent UIKit implementation. Default signing adds no debug
-entitlements.
+The GUI and CLI share the preparation pipeline: read-only whole-bundle preflight
+→ sibling staged copy → `Info.plist` and signature-sidecar preparation → bounded
+ARM64 Mach-O platform edits → runtime loading setup → inside-out ad-hoc signing
+and verification → atomic installation commit. An existing app is not deleted
+before the staged replacement passes verification. CRC/extraction errors and
+encrypted or malformed nested code stop installation rather than producing a
+successful-install warning. Default signing adds no debug entitlements.
 
-**Simulator builds are unsupported.** The `.app` directory installer rejects
-bundles whose metadata declares a simulator platform; archive installation does
-not perform that same check. Use an iOS device build (`generic/platform=iOS`),
+Both loading modes modify the installed copy and use Apple's `/System/iOSSupport`
+frameworks; neither provides an independent UIKit implementation. Only supported
+portable ARM64 slices are selected. ARM64e-only input is not relabeled as ARM64.
+
+**Simulator builds are unsupported.** Both IPA and directory installation use
+the same admission checks; explicit simulator Mach-O platforms and simulator
+bundle metadata are rejected. Use an iOS device build (`generic/platform=iOS`),
 which is the default destination for `pearsilicon build`.
 
 A starter keymap is generated if the app has none (disable with `--no-keymap`).
@@ -161,6 +166,25 @@ the GUI. Without it, no keymap path is passed and the keymapper's keyboard/mouse
 handlers are not installed. Other compatibility hooks can still run.
 
 ---
+
+## Read-only input validation
+
+```sh
+pearsilicon validate ~/Downloads/App.app
+pearsilicon validate ~/Downloads/App.app/Frameworks/Telemetry.framework/Telemetry
+```
+
+`validate` does not launch, install, patch or sign the input and does not
+initialize/migrate PearSilicon settings or create data directories. Failure
+returns exit code `1` with the offending file and reason; bundle errors identify
+nested paths, not just the executable basename.
+
+A successful check validates supported structure, CPU/subtype, platform and
+encryption metadata only. It does **not** prove correct decryption, signatures,
+GPU compatibility or playability. If an old preparation already cleared
+`cryptid`, obtain a fresh verified input; cleared metadata cannot be reconstructed
+by this check. See [startup diagnostics](STARTUP_DIAGNOSTICS.md) for the reported
+Telemetry SIGILL and the remaining evidence needed.
 
 ## Experimental host-service split
 

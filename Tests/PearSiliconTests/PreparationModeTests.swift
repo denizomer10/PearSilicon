@@ -173,13 +173,13 @@ final class PreparationModeTests: XCTestCase {
         try fixture.assertNoStagingRemains()
     }
 
-    func testRealCodesignErrorOnDamagedSyntheticRuntimeLeavesOriginalUntouched() throws {
+    func testDamagedSyntheticRuntimeIsRejectedBeforeCodesignAndLeavesOriginalUntouched() throws {
         let fixture = try PreparationFixture()
         defer { fixture.remove() }
         try fixture.prepare(.compatibility)
         try fixture.addSignatureSidecar()
-        // A full header claiming absent load commands is rejected as malformed
-        // Mach-O, rather than signed as generic data. No external app is used.
+        // The copied runtime must pass admission before signing. The installed
+        // runtime remains valid; only the replacement source is damaged.
         let header: [UInt32] = [0xfeedfacf, 0x0100_000c, 0, 6, 1, 24, 0, 0]
         let damaged = header.flatMap { value in
             (0..<4).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }
@@ -187,21 +187,21 @@ final class PreparationModeTests: XCTestCase {
         try Data(damaged).write(to: fixture.runtimeURL)
         let before = try fixture.snapshot()
         var tools = fixture.tools()
-        var attemptedRuntimeSignature = false
+        var attemptedSignature = false
         tools.run = { tool, arguments in
             if tool == "/usr/bin/codesign" {
-                guard arguments.last?.hasSuffix("/libPearRuntime.dylib") == true else { return "" }
-                attemptedRuntimeSignature = true
+                attemptedSignature = true
+                return ""
             }
             return try Shell.run(tool, arguments)
         }
         let installer = fixture.installer(tools: tools)
 
         XCTAssertThrowsError(try installer.setPreparationMode(.compatibilityEnvironment, for: fixture.app(using: installer))) {
-            guard case PearError.commandFailed(let tool, _, _) = $0 else { return XCTFail("Unexpected error: \($0)") }
-            XCTAssertEqual(tool, "codesign")
+            guard case PearError.invalidPackage(let reason) = $0 else { return XCTFail("Unexpected error: \($0)") }
+            XCTAssertTrue(reason.contains("Frameworks/libPearRuntime.dylib"))
         }
-        XCTAssertTrue(attemptedRuntimeSignature)
+        XCTAssertFalse(attemptedSignature)
         XCTAssertEqual(try fixture.snapshot(), before)
         try fixture.assertNoStagingRemains()
     }
@@ -268,7 +268,7 @@ final class PreparationModeTests: XCTestCase {
         try fixture.assertNoStagingRemains()
     }
 
-    func testMissingHeaderSpaceFailsInvariantsInsteadOfCommitting() throws {
+    func testMissingHeaderSpaceRejectsInsertionInsteadOfCommitting() throws {
         let fixture = try PreparationFixture(headerPadding: false)
         defer { fixture.remove() }
         let before = try fixture.snapshot()
@@ -276,7 +276,7 @@ final class PreparationModeTests: XCTestCase {
 
         XCTAssertThrowsError(try installer.setPreparationMode(.compatibilityEnvironment, for: fixture.app(using: installer))) {
             guard case PearError.invalidPackage(let reason) = $0 else { return XCTFail("Unexpected error: \($0)") }
-            XCTAssertTrue(reason.contains("invariants"))
+            XCTAssertTrue(reason.contains("padding"))
         }
         XCTAssertEqual(try fixture.snapshot(), before)
         try fixture.assertNoStagingRemains()
@@ -322,6 +322,32 @@ final class PreparationModeTests: XCTestCase {
 
         XCTAssertEqual(try fixture.snapshot(), before)
         try fixture.assertNoStagingRemains()
+    }
+
+    func testEncryptedOrMalformedNestedImageCannotBypassAnyAlreadySelectedMode() throws {
+        let path = "Resources/Embedded.bundle/Telemetry"
+        for mode in [PreparationMode.compatibility, .compatibilityEnvironment, .nativeContainer] {
+            for encrypted in [true, false] {
+                let fixture = try PreparationFixture()
+                defer { fixture.remove() }
+                try fixture.prepare(mode)
+                try fixture.addSignatureSidecar()
+                try fixture.addInvalidImage(at: path, encrypted: encrypted)
+                let before = try fixture.snapshot()
+                var tools = fixture.tools()
+                tools.run = { _, _ in throw PreparationTestError.unexpectedCommand }
+                let installer = fixture.installer(tools: tools)
+                let app = try fixture.app(using: installer)
+                XCTAssertEqual(installer.currentPreparationMode(for: app), mode)
+
+                XCTAssertThrowsError(try installer.setPreparationMode(mode, for: app)) {
+                    guard case PearError.invalidPackage(let reason) = $0 else { return XCTFail("Unexpected error: \($0)") }
+                    XCTAssertTrue(reason.contains(path))
+                }
+                XCTAssertEqual(try fixture.snapshot(), before)
+                try fixture.assertNoStagingRemains()
+            }
+        }
     }
 
     func testExternalSymlinkCannotWriteThroughToOriginalDuringPreparation() throws {
@@ -416,6 +442,13 @@ private final class PreparationFixture {
         try installer().prepareForMacOS(at: bundleURL, mode: mode)
     }
 
+    func addInvalidImage(at relativePath: String, encrypted: Bool) throws {
+        let file = bundleURL.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = encrypted ? Self.machO(platform: 2, cryptid: 1) : Data([0xCF, 0xFA, 0xED, 0xFE])
+        try data.write(to: file)
+    }
+
     func addSignatureSidecar() throws {
         let directory = bundleURL.appendingPathComponent("_CodeSignature")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -497,7 +530,7 @@ private final class PreparationFixture {
 
     func remove() { try? FileManager.default.removeItem(at: root) }
 
-    private static func machO(platform: UInt32, headerPadding: Bool = true, needsCxx: Bool = false) -> Data {
+    private static func machO(platform: UInt32, headerPadding: Bool = true, needsCxx: Bool = false, cryptid: UInt32? = nil) -> Data {
         var data = Data()
         func u32(_ value: UInt32) {
             data.append(contentsOf: (0..<4).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) })
@@ -510,10 +543,11 @@ private final class PreparationFixture {
         }
         let symbol = Data("\0__ZNSt3__119piecewise_constructE\0".utf8)
         let imageSize = needsCxx ? 8208 + symbol.count : 12288
-        let commandBytes = 152 + 24 + (needsCxx ? 24 : 0)
+        let commandBytes = 152 + 24 + (needsCxx ? 24 : 0) + (cryptid == nil ? 0 : 24)
         let sectionOffset = headerPadding ? 4096 : 32 + commandBytes
         u32(0xfeedfacf); u32(0x0100_000c); u32(0); u32(2)
-        u32(needsCxx ? 3 : 2); u32(UInt32(commandBytes)); u32(0); u32(0)
+        u32(UInt32(2 + (needsCxx ? 1 : 0) + (cryptid == nil ? 0 : 1)))
+        u32(UInt32(commandBytes)); u32(0); u32(0)
         // __TEXT and one section make the header padding boundary explicit.
         u32(0x19); u32(152); name("__TEXT")
         u64(0x1_0000_0000); u64(0x3000); u64(0); u64(UInt64(imageSize))
@@ -525,6 +559,9 @@ private final class PreparationFixture {
         u32(0x32); u32(24); u32(platform); u32(0x000f_0000); u32(0x001a_0100); u32(0)
         if needsCxx {
             u32(2); u32(24); u32(8192); u32(1); u32(8208); u32(UInt32(symbol.count))
+        }
+        if let cryptid {
+            u32(0x2C); u32(24); u32(UInt32(sectionOffset)); u32(8); u32(cryptid); u32(0)
         }
         data.append(Data(count: imageSize - data.count))
         if needsCxx {

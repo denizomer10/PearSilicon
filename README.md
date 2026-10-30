@@ -20,7 +20,7 @@
 <p align="center">
   <a href="https://pearsilicon.pages.dev">Website</a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/denizomer10/PearSilicon/releases">Download</a>
+  <a href="https://github.com/denizomer10/PearSilicon/releases/tag/development-beta">Download</a>
   &nbsp;·&nbsp;
   <a href="docs/CLI.md">CLI reference</a>
   &nbsp;·&nbsp;
@@ -52,16 +52,15 @@ This README describes current development source, which can be newer than a
 published download. Choose an artifact by its release notes rather than assuming
 that every feature on this page is included in every version.
 
-- **[Stable v0.2.0](https://github.com/denizomer10/PearSilicon/releases/latest):**
-  the latest stable release. Use its Install button for IPA archives.
-- **[Development beta](https://github.com/denizomer10/PearSilicon/releases/tag/development-beta):**
-  an evolving prerelease updated in place. Its notes identify the artifact's
-  last tested commit and the scope of those checks.
+The recommended download is the
+**[development beta](https://github.com/denizomer10/PearSilicon/releases/tag/development-beta)**,
+a prerelease updated in place. Its notes identify the artifact's last tested
+commit and the exact scope of those checks. This is not a stable-release promise
+or a verified catalog of playable games.
 
-IPA drop handling, experimental environment injection/host service and
-experimental storage relocation are development features, **not part of stable
-v0.2.0**. A source/documentation update does not itself replace either release's
-ZIP or constitute another game-compatibility test.
+IPA drop handling, host/environment injection and storage relocation are
+current development features. Consult the beta's artifact notes: source changes
+can be newer than the published ZIP.
 
 ## Features
 
@@ -96,8 +95,8 @@ library status; it does not certify game compatibility.
 
 ## Install and run
 
-1. Download a build from [Releases](https://github.com/denizomer10/PearSilicon/releases),
-   or build the app yourself. The `development beta` is updated in place; its
+1. Download the [development beta](https://github.com/denizomer10/PearSilicon/releases/tag/development-beta),
+   or build the app yourself. The beta is updated in place; its
    notes identify the last tested commit and the scope of those checks.
 2. Unzip the download, move `PearSilicon.app` to `/Applications` and open it.
 3. Use the **Install** button to select a prepared `.ipa`, wait for installation,
@@ -121,6 +120,17 @@ sudo ln -sf /Applications/PearSilicon.app/Contents/MacOS/PearSilicon \
 
 Full command reference: [docs/CLI.md](docs/CLI.md).
 
+Before installation, the full bundle is checked for supported ARM64/platform
+metadata and encrypted or malformed Mach-O images. CRC-damaged archives are
+rejected. Failed staged preparation/signing leaves an existing installation in
+place. This does not decrypt code or guarantee working gameplay.
+
+For read-only checks use `pearsilicon validate <App.app|Mach-O>`; see
+[startup diagnostics](docs/STARTUP_DIAGNOSTICS.md), including the limits of the
+Genshin/Telemetry SIGILL investigation. Previously prepared copies whose
+`cryptid` was cleared need a fresh verified input; they cannot be repaired by
+merely updating the launcher.
+
 ## Build
 
 ```sh
@@ -132,6 +142,9 @@ open build/PearSilicon.app
 swift build
 swift test
 ./runtime/build.sh              # runtime dylib only (Command Line Tools work)
+
+# Package elsewhere without replacing an app currently open from build/:
+PEAR_BUILD_DIR=.build/package-check ./scripts/make-zip.sh
 ```
 
 ## How it works

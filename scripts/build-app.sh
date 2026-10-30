@@ -11,7 +11,9 @@ cd "$ROOT"
 APP_NAME="PearSilicon"
 BUNDLE_ID="com.pearsilicon.app"
 CONFIG="${1:-release}"
-OUT="$ROOT/build/$APP_NAME.app"
+BUILD_DIR="${PEAR_BUILD_DIR:-$ROOT/build}"
+case "$BUILD_DIR" in /*) ;; *) BUILD_DIR="$ROOT/$BUILD_DIR" ;; esac
+OUT="$BUILD_DIR/$APP_NAME.app"
 
 # --- 1) Environment check -------------------------------------------------
 DEV_DIR="$(xcode-select -p)"
@@ -43,24 +45,24 @@ if [[ -d "$RES_BUNDLE" ]]; then
   cp -R "$RES_BUNDLE" "$OUT/Contents/Resources/"
 fi
 
-if [[ -f "$ROOT/build/libPearRuntime.dylib" ]]; then
-  cp "$ROOT/build/libPearRuntime.dylib" "$OUT/Contents/Resources/"
+if [[ -f "$BUILD_DIR/libPearRuntime.dylib" ]]; then
+  cp "$BUILD_DIR/libPearRuntime.dylib" "$OUT/Contents/Resources/"
 fi
-if [[ -f "$ROOT/build/libswiftUIKit.dylib" ]]; then
-  cp "$ROOT/build/libswiftUIKit.dylib" "$OUT/Contents/Resources/"
+if [[ -f "$BUILD_DIR/libswiftUIKit.dylib" ]]; then
+  cp "$BUILD_DIR/libswiftUIKit.dylib" "$OUT/Contents/Resources/"
 fi
-if [[ -f "$ROOT/build/libcxxcompat.dylib" ]]; then
-  cp "$ROOT/build/libcxxcompat.dylib" "$OUT/Contents/Resources/"
+if [[ -f "$BUILD_DIR/libcxxcompat.dylib" ]]; then
+  cp "$BUILD_DIR/libcxxcompat.dylib" "$OUT/Contents/Resources/"
 fi
-if [[ -d "$ROOT/build/MarketplaceKit.framework" ]]; then
-  cp -R "$ROOT/build/MarketplaceKit.framework" "$OUT/Contents/Resources/"
+if [[ -d "$BUILD_DIR/MarketplaceKit.framework" ]]; then
+  cp -R "$BUILD_DIR/MarketplaceKit.framework" "$OUT/Contents/Resources/"
 fi
 
 # --- 3b) App icon from the repo logo -------------------------------------
 ICON_KEY=""
 if [[ -f "$ROOT/logo.png" ]]; then
   echo ">> Generating app icon"
-  ICONSET="$ROOT/build/AppIcon.iconset"
+  ICONSET="$BUILD_DIR/AppIcon.iconset"
   rm -rf "$ICONSET"
   mkdir -p "$ICONSET"
   icon() { sips -z "$1" "$1" "$ROOT/logo.png" --out "$ICONSET/$2" >/dev/null 2>&1; }
@@ -107,6 +109,7 @@ PLIST
 
 # --- 4) Sign (adhoc) ------------------------------------------------------
 echo ">> Adhoc signing"
-codesign --force --deep --sign - "$OUT" || echo "(warning) codesign failed"
+codesign --force --deep --sign - "$OUT"
+codesign --verify --deep --strict "$OUT"
 
 echo ">> Done: $OUT"

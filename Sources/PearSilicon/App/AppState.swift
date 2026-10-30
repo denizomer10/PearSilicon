@@ -339,13 +339,7 @@ final class AppState: ObservableObject {
                     try keymapStore.save(KeymapGenerator.generate(for: app))
                 }
 
-                if !packageInstaller.corruptedFiles.isEmpty {
-                    statusMessage = L10n.installedCorrupted(app.displayName, files: packageInstaller.corruptedFiles)
-                } else if packageInstaller.unpreparedBinaries.isEmpty {
-                    statusMessage = L10n.installed(app.displayName)
-                } else {
-                    statusMessage = L10n.installedUnprepared(app.displayName)
-                }
+                statusMessage = L10n.installed(app.displayName)
             } catch {
                 statusMessage = L10n.error("\(url.lastPathComponent): \(error.localizedDescription)")
             }

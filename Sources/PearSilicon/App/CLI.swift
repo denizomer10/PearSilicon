@@ -121,6 +121,7 @@ enum CLI {
 
         switch command {
         case "install": return try installCommand(parsed)
+        case "validate": return try validateCommand(parsed)
         case "run": return try runCommand(parsed)
         case "launch": return try launchCommand(parsed)
         case "debug": return try debugCommand(parsed)
@@ -220,6 +221,29 @@ enum CLI {
 
     // MARK: Install / run
 
+    private static func validateCommand(_ arguments: CLIArguments) throws -> Int32 {
+        guard arguments.positionals.count == 1, let path = arguments.positionals.first else {
+            throw CLIError.message("usage: pearsilicon validate <App.app|Mach-O>")
+        }
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            throw CLIError.message("not found: \(url.path)")
+        }
+        if isDirectory.boolValue {
+            // Do not initialize CLIPaths: validation must not migrate or create app data.
+            try PackageInstaller(libraryURL: url.deletingLastPathComponent())
+                .validateBundleForPreparation(at: url)
+        } else {
+            try BinaryPatcher.validateForPreparation(at: url)
+        }
+        print("preflight passed: \(url.path)")
+        print("  read-only structure, ARM64 ABI, platform and encryption-marker checks")
+        print("  this does not verify decrypted code bytes, signatures, GPU support or playability")
+        print("  previously prepared images with cleared encryption metadata need fresh verified input")
+        return 0
+    }
+
     private static func installCommand(_ arguments: CLIArguments) throws -> Int32 {
         guard let path = arguments.positionals.first else {
             throw CLIError.message("usage: pearsilicon install <package|App.app> [--launch] [--keys|--no-keys] [--log]")
@@ -270,16 +294,7 @@ enum CLI {
         print("installed \(app.displayName) [\(app.id)]")
         print("  bundle: \(app.bundleURL.path)")
         print("  mode: \(mode.rawValue)")
-        if !installer.corruptedFiles.isEmpty {
-            print("  warning: \(installer.corruptedFiles.count) file(s) failed their CRC check and may be damaged:")
-            for file in installer.corruptedFiles.prefix(5) {
-                print("    \(file)")
-            }
-            if installer.corruptedFiles.count > 5 {
-                print("    … and \(installer.corruptedFiles.count - 5) more")
-            }
-            print("  re-download the app package if the app crashes.")
-        }
+
         return app
     }
 
@@ -1056,6 +1071,7 @@ enum CLI {
 
         COMMANDS
           install <package|app>    Prepare and install an app package or a toolchain-built .app
+          validate <app|Mach-O>    Read-only structure/platform/encryption-marker preflight
           run <package|app>        install + launch (use --no-launch to stop after install)
           launch <id|name>     Launch an installed app
           debug <id|name>      Launch with touch logging and follow the log
