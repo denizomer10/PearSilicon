@@ -45,14 +45,14 @@ struct SettingsView: View {
                         .disabled(state.isBusy)
                     }
                 }
-                Text("Apps, game data, keymaps, ODR packs, keychain entries and logs all live "
-                     + "in this one folder, so it can live on an external disk. Moving copies "
-                     + "everything to the new location and keeps the old copy as a rollback. "
-                     + "Running games must be closed first.")
+                Text("Experimental: copies managed apps and data, retaining the previous copy. "
+                     + "Close games and keep a separate backup first. Launch moved apps through "
+                     + "PearSilicon; direct launches may use default paths. External-disk "
+                     + "operation has not been tested end to end.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
-                Text("Storage location")
+                Text("Storage location — experimental")
             }
         }
         .confirmationDialog(
@@ -75,7 +75,7 @@ struct SettingsView: View {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
         panel.prompt = "Move Storage Here"
-        panel.message = "Choose a folder (for example on an external disk). Apps and game data will be copied into a PearSilicon folder here."
+        panel.message = "Experimental move: choose a destination folder. Keep a backup and test the moved apps before removing the previous copy."
         panel.directoryURL = state.storageRootURL.deletingLastPathComponent()
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await state.changeStorageLocation(to: url) }
@@ -86,10 +86,10 @@ struct SettingsView: View {
             Section {
                 Toggle("Enable keymapper for new games by default",
                        isOn: $state.keymapperDefaultEnabled)
-                Text("Input translation is off unless a game opts in. Each game also has "
-                     + "its own switch in the Keymap tab. Turning it on enables the "
-                     + "input layer; when off, the game runs with no input translation "
-                     + "and no overlay button.")
+                Text("Keyboard/mouse keymapping is off unless enabled. Each game has "
+                     + "its own switch in the Keymap tab; changing it takes effect "
+                     + "on the next launch. Saved bindings can reload while the "
+                     + "keymapper is active. Other compatibility hooks can still run.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -97,10 +97,10 @@ struct SettingsView: View {
             Section {
                 Text("Repeat-rate protection: always on")
                     .font(.body.weight(.medium))
-                Text("The keymapper rejects implausibly fast repeated presses, both "
-                     + "for one key and across all keys, so it cannot be driven by "
-                     + "a held key or a macro tool. Releases are never blocked. "
-                     + "This protection is not configurable.")
+                Text("The keymapper drops presses less than 120 ms apart for the same key "
+                     + "or 40 ms apart across keys. Releases are not rate-limited. "
+                     + "This limits rapid repeats; it does not detect or prevent macros. "
+                     + "The limits are not configurable.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

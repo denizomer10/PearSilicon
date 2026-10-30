@@ -735,8 +735,8 @@ static void WatchKeymap(NSString *path) {
         unsetenv("PEAR_LAUNCHER_INJECTION");
     }
 
-    // Debug affordance: let a launch disable the runtime entirely so we can tell
-    // whether a loaded component is responsible for a misbehaving app.
+    // Skip this bootstrap for input debugging. Other shims have independent
+    // initializers, so this is not a global no-hooks switch.
     if (NSProcessInfo.processInfo.environment[@"PEAR_DISABLE"]) {
         PearLog(@"[PearRuntime] disabled via PEAR_DISABLE");
         return;
@@ -747,7 +747,7 @@ static void WatchKeymap(NSString *path) {
     WatchKeymap(keymapPath);
 
     // Input translation is opt-in: with no keymap (the app did not enable the
-    // keymapper) the runtime installs no input handlers at all.
+    // keymapper) this bootstrap installs no keymapper input handlers.
     if (gBindings.count > 0) {
         InstallMouse();
         InstallKeyboard();

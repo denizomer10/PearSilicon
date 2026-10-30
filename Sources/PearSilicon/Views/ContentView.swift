@@ -101,8 +101,8 @@ struct ContentView: View {
 
     // MARK: - Drop
 
-    /// IPA packages and toolchain-built `.app` bundles can be dropped anywhere
-    /// on the window.
+    /// The GUI installs IPA archives; `.app` directory installation currently
+    /// requires the CLI, despite the accepted content types below.
     private var packageContentTypes: [UTType] {
         ["ipa", "app", "app package"].compactMap { UTType(filenameExtension: $0) } + [.data]
     }
@@ -126,7 +126,7 @@ struct ContentView: View {
         if !urls.isEmpty {
             await state.install(packageURLs: urls)
         } else if !providers.isEmpty {
-            state.statusMessage = L10n.error("Drop an .ipa package or an .app bundle to install it")
+            state.statusMessage = L10n.error("Drop an .ipa package to install it; use the CLI for .app bundles")
         }
     }
 }

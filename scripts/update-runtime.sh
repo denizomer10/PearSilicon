@@ -1,6 +1,7 @@
 #!/bin/bash
-# Replaces the runtime dylib in every installed app with the freshly
-# built one and re-signs each bundle inside-out.
+# Refreshes runtime libraries in the default Application Support library only
+# and re-signs each bundle inside-out. Relocated storage roots are not handled;
+# build the runtime before running this script.
 #
 # The runtime is copied into an app at install time, so apps installed with an
 # older build keep an older runtime. This refreshes them without a full

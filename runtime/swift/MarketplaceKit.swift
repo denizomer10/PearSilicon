@@ -1,4 +1,4 @@
-// Clean-room stub for the pre-iOS 26 public MarketplaceKit surface that
+// Compatibility stub for the pre-iOS 26 public MarketplaceKit surface that
 // store builds link against. The host ships the framework as resources only,
 // so without a binary dyld cannot satisfy the weak references and aborts
 // while registering Swift metadata.

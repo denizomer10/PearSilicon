@@ -387,8 +387,8 @@ enum CLI {
         print("  keymap: \(keymapState(enabled: enabled, hasFile: hasKeymap, url: keymapURL))")
         print("  metal HUD: \(hudEnabled ? "on" : "off")")
         print("  pointer lock: \(pointerLock ? "allowed" : "disabled")")
-        print("  mode: \(mode == .compatibilityEnvironment ? "launcher injection + host service" : "runtime load command")")
-        print("  container: iOS-like filesystem view (user space)")
+        print("  mode: \(mode == .compatibilityEnvironment ? "environment-injected in-process runtime + local KV/device-profile host" : "in-process runtime via LC_LOAD_DYLIB")")
+        print("  container: iOS-like filesystem view (hooks + requested macOS sandbox profile)")
         if let logPath { print("  log:    \(logPath)") }
 
         if arguments.flags.contains("lldb") {
@@ -736,20 +736,21 @@ enum CLI {
 
         switch DeveloperTools.toolchainStatus() {
         case .ready:
-            print("toolchain:ready (\(DeveloperTools.activeDeveloperDirectory() ?? "selected"))")
+            print("build toolchain: ready (\(DeveloperTools.activeDeveloperDirectory() ?? "selected"))")
         case .missing:
-            print("toolchain: NOT INSTALLED")
-            print("          install the full development toolchain, then run:")
-            print("            sudo xcode-select -s /Applications/<Toolchain>.app")
+            print("build toolchain: full Xcode toolchain not found")
+            print("          for source/project builds, install Xcode and select it with xcode-select")
         case .installedButNotSelected(let toolchainPath, let activePath):
-            print("toolchain: installed at \(toolchainPath), but not selected")
+            print("build toolchain: installed at \(toolchainPath), but not selected")
             print("          active: \(activePath ?? "unknown")")
             print("          run: \(DeveloperTools.selectCommand(for: toolchainPath))")
         }
 
         let runtime = AppLauncher.runtimeLibraryURL()?.path
         print("runtime:  \(runtime ?? "NOT FOUND")")
-        print("runtime build: \(DeveloperTools.runtimeBuildAvailable() ? "available" : "missing iOSSupport frameworks")")
+        print("runtime source-build SDK: \(DeveloperTools.runtimeBuildAvailable() ? "available" : "missing iOSSupport frameworks")")
+        print("          the prebuilt GUI does not require Xcode or Command Line Tools")
+        print("          some app preparation/relocation paths require Command Line Tools")
 
         let apps = (try? PackageInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()) ?? []
         print("library:  \(CLIPaths.shared.library.path) (\(apps.count) apps)")
@@ -1047,7 +1048,8 @@ enum CLI {
 
     private static func printHelp() {
         print("""
-        pearsilicon — install and run iOS apps natively on arm64 macOS
+        pearsilicon — prepare and launch compatible arm64 iOS apps using Mac Catalyst
+        Uses Apple's /System/iOSSupport frameworks and an in-process compatibility runtime.
 
         USAGE
           pearsilicon <command> [options]
@@ -1067,8 +1069,8 @@ enum CLI {
           pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
           logs <id|name>       Print or follow the log (--follow, --system)
           paths                Show the Application Support layout
-          storage [move <folder>|remove-previous]  Show or relocate the data folder
-          doctor               Check toolchain, runtime and library readiness
+          storage [move <folder>|remove-previous]  Show storage or experimentally relocate apps/data
+          doctor               Report build tools, runtime location and library status
           link                 Symlink this binary to /usr/local/bin/pearsilicon
           build <project>      Build a scheme for a device, install and launch it
 
@@ -1079,12 +1081,18 @@ enum CLI {
           --log                Write a log file and follow it
           --wait               Wait for the app to exit
           --background         Launch without activating the app or switching focus
-          --env-injection      Experimental launcher injection + per-app host service
-          --load-command       Explicitly select the legacy runtime load command
-          --sandboxed          Experimental sandbox-exec path (not with --env-injection)
+          --env-injection      Experimental DYLD insertion of the same in-process runtime
+                               with a local KV/static-device-profile host
+          --load-command       Select LC_LOAD_DYLIB runtime loading (new-install default)
+          --sandboxed          Experimental permissive sandbox-exec; not secure isolation
+                               (not supported with --env-injection)
           --env KEY=VALUE      Extra environment variable (repeatable)
           --trace              Shorthand for debug touch logging
           --lldb               (debug) attach LLDB to the launched process
+
+        REQUIREMENTS
+          The prebuilt GUI does not require Xcode. Some app preparation and storage
+          relocation paths require Command Line Tools. Project builds require full Xcode.
 
         PROJECT BUILD
           Build for a device (not the simulator) and hand the product to PearSilicon:

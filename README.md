@@ -5,8 +5,8 @@
 <h1 align="center">PearSilicon</h1>
 
 <p align="center">
-  <strong>Run iOS apps natively on Apple silicon Macs.</strong><br>
-  An independent, clean-room compatibility layer for macOS.
+  <strong>Run compatible iOS apps on Apple silicon Macs.</strong><br>
+  Mac Catalyst-based app preparation, runtime shims and input mapping.
 </p>
 
 <p align="center">
@@ -22,6 +22,8 @@
   &nbsp;·&nbsp;
   <a href="docs/CLI.md">CLI reference</a>
   &nbsp;·&nbsp;
+  <a href="docs/ARCHITECTURE.md">Architecture</a>
+  &nbsp;·&nbsp;
   <a href="#community">Community</a>
   &nbsp;·&nbsp;
   <a href="https://discord.gg/yRVC5ZCyby">Discord</a>
@@ -29,24 +31,26 @@
 
 ---
 
-PearSilicon runs iOS applications natively on arm64 Macs by translating the
-system APIs they expect. It is an independent, clean-room compatibility layer
-for applications you legally own and prepare yourself. It does not modify
-application logic or protection systems.
+PearSilicon prepares compatible arm64 iOS applications to run on macOS using
+Apple's Mac Catalyst and `/System/iOSSupport` frameworks. Its in-process runtime
+adds compatibility shims and optional keyboard/mouse mapping on top of that
+Apple-provided environment. It is not a standalone reimplementation of iOS or
+UIKit. Use it only with applications you are authorized to run.
 
 | | |
 | :--- | :--- |
-| **Install** | Drop an `.ipa` or `.app` onto the window — or use the CLI |
-| **Play** | Keymapper (opt-in), real multi-touch, Metal HUD, pointer lock |
-| **Organise** | One data folder that can live on any disk, including external drives |
-| **Extend** | Local shims for keychain, Metal, OpenGL, cloud, device, networking and more |
+| **Install** | Drop an `.ipa` onto the window; use the CLI for iOS device `.app` bundles |
+| **Input** | Opt-in keymapper, multi-touch synthesis, Metal HUD and pointer-lock controls |
+| **Organise** | Managed app/data folder with experimental storage relocation |
+| **Compatibility** | Runtime shims for keychain, graphics setup, local cloud surfaces, device identity and more |
 
 ## Features
 
-- Install an app package or an `.app` bundle and launch it as a normal macOS app.
+- Install IPA archives in the GUI or CLI; install iOS device `.app` directories
+  through the CLI.
 - Keymapper, opt-in per app and off by default: tap, hold, joystick, mouse-look
   and swipe.
-- Real multi-touch through the platform's own touch machinery.
+- Multi-touch event synthesis through the platform's touch machinery.
 - Per-app Metal HUD and pointer-lock controls.
 - Mandatory repeat-rate protection in the keymapper.
 - Local compatibility shims for keychain, screen, Metal, OpenGL, cloud, device,
@@ -57,19 +61,28 @@ application logic or protection systems.
 
 - macOS 26 or later
 - an arm64 Mac
-- for the app and its project build commands: the platform's full development
-  toolchain selected
-- for the compatibility runtime alone: the Command Line Tools are enough
+- **Prebuilt app:** opening the GUI does not require Xcode, Swift, Homebrew or a
+  source checkout. The release bundle includes PearSilicon's runtime libraries;
+  Apple's compatibility frameworks are supplied by macOS.
+- **App preparation and relocation:** some paths invoke `otool` and
+  `install_name_tool` and require Apple's Command Line Tools. Installation is
+  therefore not guaranteed to be tool-free on a clean Mac.
+- **Source/project builds:** select a full Xcode toolchain. The runtime-only
+  build can use Command Line Tools with a macOS SDK containing iOSSupport.
 
-The app checks the toolchain at launch; `pearsilicon doctor` reports it from a
-terminal. `./runtime/build.sh` works with either toolchain because the Catalyst
-frameworks ship inside the macOS SDK.
+Current development builds are ad-hoc signed, not Developer ID-signed or
+notarized, so downloaded copies may require explicit Gatekeeper approval.
+`pearsilicon doctor` reports build-tool availability, runtime location and
+library status; it does not certify game compatibility.
 
 ## Install and run
 
-1. Download the latest build from [Releases](https://github.com/denizomer10/PearSilicon/releases)
-   (the `development beta` is the newest tested build), or build the app yourself.
-2. Open PearSilicon, add an app package or `.app` bundle, and launch it.
+1. Download a build from [Releases](https://github.com/denizomer10/PearSilicon/releases),
+   or build the app yourself. The `development beta` is updated in place; its
+   notes identify the last tested commit and the scope of those checks.
+2. Unzip the download, move `PearSilicon.app` to `/Applications` and open it.
+3. Drop a prepared `.ipa` onto the window, wait for installation, and launch it.
+   Use `pearsilicon install <path-to-app>` for an iOS device `.app` directory.
 
 The same installer and launcher are available from a terminal:
 
@@ -103,28 +116,28 @@ swift test
 
 ## How it works
 
-1. The installer prepares the app for macOS: it normalizes the `Info.plist`,
-   patches the Mach-O images, and reduces universal binaries to `arm64`.
-2. By default, the runtime loads through an `LC_LOAD_DYLIB` entry. Experimental
-   `--env-injection` instead uses launcher-provided `DYLD_INSERT_LIBRARIES` and a
-   separate host for local KV state and static device-profile configuration.
-   The compatibility layer intercepts API calls
-   in-process; the original IPA is untouched, while the installed copy is prepared
-   and signed for macOS.
-3. The app is launched through LaunchServices on the `/System/iOSSupport`
-   runtime, normally activated; `--background` avoids requesting foreground focus.
-4. The runtime supplies the compatibility shims and, when enabled, the keymapper.
+1. The installer works on a copy: it normalizes `Info.plist`, thins supported
+   universal binaries to `arm64`, patches Mach-O platform metadata to
+   **Mac Catalyst (6)**, adds compatibility dependencies, and re-signs the copy.
+   The input IPA is not changed; the installed app is modified.
+2. By default, `LC_LOAD_DYLIB` loads `libPearRuntime.dylib` **inside the app's
+   process**. Experimental `--env-injection` uses launcher-provided
+   `DYLD_INSERT_LIBRARIES` to load the **same full runtime**, not selected shims.
+3. The launcher uses Apple's `/System/iOSSupport` frameworks, including UIKit.
+   Normal launches use LaunchServices; `--background` avoids requesting focus.
+4. Runtime hooks adjust specific API behavior and, when enabled, map input.
+   They do not replace UIKit, the kernel, or the app's Metal renderer.
 
-IPA packages can be dropped straight onto the app window to install, and the
-whole data folder (apps, saves, keymaps, ODR, keychain, logs) can be moved to
-another disk — see [storage location](docs/CLI.md#storage-location).
+The experimental [host-service split](docs/CLI.md#experimental-host-service-split)
+moves only local key-value backing state and static device-profile configuration
+to a separate process. UIKit, input, rendering, audio, device API hooks and
+keychain handling remain in-process. This is not kernel-level iOS emulation or
+a security sandbox for untrusted apps.
 
-The experimental [A / Proton-style split](docs/CLI.md#experimental-a--proton-style-host-split)
-does not yet shrink the injected library: UIKit, input/rendering, device and
-keychain hooks remain in-process. The host-resolved device profile is handed
-off before launch and read from a shared C snapshot, with no IPC on device or
-network-header lookup paths. It is not kernel-level iOS emulation or a security
-sandbox for hostile games.
+See [Architecture](docs/ARCHITECTURE.md) for the execution model, its limited
+Wine/Proton analogy and the scope of comparisons with PlayCover. No controlled
+benchmarks currently establish lower memory/CPU use, higher FPS or lower latency
+than PlayCover. A successful launch check is not a gameplay compatibility result.
 
 ### Compatibility shims
 
@@ -132,12 +145,12 @@ sandbox for hostile games.
 | --- | --- |
 | `KeychainShim` | local keychain store and software key generation |
 | `ScreenShim` | make `UIScreen` follow the key window |
-| `MetalLayerShim` | provide a Metal device and a usable drawable |
+| `MetalLayerShim` | fix existing Metal device/layer/drawable and texture setup; not a replacement renderer |
 | `GLShim` | OpenGL ES entry point and drawable fitting |
 | `CredentialShim` | safe client-credential handling |
 | `CloudShim` | local-only key-value, ubiquity, CloudKit and GameKit surface |
 | `DeviceShim` | coherent device identity |
-| `PathShim` | keep app data, group containers and temporary files contained |
+| `PathShim` | redirect supported home, group-container and temporary-directory APIs; not filesystem isolation |
 | `PointerLockShim` | per-app pointer-lock control |
 | `ODRShim` | resolve packaged and user-supplied on-demand resources |
 | `ServicesShim` | audio-session, haptics, store availability, remote-notification and background-task surfaces |
@@ -146,18 +159,30 @@ sandbox for hostile games.
 | `BeepShim` | silence the alert beep for unhandled keys |
 | `libswiftUIKit` | source-built Swift UIKit compatibility overlay |
 
-Each shim can be disabled with its `PEAR_NO_*` variable.
+Opt-outs are shim-specific, for example `PEAR_NO_METAL_FIX=1` and
+`PEAR_NO_CLOUD_SHIM=1`. Not every component has a matching `PEAR_NO_*` switch;
+consult its source before using an override.
 
 ## App data
 
-App data is kept under:
+The default runtime data location is:
 
 ```
 ~/Library/Application Support/PearSilicon/Games/<bundle-id>/
   Documents/  Library/  Library/Caches/  Library/Group Containers/  tmp/
 ```
 
-Override the root with `PEAR_HOME_DIR`.
+The launcher supplies `PEAR_HOME_DIR` for the app's data directory and
+`PEAR_SUPPORT_ROOT`, `PEAR_KEYCHAIN_DIR` and `PEAR_ODR_PATH` for other managed
+paths. It may reuse an existing macOS container when that contains the app's
+previous data. `PEAR_HOME_DIR` alone does not move the library or all other stores.
+
+Experimental relocation is available in **Settings → Storage location** and
+`pearsilicon storage move <folder>`. Launch moved games through PearSilicon:
+direct Finder launches do not infer the selected storage root. Back up saves,
+keep the previous copy and test the destination before removing it. External-disk
+migration has not been validated end to end; see
+[storage location](docs/CLI.md#storage-location) for checks and limitations.
 
 Some apps keep content in On-Demand Resources that their package does not
 carry. Put those bundles in the per-app ODR folder:
@@ -167,9 +192,9 @@ carry. Put those bundles in the per-app ODR folder:
 ```
 
 The folder accepts flat bundle files or a copy of the Addressables tree with a
-`BuildTarget/` subdirectory. At launch the runtime merges it with the bundles
-inside the app, without copying the files. Override the folder with
-`PEAR_ODR_PATH=<dir>`.
+`BuildTarget/` subdirectory. At launch the runtime merges these with packaged
+bundles using symlinks where possible, falling back to copying if symlink creation
+fails. Override the folder with `PEAR_ODR_PATH=<dir>`.
 
 ## Per-app options
 
@@ -183,8 +208,9 @@ Repeat-rate protection is always on and not configurable.
 ## Keymapper
 
 The keymapper is opt-in and off by default. It can record a physical key, add a
-tap, hold, joystick, mouse-look or swipe binding, and clear all bindings. Edits
-apply live.
+tap, hold, joystick, mouse-look or swipe binding, and clear all bindings. Saved
+binding edits can reload while the keymapper is active. Enabling or disabling
+the keymapper takes effect on the next launch.
 
 A keymap is a small JSON file per app:
 
@@ -202,24 +228,25 @@ A keymap is a small JSON file per app:
 ## Diagnostics
 
 - `PEAR_LOG_FILE=<path>` writes the runtime log to a file.
-- The iOS-like filesystem view is applied to every launch.
+- Launcher-managed compatibility launches enable an iOS-like filesystem view
+  through hooks and request a permissive macOS sandbox profile. This is not iOS
+  kernel emulation or secure per-app isolation.
 - `PEAR_ODR_PATH=<dir>` overrides the per-app folder for On-Demand Resources.
 - `PEAR_DEBUG_SERVICES=1` logs the installed service surfaces.
 - `PEAR_DEBUG_TOUCH`, `PEAR_DEBUG_SCREEN`, `PEAR_DEBUG_GL` and
   `PEAR_DEBUG_CLOUD` add logging.
-- `PEAR_NO_*` disables a shim.
-- `PEAR_DISABLE` loads the runtime without enabling its shims.
-- `pearsilicon doctor` checks the toolchain, runtime and library.
+- Supported `PEAR_NO_*` variables opt out of specific hooks; names and behavior vary.
+- `PEAR_DISABLE=1` skips the main runtime bootstrap, including the keymapper;
+  separate shim initializers can still run. It is not a global no-hooks mode.
+- `pearsilicon doctor` reports build tools, runtime location and library status.
 
-## Clean-room
+## Scope and licensing
 
-PearSilicon is an independent implementation written from scratch. It contains
-no copied platform or application code, and it redistributes no platform
-headers, frameworks, or binaries.
+PearSilicon's source is MIT-licensed. It depends on Apple frameworks supplied by
+macOS; those frameworks and the apps you install retain their respective licenses.
+The project is intended for interoperability and educational use with apps you
+are authorized to run. It does not provide app licenses, accounts or iOS firmware.
 
-The compatibility layer is original work, intended only for applications you
-legally own and prepare yourself. It is provided for interoperability and
-educational use.
 
 ## Community
 

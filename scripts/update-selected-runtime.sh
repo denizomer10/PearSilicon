@@ -1,5 +1,6 @@
 #!/bin/bash
-# Refresh the runtime in selected installed apps without touching the others.
+# Local development helper: refresh selected apps in the default library only.
+# Uses the checkout path below and does not handle relocated storage roots.
 set -uo pipefail
 ROOT="/Users/mac/pearsilicone"
 LIBRARY="$HOME/Library/Application Support/PearSilicon/Applications"

@@ -14,7 +14,7 @@ import Foundation
     case compatibility
     /// Same in-process runtime, but loaded by the launcher through
     /// `DYLD_INSERT_LIBRARIES` instead of an `LC_LOAD_DYLIB` in the app binary.
-    /// Experimental path for the Proton-style host/injection split.
+    /// Experimental launcher loading with a local KV/static-device-profile host.
     case compatibilityEnvironment
     case nativeContainer
 }
@@ -689,7 +689,7 @@ final class PackageInstaller: @unchecked Sendable {
         }
 
         // The host does not provide the Swift UIKit overlay. Ship our small
-        // clean-room bridge next to the runtime, for frameworks that link it.
+        // source-built bridge next to the runtime, for frameworks that link it.
         let swiftOverlay = runtime.deletingLastPathComponent()
             .appendingPathComponent("libswiftUIKit.dylib")
         if fileManager.fileExists(atPath: swiftOverlay.path) {

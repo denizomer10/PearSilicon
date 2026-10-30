@@ -171,7 +171,7 @@ xcrun --sdk macosx clang++ \
 file "$CXX_COMPAT"
 
 # Some Swift SDKs link against the UIKit Swift overlay, which the Mac Catalyst
-# host runtime does not ship. Build the small clean-room overlay used by the
+# host runtime does not ship. Build the small source-built overlay used by the
 # installer. It contains only public API bridges from runtime/swift/.
 echo ">> Building $SWIFT_OVERLAY (Swift UIKit compatibility)"
 CLANG_TARGET="arm64-apple-ios15.0-macabi"
