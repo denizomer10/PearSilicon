@@ -101,8 +101,8 @@ struct ContentView: View {
 
     // MARK: - Drop
 
-    /// The GUI installs IPA archives; `.app` directory installation currently
-    /// requires the CLI, despite the accepted content types below.
+    /// The GUI accepts both IPA archives and iOS device `.app` bundles; the
+    /// package boundary routes each to its matching installer.
     private var packageContentTypes: [UTType] {
         ["ipa", "app", "app package"].compactMap { UTType(filenameExtension: $0) } + [.data]
     }
@@ -126,7 +126,7 @@ struct ContentView: View {
         if !urls.isEmpty {
             await state.install(packageURLs: urls)
         } else if !providers.isEmpty {
-            state.statusMessage = L10n.error("Drop an .ipa package to install it; use the CLI for .app bundles")
+            state.statusMessage = L10n.error("Drop a local .ipa archive or .app bundle to install it")
         }
     }
 }

@@ -41,7 +41,7 @@ UIKit. Use it only with applications you are authorized to run.
 
 | | |
 | :--- | :--- |
-| **Install** | Drop an `.ipa` onto the window; use the CLI for iOS device `.app` bundles |
+| **Install** | Drop an `.ipa` archive or an iOS device `.app` bundle onto the window |
 | **Input** | Opt-in keymapper, multi-touch synthesis, Metal HUD and pointer-lock controls |
 | **Organise** | Managed app/data folder with experimental storage relocation |
 | **Compatibility** | Runtime shims for keychain, graphics setup, local cloud surfaces, device identity and more |
@@ -58,14 +58,13 @@ a prerelease updated in place. Its notes identify the artifact's last tested
 commit and the exact scope of those checks. This is not a stable-release promise
 or a verified catalog of playable games.
 
-IPA drop handling, host/environment injection and storage relocation are
-current development features. Consult the beta's artifact notes: source changes
+IPA/`.app` package drop handling, host/environment injection and storage
+relocation are current development features. Consult the beta's artifact notes: source changes
 can be newer than the published ZIP.
 
 ## Features
 
-- Install IPA archives in the GUI or CLI; install iOS device `.app` directories
-  through the CLI.
+- Install IPA archives and iOS device `.app` bundles through the GUI or CLI.
 - Keymapper, opt-in per app and off by default: tap, hold, joystick, mouse-look
   and swipe.
 - Multi-touch event synthesis through the platform's touch machinery.
@@ -99,9 +98,10 @@ library status; it does not certify game compatibility.
    or build the app yourself. The beta is updated in place; its
    notes identify the last tested commit and the scope of those checks.
 2. Unzip the download, move `PearSilicon.app` to `/Applications` and open it.
-3. Use the **Install** button to select a prepared `.ipa`, wait for installation,
-   and launch it. Development builds also accept IPA drops onto the window.
-   Use `pearsilicon install <path-to-app>` for an iOS device `.app` directory.
+3. Use the **Install** button to select a prepared `.ipa` or an iOS device
+   `.app` bundle, wait for installation, and launch it. Development builds also
+   accept those packages as drops onto the window. `pearsilicon install
+   <path-to-app>` remains available for scripts.
 
 The same installer and launcher are available from a terminal:
 

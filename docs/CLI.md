@@ -7,7 +7,7 @@ differ in places; for example, `.app` directory installation is currently a CLI
 workflow. See [Architecture](ARCHITECTURE.md) for the execution model.
 
 This reference tracks development source. Host/environment injection, storage
-relocation and GUI IPA drop handling are not in stable v0.2.0; published artifacts
+relocation and GUI package drop handling are not in stable v0.2.0; published artifacts
 can lag behind the source. See [release channels](../README.md#release-channels)
 and the notes for the build you downloaded.
 
@@ -139,9 +139,9 @@ requires that toolchain and stops with setup instructions if it is unavailable.
 - **`.app` directory** — an arm64 iOS device-build bundle. Unsupported binaries,
   including simulator builds, cannot be made compatible by renaming the bundle.
 
-IPA archives can also be **dragged onto the main window**. For `.app` directories,
-use `pearsilicon install <path-to-app>`: the GUI currently routes accepted URLs
-through the archive installer and does not implement the directory-install path.
+IPA archives and iOS device `.app` bundles can also be selected in or dragged
+onto the main window. The GUI routes each input to the matching installer and
+serializes overlapping requests; the CLI remains available for scripting.
 
 The GUI and CLI share the preparation pipeline: read-only whole-bundle preflight
 → sibling staged copy → `Info.plist` and signature-sidecar preparation → bounded
