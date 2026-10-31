@@ -51,6 +51,10 @@ final class WineReleaseIntegrationTests: XCTestCase {
         let engine = try await WineReleaseService().install(check, store: store)
         XCTAssertEqual(engine.distribution, .wineHQ)
         XCTAssertEqual(engine.version, "11.21")
+        XCTAssertTrue(engine.executablePath.contains("/bin/"))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: engine.rootURL.appendingPathComponent("Runtime/lib").path
+        ))
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: engine.executableURL.path))
         XCTAssertNoThrow(try engine.validate())
         XCTAssertEqual(try store.engines().map(\.id), [engine.id])

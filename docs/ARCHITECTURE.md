@@ -55,6 +55,12 @@ public Atom feed and asset page provide the same tag and hash. The tar archive i
 listed and path-admitted before extraction, then the runtime is moved into place
 without a second copy. GPTK is no longer supported.
 
+Graphics selection is per game: MoltenVK is the default and bundled; DXMT is an
+optional per-engine overlay installed from `3Shain/dxmt`; KosmicKrisp is an
+optional arm64 ICD installed from `Anonymous137-sudo/Khronos_AppleICDs`. The
+current macOS WineHQ engines are x86_64, so KosmicKrisp is rejected rather than
+silently degraded when selected with them.
+
 ## Updates and runtime refresh
 
 Update checks are explicit user actions against `denizomer10/PearSilicon`. After

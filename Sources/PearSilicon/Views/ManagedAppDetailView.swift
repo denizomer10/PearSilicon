@@ -263,6 +263,53 @@ struct ManagedAppDetailView: View {
                 }
                 .labelsHidden()
             }
+
+            Text("Graphics API").font(.caption).foregroundStyle(.secondary)
+                .padding(.top, 4)
+            Picker("Graphics API", selection: Binding(
+                get: { state.graphicsBackend(for: entry) },
+                set: { state.setGraphicsBackend($0, for: entry) }
+            )) {
+                ForEach(LibraryManifest.GraphicsBackend.allCases) { backend in
+                    Text(backend.title).tag(backend)
+                }
+            }
+            .labelsHidden()
+            Text(state.graphicsBackend(for: entry).detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if state.graphicsBackend(for: entry) == .dxmt,
+               !state.isGraphicsComponentInstalled(.dxmt, for: entry) {
+                Text("DXMT is not installed for this engine; install it in Settings → Wine.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                Button("Install DXMT") {
+                    Task { await state.installGraphicsComponent(.dxmt, for: entry) }
+                }
+                .buttonStyle(.glass)
+                .disabled(state.isBusy)
+            }
+            if state.graphicsBackend(for: entry) == .kosmicKrisp {
+                let engine = state.engine(id: entry.manifest.wineEngineID)
+                let archs = engine.flatMap {
+                    try? Shell.run("/usr/bin/lipo", ["-archs", $0.executableURL.path])
+                } ?? ""
+                if !archs.split(whereSeparator: \.isWhitespace).contains("arm64") {
+                    Text("KosmicKrisp is arm64-only; this Wine engine is x86_64.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                } else if !state.isGraphicsComponentInstalled(.kosmicKrisp, for: entry) {
+                    Text("KosmicKrisp is not installed for this engine.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    Button("Install KosmicKrisp") {
+                        Task { await state.installGraphicsComponent(.kosmicKrisp, for: entry) }
+                    }
+                    .buttonStyle(.glass)
+                    .disabled(state.isBusy)
+                }
+            }
         }
     }
 
@@ -273,7 +320,7 @@ struct ManagedAppDetailView: View {
                       systemImage: entry.platform == .wine ? "lock.shield" : "desktopcomputer")
                     .font(.callout.weight(.medium))
                 Text(entry.platform == .wine
-                     ? "Windows games run with a per-game prefix. Host drive mappings are removed and the process is sandboxed. This is process-level isolation, not a virtual machine; a game that needs a kernel driver or anti-cheat will not work."
+                     ? "Windows games run with a per-game prefix and a private engine. Host drive mappings are removed. Wine runs directly because a nested sandbox breaks Rosetta/wineserver; this is not a virtual machine, a security sandbox, or an anti-cheat-safe environment."
                      : ManagedAppService.isolationNotice)
                     .font(.caption)
                     .foregroundStyle(.secondary)

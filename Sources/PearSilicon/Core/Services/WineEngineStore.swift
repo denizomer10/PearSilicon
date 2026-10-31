@@ -35,6 +35,14 @@ struct WineEngine: Codable, Hashable, Identifiable, Sendable {
         let runtime = rootURL.appendingPathComponent("Runtime", isDirectory: true)
         _ = try ManagedAppFiles.existingDirectory(runtime)
         try ManagedAppFiles.validateTree(runtime)
+        guard executablePath.contains("/bin/"),
+              FileManager.default.fileExists(atPath: runtime.appendingPathComponent("bin").path),
+              FileManager.default.fileExists(atPath: runtime.appendingPathComponent("lib").path)
+                || FileManager.default.fileExists(atPath: runtime.appendingPathComponent("share").path) else {
+            throw PearError.invalidPackage(
+                "Incomplete Wine engine: reinstall it so Runtime contains bin, lib and share. A launcher-only copy cannot initialize a prefix."
+            )
+        }
         let executable = try ManagedAppFiles.regularFile(executableURL, inside: runtime)
         // A shell wrapper may escape its package or use an ambient Wine. Select
         // the package's actual native wine/wine64 binary instead.
@@ -126,8 +134,17 @@ struct WineEngineStore: Sendable {
         let madeRoot = !ManagedAppFiles.exists(root)
         if madeRoot { try ManagedAppFiles.makeDirectory(root) }
         let destination = root.appendingPathComponent(id, isDirectory: true)
-        guard !ManagedAppFiles.exists(destination) else {
-            throw PearError.invalidPackage("A Wine engine with this version is already installed")
+        if ManagedAppFiles.exists(destination) {
+            // Repair a previous launcher-only install of the same version, but
+            // never replace a working engine silently.
+            let manifestURL = destination.appendingPathComponent(WineEngine.manifestFilename)
+            let existing = (try? JSONDecoder().decode(
+                WineEngine.self, from: Data(contentsOf: manifestURL)
+            ))
+            if let existing, (try? existing.validate()) != nil {
+                throw PearError.invalidPackage("A Wine engine with this version is already installed")
+            }
+            try FileManager.default.removeItem(at: destination)
         }
         do {
             try ManagedAppFiles.makeDirectory(destination)

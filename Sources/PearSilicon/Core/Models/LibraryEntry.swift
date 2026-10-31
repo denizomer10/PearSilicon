@@ -25,6 +25,28 @@ enum LibraryPlatform: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 struct LibraryManifest: Codable, Hashable, Sendable {
+    enum GraphicsBackend: String, Codable, CaseIterable, Identifiable, Sendable {
+        case moltenVK = "moltenvk"
+        case dxmt
+        case kosmicKrisp = "kosmickrisp"
+
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .moltenVK: "MoltenVK"
+            case .dxmt: "DXMT"
+            case .kosmicKrisp: "KosmicKrisp"
+            }
+        }
+        var detail: String {
+            switch self {
+            case .moltenVK: "Vulkan → Metal (bundled with Wine); default"
+            case .dxmt: "Direct3D 10/11 → Metal; requires the DXMT component"
+            case .kosmicKrisp: "Mesa Vulkan → Metal; requires an arm64 Wine engine"
+            }
+        }
+    }
+
     static let filename = "pear-app.json"
     var formatVersion: Int = 1
     var id: String
@@ -36,6 +58,7 @@ struct LibraryManifest: Codable, Hashable, Sendable {
     var createdAt: Date = Date()
     var wineEngineID: String? = nil
     var metalHUDEnabled: Bool = false
+    var graphicsBackend: GraphicsBackend? = nil
     var runtimeRevision: String? = nil
     /// Used only for rebasing iOS absolute load commands after a library is moved.
     var preparedDirectoryPath: String? = nil

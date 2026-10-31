@@ -106,6 +106,7 @@ final class AppState: ObservableObject {
     private let portableLibrary: PortableLibrary
     private let wineStore: WineEngineStore
     private let wineReleases = WineReleaseService()
+    private let graphicsComponents = GraphicsComponentService()
     private lazy var updater = AppUpdateService()
 
     @Published private(set) var wineReleaseCheck: WineReleaseCheck?
@@ -478,6 +479,35 @@ final class AppState: ObservableObject {
 
     func setWineEngine(_ engineID: String, for entry: LibraryEntry) {
         updateManifest(entry) { $0.wineEngineID = engineID }
+    }
+
+    func setGraphicsBackend(_ backend: LibraryManifest.GraphicsBackend, for entry: LibraryEntry) {
+        updateManifest(entry) { $0.graphicsBackend = backend }
+    }
+
+    func graphicsBackend(for entry: LibraryEntry) -> LibraryManifest.GraphicsBackend {
+        entry.manifest.graphicsBackend ?? .moltenVK
+    }
+
+    func isGraphicsComponentInstalled(
+        _ backend: LibraryManifest.GraphicsBackend, for entry: LibraryEntry
+    ) -> Bool {
+        guard let engine = engine(id: entry.manifest.wineEngineID) else { return false }
+        switch backend {
+        case .moltenVK:
+            return true
+        case .dxmt:
+            return FileManager.default.fileExists(
+                atPath: engine.rootURL.appendingPathComponent("Graphics/DXMT/x86_64-windows/d3d11.dll").path
+            )
+        case .kosmicKrisp:
+            let driver = engine.rootURL.appendingPathComponent("Graphics/KosmicKrisp")
+            let archs = (try? Shell.run("/usr/bin/lipo", ["-archs", engine.executableURL.path])) ?? ""
+            return archs.split(whereSeparator: \.isWhitespace).contains("arm64")
+                && FileManager.default.fileExists(
+                    atPath: driver.appendingPathComponent("share/vulkan/icd.d/avk143_kosmickrisp_icd.aarch64.json").path
+                )
+        }
     }
 
     func isQuarantined(_ entry: LibraryEntry) -> Bool {
@@ -1120,6 +1150,31 @@ final class AppState: ObservableObject {
             statusMessage = "Installed \(engine.name) \(engine.version)"
         } catch {
             statusMessage = L10n.error("Wine install failed: \(error.localizedDescription)")
+        }
+    }
+
+    func installGraphicsComponent(
+        _ backend: LibraryManifest.GraphicsBackend, for entry: LibraryEntry
+    ) async {
+        guard backend != .moltenVK else { return }
+        guard !isBusy, let engine = engine(id: entry.manifest.wineEngineID) else { return }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            statusMessage = "Fetching \(backend.title)…"
+            let service = graphicsComponents
+            if backend == .dxmt {
+                let asset = try await service.latestDXMT()
+                statusMessage = "Installing DXMT \(asset.tag)…"
+                _ = try await service.installDXMT(asset, engineRoot: engine.rootURL)
+            } else {
+                let asset = try await service.latestKosmicKrisp()
+                statusMessage = "Installing KosmicKrisp \(asset.tag)…"
+                _ = try await service.installKosmicKrisp(asset, engineRoot: engine.rootURL)
+            }
+            statusMessage = "Installed \(backend.title) for \(engine.name)"
+        } catch {
+            statusMessage = L10n.error("\(backend.title) install failed: \(error.localizedDescription)")
         }
     }
 

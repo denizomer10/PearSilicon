@@ -453,8 +453,10 @@ actor WineReleaseService {
         }
     }
 
-    /// Finds the shallowest native `wine64`/`wine` executable and derives the
-    /// runtime root that contains `bin`, `lib` and `share`.
+    /// Finds the shallowest executable inside a real Wine runtime `bin`
+    /// directory. The macOS packages also contain a tiny `Contents/MacOS/wine`
+    /// launcher; selecting that file would install only the launcher and leave
+    /// `bin`, `lib` and `share` behind.
     static func findWineExecutable(in extracted: URL) throws -> (root: URL, relativeExecutable: String) {
         guard let enumerator = FileManager.default.enumerator(
             at: extracted, includingPropertiesForKeys: [.isRegularFileKey, .isExecutableKey],
@@ -462,25 +464,36 @@ actor WineReleaseService {
         ) else {
             throw WineReleaseError.invalid("Could not inspect the extracted Wine runtime")
         }
-        var best: (url: URL, depth: Int)?
+        var best: (url: URL, depth: Int, isWine64: Bool)?
         var visited = 0
         for case let url as URL in enumerator {
             visited += 1
             if visited > maximumEntries { break }
             guard ["wine64", "wine"].contains(url.lastPathComponent) else { continue }
+            let parent = url.deletingLastPathComponent()
+            guard parent.lastPathComponent == "bin" else { continue }
+            let runtimeRoot = parent.deletingLastPathComponent()
+            guard FileManager.default.fileExists(atPath: runtimeRoot.appendingPathComponent("lib").path)
+                    || FileManager.default.fileExists(atPath: runtimeRoot.appendingPathComponent("share").path) else {
+                continue
+            }
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isExecutableKey])
             guard values?.isRegularFile == true, values?.isExecutable == true else { continue }
             guard (try? ManagedExecutable.validateMacOS(url)) != nil else { continue }
             let depth = url.pathComponents.count
-            if best == nil || depth < best!.depth {
-                best = (url, depth)
+            let isWine64 = url.lastPathComponent == "wine64"
+            if best == nil || depth < best!.depth
+                || (depth == best!.depth && isWine64 && !best!.isWine64) {
+                best = (url, depth, isWine64)
             }
         }
         guard let executable = best?.url else {
-            throw WineReleaseError.invalid("The archive contains no native Wine executable")
+            throw WineReleaseError.invalid(
+                "The archive contains no complete Wine runtime with bin/wine64, lib and share"
+            )
         }
         let parent = executable.deletingLastPathComponent()
-        let root = parent.lastPathComponent == "bin" ? parent.deletingLastPathComponent() : parent
+        let root = parent.deletingLastPathComponent()
         guard LibraryPath.isInside(executable, root: root) else {
             throw WineReleaseError.invalid("The Wine executable escapes its runtime root")
         }

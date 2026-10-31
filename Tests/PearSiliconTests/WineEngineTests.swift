@@ -156,8 +156,9 @@ final class WineEngineTests: XCTestCase {
             from: fixture.windowsFolder(name: "Game Two"), executablePath: "bin/Game.exe", libraryRoot: fixture.library, engineID: engine.id
         )
         let plan = try service.launchConfiguration(for: first, engine: engine, metalHUDEnabled: true)
-        XCTAssertEqual(plan.executableURL.path, "/usr/bin/sandbox-exec")
-        XCTAssertEqual(plan.arguments, ["-p", plan.sandboxProfile, engine.executableURL.path, first.payloadURL.path])
+        XCTAssertEqual(plan.executableURL, engine.executableURL)
+        XCTAssertEqual(plan.arguments, [first.payloadURL.path])
+        XCTAssertTrue(plan.sandboxProfile.isEmpty, "Wine now launches directly for Rosetta/wineserver compatibility")
         XCTAssertEqual(plan.workingDirectoryURL, first.payloadURL.deletingLastPathComponent())
         XCTAssertEqual(plan.environment["WINEPREFIX"], first.prefixURL.path)
         XCTAssertEqual(plan.environment["HOME"], first.dataURL.path)
@@ -169,19 +170,13 @@ final class WineEngineTests: XCTestCase {
             "DYLD_INSERT_LIBRARIES": "/host/inject", "PEAR_HOME_DIR": "/host/home", "WINEPREFIX": "/shared",
             "WINESERVER": "/host/server", "WINELOADER": "/host/loader", "PATH": "/host/bin"
         ])
-        XCTAssertNil(environment["WINESERVER"])
-        XCTAssertNil(environment["WINELOADER"])
-        XCTAssertFalse(environment.keys.contains { $0.hasPrefix("DYLD_") || $0.hasPrefix("PEAR_") })
+        XCTAssertEqual(environment["WINESERVER"], engine.executableURL.deletingLastPathComponent().appendingPathComponent("wineserver").path)
+        XCTAssertEqual(environment["WINELOADER"], engine.executableURL.path)
+        XCTAssertNil(environment["DYLD_INSERT_LIBRARIES"])
+        XCTAssertFalse(environment.keys.contains { $0.hasPrefix("PEAR_") })
         XCTAssertEqual(environment["WINEDLLOVERRIDES"], "winemenubuilder.exe=d")
-        let writes = try XCTUnwrap(plan.sandboxProfile.split(separator: "\n").first { $0.contains("allow file-write*") })
-        XCTAssertTrue(writes.contains(first.dataURL.path))
-        XCTAssertTrue(writes.contains(first.prefixURL.path))
-        XCTAssertFalse(writes.contains("/Payload"))
-        XCTAssertFalse(writes.contains(engine.rootURL.path))
-        XCTAssertFalse(plan.sandboxProfile.contains(second.directoryURL.path))
-        XCTAssertTrue(plan.sandboxProfile.contains("(subpath \"\(engine.rootURL.appendingPathComponent("Runtime").path)\")"))
-        XCTAssertFalse(plan.sandboxProfile.contains("(subpath \"\(engine.rootURL.path)\")"))
-        XCTAssertFalse(plan.sandboxProfile.contains("(allow default)"))
+        XCTAssertEqual(environment["WINEDLLPATH"], engine.rootURL.appendingPathComponent("Runtime/lib/wine").path)
+        XCTAssertNil(environment["VK_ICD_FILENAMES"])
     }
 
     func testMissingMismatchedAndEscapingEngineDescriptorsCannotProduceLaunchPlan() throws {

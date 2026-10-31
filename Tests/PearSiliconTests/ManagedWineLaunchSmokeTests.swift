@@ -9,6 +9,38 @@ import XCTest
 @MainActor
 final class ManagedWineLaunchSmokeTests: XCTestCase {
 
+    func testLaunchesTheInstalledWineEntryWhenConfigured() async throws {
+        guard let entryPath = ProcessInfo.processInfo.environment["PEAR_INSTALLED_WINE_ENTRY"],
+              let enginePath = ProcessInfo.processInfo.environment["PEAR_INSTALLED_WINE_ENGINE"] else {
+            throw XCTSkip("Set PEAR_INSTALLED_WINE_ENTRY and PEAR_INSTALLED_WINE_ENGINE")
+        }
+        let entryDirectory = URL(fileURLWithPath: entryPath, isDirectory: true).standardizedFileURL
+        let engineDirectory = URL(fileURLWithPath: enginePath, isDirectory: true).standardizedFileURL
+        let manifest = try JSONDecoder().decode(
+            LibraryManifest.self,
+            from: Data(contentsOf: entryDirectory.appendingPathComponent(LibraryManifest.filename))
+        )
+        var engine = try JSONDecoder().decode(
+            WineEngine.self,
+            from: Data(contentsOf: engineDirectory.appendingPathComponent(WineEngine.manifestFilename))
+        )
+        engine.rootURL = engineDirectory
+        let entry = LibraryEntry(manifest: manifest, directoryURL: entryDirectory)
+
+        let process = try await ManagedAppService().launch(entry, engine: engine, activate: false)
+        defer { process.stop() }
+        try await Task.sleep(for: .seconds(8))
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: entry.prefixURL.appendingPathComponent("system.reg").path),
+            "Wine did not create the private prefix"
+        )
+        if !process.isRunning {
+            let log = entry.dataURL.appendingPathComponent("launch.log")
+            print("Game process exited early; log:\n\((try? String(contentsOf: log, encoding: .utf8)) ?? "")")
+        }
+        process.stop()
+    }
+
     func testFakeWineBootstrapsAPrivatePrefixLaunchesAndStops() async throws {
         let clang = "/usr/bin/clang"
         guard FileManager.default.isExecutableFile(atPath: clang) else {
@@ -53,6 +85,13 @@ final class ManagedWineLaunchSmokeTests: XCTestCase {
         guard compile.terminationStatus == 0 else {
             throw XCTSkip("Could not compile the fake Wine engine: \(String(decoding: output, as: UTF8.self))")
         }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("EngineSource/lib", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("fixture runtime".utf8).write(
+            to: root.appendingPathComponent("EngineSource/lib/runtime.dat")
+        )
 
         let engine = try WineEngineStore(rootURL: root.appendingPathComponent("Engines"))
             .registerLocalEngine(

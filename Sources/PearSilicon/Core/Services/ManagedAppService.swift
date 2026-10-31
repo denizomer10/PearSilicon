@@ -136,6 +136,36 @@ struct ManagedAppService: Sendable {
                 throw PearError.launchFailed("Select the Wine engine recorded in this game's manifest")
             }
             try engine.validate()
+            let runtime = engine.rootURL.appendingPathComponent("Runtime", isDirectory: true)
+            let backend = entry.manifest.graphicsBackend ?? .moltenVK
+            switch backend {
+            case .moltenVK:
+                break
+            case .dxmt:
+                let dxmt = engine.rootURL.appendingPathComponent("Graphics/DXMT", isDirectory: true)
+                guard FileManager.default.fileExists(atPath: dxmt.appendingPathComponent("x86_64-windows/d3d11.dll").path),
+                      FileManager.default.fileExists(atPath: dxmt.appendingPathComponent("x86_64-unix/winemetal.so").path) else {
+                    throw PearError.launchFailed(
+                        "DXMT is selected but not installed for this engine. Install it in Settings → Wine → Graphics components."
+                    )
+                }
+            case .kosmicKrisp:
+                let archs = (try? Shell.run("/usr/bin/lipo", ["-archs", engine.executableURL.path])) ?? ""
+                guard archs.split(whereSeparator: \.isWhitespace).contains("arm64") else {
+                    throw PearError.launchFailed(
+                        "KosmicKrisp is arm64-only; this Wine engine is x86_64. Register an arm64 Wine engine to use it."
+                    )
+                }
+                let icd = engine.rootURL.appendingPathComponent(
+                    "Graphics/KosmicKrisp/share/vulkan/icd.d/avk143_kosmickrisp_icd.aarch64.json"
+                )
+                guard FileManager.default.fileExists(atPath: icd.path) else {
+                    throw PearError.launchFailed(
+                        "KosmicKrisp is selected but not installed for this engine. Install it in Settings → Wine → Graphics components."
+                    )
+                }
+            }
+            _ = runtime
             let archs = (try? Shell.run("/usr/bin/lipo", ["-archs", engine.executableURL.path])) ?? ""
             if !archs.split(whereSeparator: \.isWhitespace).contains("arm64"),
                !FileManager.default.fileExists(atPath: "/Library/Apple/usr/libexec/oah") {
@@ -150,18 +180,9 @@ struct ManagedAppService: Sendable {
         case .iOS:
             throw PearError.invalidPackage("Use the iOS launcher for an iOS library entry")
         }
-        let profile = entry.platform == .wine ? try Self.sandboxProfile(for: entry, engine: engine) : ""
-        let configuredExecutable: URL
-        let configuredArguments: [String]
-        if entry.platform == .wine {
-            configuredExecutable = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-            configuredArguments = ["-p", profile, executable.path] + arguments
-        } else {
-            // Native launch: no sandbox wrapper, VM or emulation layer. The
-            // private HOME/TMPDIR still keep the app's own data in its entry.
-            configuredExecutable = executable
-            configuredArguments = arguments
-        }
+        let profile = ""
+        let configuredExecutable = executable
+        let configuredArguments = arguments
         return ManagedAppLaunchConfiguration(
             executableURL: configuredExecutable,
             arguments: configuredArguments,
@@ -170,7 +191,8 @@ struct ManagedAppService: Sendable {
         )
     }
 
-    /// Wine bootstrap and the game both inherit the same mandatory sandbox.
+    /// Wine bootstrap and the game run as direct native processes. The private
+    /// prefix and redirected HOME stay in place; host drive mappings are removed.
     /// Only a direct child Process is tracked/stopped; detached Wine helpers may
     /// outlive it. We never kill by PID supplied by a caller or by bundle ID.
     @MainActor
@@ -178,10 +200,6 @@ struct ManagedAppService: Sendable {
         _ entry: LibraryEntry, engine: WineEngine? = nil,
         metalHUDEnabled: Bool? = nil, activate: Bool = true
     ) async throws -> ManagedAppProcess {
-        if entry.platform == .wine,
-           !FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") {
-            throw PearError.launchFailed("sandbox-exec is unavailable; refusing an unconfined Wine launch")
-        }
         guard !runningProcesses.contains(where: { $0.entryDirectoryURL == entry.directoryURL.standardizedFileURL }) else {
             throw PearError.launchFailed("This managed entry already has a tracked running process")
         }
@@ -193,7 +211,7 @@ struct ManagedAppService: Sendable {
         if entry.platform == .wine,
            !ManagedAppFiles.exists(entry.prefixURL.appendingPathComponent("system.reg")) {
             guard let engine else { throw PearError.launchFailed("A Wine engine is required") }
-            configuration.arguments = ["-p", configuration.sandboxProfile, engine.executableURL.path, "wineboot.exe", "--init"]
+            configuration.arguments = ["wineboot.exe", "-u"]
             let bootstrap = try spawn(configuration, entry: entry, purpose: .wineBootstrap, activate: false)
             do {
                 let deadline = ContinuousClock.now.advanced(by: .seconds(45))
@@ -286,7 +304,40 @@ struct ManagedAppService: Sendable {
             result["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
             result["WINEDEBUG"] = "-all"
             if let engine {
-                result["PATH"] = engine.executableURL.deletingLastPathComponent().path + ":/usr/bin:/bin"
+                let runtime = engine.rootURL.appendingPathComponent("Runtime", isDirectory: true)
+                let bin = runtime.appendingPathComponent("bin", isDirectory: true)
+                result["PATH"] = bin.path + ":/usr/bin:/bin"
+                // Running the release's bin/wine directly bypasses its .app
+                // wrapper, so supply the paths that wrapper normally exports.
+                result["WINELOADER"] = engine.executableURL.path
+                result["WINESERVER"] = engine.executableURL.deletingLastPathComponent()
+                    .appendingPathComponent("wineserver").path
+                result["WINEDLLPATH"] = runtime.appendingPathComponent("lib/wine", isDirectory: true).path
+                result["WINEDATADIR"] = runtime.appendingPathComponent("share/wine", isDirectory: true).path
+                result["DYLD_FALLBACK_LIBRARY_PATH"] = runtime.appendingPathComponent("lib", isDirectory: true).path
+                let moltenVK = runtime.appendingPathComponent("share/vulkan/icd.d/MoltenVK_icd.json")
+                if FileManager.default.fileExists(atPath: moltenVK.path) {
+                    result["VK_ICD_FILENAMES"] = moltenVK.path
+                    result["VK_DRIVER_FILES"] = moltenVK.path
+                }
+                let graphics = engine.rootURL.appendingPathComponent("Graphics", isDirectory: true)
+                switch entry.manifest.graphicsBackend ?? .moltenVK {
+                case .dxmt:
+                    let dxmt = graphics.appendingPathComponent("DXMT", isDirectory: true)
+                    result["WINEDLLPATH"] = dxmt.path + ":" + result["WINEDLLPATH"]!
+                    result["WINEDLLOVERRIDES"] = "d3d11,dxgi,d3d10core,winemetal=n,b;winemenubuilder.exe=d"
+                case .kosmicKrisp:
+                    let driver = graphics.appendingPathComponent("KosmicKrisp", isDirectory: true)
+                    let icd = driver.appendingPathComponent("share/vulkan/icd.d/avk143_kosmickrisp_icd.aarch64.json")
+                    if FileManager.default.fileExists(atPath: icd.path) {
+                        result["VK_ICD_FILENAMES"] = icd.path
+                        result["VK_DRIVER_FILES"] = icd.path
+                    }
+                    result["DYLD_FALLBACK_LIBRARY_PATH"] =
+                        driver.appendingPathComponent("lib/avk143").path + ":" + result["DYLD_FALLBACK_LIBRARY_PATH"]!
+                case .moltenVK:
+                    break
+                }
             }
         }
         return result
@@ -297,11 +348,18 @@ struct ManagedAppService: Sendable {
             "/System/Library", "/System/Applications", "/System/Cryptexes",
             "/System/Volumes/Preboot/Cryptexes", "/usr/lib", "/usr/share", "/usr/bin", "/bin",
             "/Library", "/private/etc", "/private/var/db/dyld",
-            "/private/var/db/timezone", LibraryPath.canonicalPath(entry.directoryURL)
+            "/private/var/db/timezone", "/usr/libexec/rosetta",
+            "/Library/Apple/usr/libexec/oah", LibraryPath.canonicalPath(entry.directoryURL)
         ]
         if let engine { readable.append(LibraryPath.canonicalPath(engine.rootURL.appendingPathComponent("Runtime"))) }
         var writable = [LibraryPath.canonicalPath(entry.dataURL)]
-        if entry.platform == .wine { writable.append(LibraryPath.canonicalPath(entry.prefixURL)) }
+        if entry.platform == .wine {
+            writable.append(LibraryPath.canonicalPath(entry.prefixURL))
+            // wineserver creates its per-user server directory under /tmp even
+            // when TMPDIR points into the game's Data folder. Allow only this
+            // narrow per-user subpath, never all of /tmp.
+            writable.append("/private/tmp/.wine-\(getuid())")
+        }
         func quoted(_ path: String) throws -> String {
             guard !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
                 throw PearError.invalidPackage("Control characters in a sandbox path")
@@ -312,6 +370,7 @@ struct ManagedAppService: Sendable {
         let reads = try readable.map { "(subpath \(try quoted($0)))" }.joined(separator: " ")
         let writes = try writable.map { "(subpath \(try quoted($0)))" }.joined(separator: " ")
         let privateTemp = try quoted(LibraryPath.canonicalPath(entry.dataURL.appendingPathComponent("tmp")))
+        let wineTemp = try quoted("/private/tmp/.wine-\(getuid())")
         // Never allow all of /System: /System/Volumes/Data exposes user homes.
                 // Deliberately no (allow default), home-wide access, shared /tmp, user
         // preference broker, LaunchServices handoff, or Apple-event permission.
@@ -330,10 +389,15 @@ struct ManagedAppService: Sendable {
         (allow network-bind (local ip "*:*"))
         (allow network-bind network-inbound (local unix-socket (subpath \(privateTemp))))
         (allow network-outbound (remote unix-socket (subpath \(privateTemp))))
+        (allow network-bind network-inbound (local unix-socket (subpath \(wineTemp))))
+        (allow network-outbound (remote unix-socket (subpath \(wineTemp))))
         (allow file-map-executable \(reads))
-        (allow file-read-metadata (literal "/") (literal "/var") (literal "/private/var"))
+        (allow file-read-metadata (literal "/") (subpath "/Users")
+            (literal "/tmp") (literal "/private/tmp")
+            (literal "/System/Volumes/Data") (literal "/var") (literal "/private/var"))
         (allow file-read* \(reads)
             (literal "/") (literal "/private/var")
+            (literal "/dev/autofs_nowait")
             (literal "/private/etc/localtime")
             (literal "/private/etc/hosts")
             (literal "/private/etc/resolv.conf")

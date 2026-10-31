@@ -80,12 +80,12 @@ can be newer than the published ZIP.
   redirected into the entry's `Data` folder. There is no VM or emulation layer;
   absolute host paths remain reachable by the app.
 - Windows games run in per-game Wine prefixes with isolated data. Host `z:` and
-  absolute drive links are removed and the process is sandboxed.
-- Automatically fetch the latest open-source WineHQ **Stable**, **Staging** or
-  **Development** build published for macOS by `Gcenx/macOS_Wine_builds`. GitHub's
-  SHA-256 is mandatory, archives are path-admitted before extraction, and the
-  runtime is installed without a second full copy. Local open-source engines can
-  still be registered manually. GPTK is no longer supported or offered.
+  absolute drive links are removed. Wine runs as a direct native process (no VM
+  or nested sandbox) with HOME/TMPDIR redirected into the game entry.
+- Graphics API is selectable per game: **MoltenVK** (default, bundled with Wine),
+  **DXMT** (D3D10/11 → Metal) and **KosmicKrisp** (Mesa Vulkan → Metal). DXMT and
+  KosmicKrisp are optional GitHub-downloaded components. KosmicKrisp is arm64-only
+  and refuses to launch with the current x86_64 Wine builds.
 - Keymapper, opt-in per iOS app and off by default: tap, hold, joystick, mouse-look
   and swipe. Mac and Wine entries do not use the iOS keymapper.
 - Per-app Metal HUD and pointer-lock controls for iOS; Metal HUD for managed entries.
@@ -277,9 +277,20 @@ Windows entries live in `wine-apps/<id>/` with `Payload`, `Data` and `Prefix`.
 Each game gets its own prefix, and host drive mappings are removed before the
 game starts. **Settings → Wine** checks the public release feed for the latest
 open-source WineHQ build and installs it after SHA-256 verification and safe
-tar-path admission. The macOS builds are currently `osx64`, so Apple silicon may
-need Rosetta 2. Wine is not a Windows VM; anti-cheat and kernel drivers are not
-supported. Local open-source runtimes can still be registered manually.
+tar-path admission. Wine runs directly, because a nested sandbox breaks Rosetta
+and wineserver on current macOS; this is not a VM or a security sandbox.
+
+Graphics backends are selected per game:
+
+- **MoltenVK** — default; bundled with the Wine engine and used for Vulkan.
+- **DXMT** — D3D10/11 → Metal; installed as a per-engine `Graphics/DXMT` overlay.
+- **KosmicKrisp** — Mesa Vulkan → Metal; arm64-only. The current macOS WineHQ
+  engines are x86_64, so selecting it with those engines is refused with an
+  explanation. It does not silently fall back.
+
+The macOS builds are currently `osx64`, so Apple silicon may need Rosetta 2.
+Wine is not a Windows VM; anti-cheat and kernel drivers are not supported. Local
+open-source runtimes can still be registered manually.
 
 ### Portable library
 
