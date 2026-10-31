@@ -15,6 +15,17 @@ struct RemoteGraphicsAsset: Sendable {
 actor GraphicsComponentService {
     static let dxmtRepository = "3Shain/dxmt"
     static let kosmicRepository = "Anonymous137-sudo/Khronos_AppleICDs"
+    /// DXVK 2.x/3.x requires a geometry-shader-capable Vulkan device; MoltenVK
+    /// does not provide one, so the last macOS-patched 1.10 build is used. That
+    /// 2023 release predates GitHub asset digests, so its archive and both
+    /// payload DLLs are pinned here and verified before installation.
+    static let dxvkRepository = "Gcenx/DXVK-macOS"
+    static let dxvkVersion = "v1.10.3-20230507-repack"
+    static let dxvkAssetName = "dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz"
+    static let dxvkArchiveSHA256 = "acd1520ad105d8ef124a09c8e11a259a5dc8bdc565ad18e0e52693f9807b2477"
+    static let dxvkD3D11SHA256 = "0ff0b0835dde29556bd01dfce7b1ae348d7f229cb1e1a37cc71ea1a028beeca4"
+    static let dxvkD3D10CoreSHA256 = "0fa08bba860c63e3abeeabfc96d0e7aa327411a975f8f23d2dc63594ef5f796e"
+    static let dxvkNotice = "DXVK is zlib-licensed. This pinned macOS build is Gcenx's repackaging of DXVK 1.10.3 with MoltenVK-compatible presentation patches."
     static let maximumDownloadBytes: Int64 = 128 * 1_024 * 1_024
 
     private struct Release: Decodable {
@@ -52,6 +63,29 @@ actor GraphicsComponentService {
             accepts: { $0.hasSuffix(".pkg") && $0.contains("Preview") },
             includePrereleases: true
         )
+    }
+
+    /// The DXVK version is pinned instead of discovered: every newer release
+    /// refuses to initialize on MoltenVK because it requires geometry shaders.
+    /// A replaced release asset still fails closed through the pinned hashes.
+    func latestDXVK() async throws -> RemoteGraphicsAsset {
+        guard let url = URL(
+            string: "https://github.com/\(Self.dxvkRepository)/releases/download/\(Self.dxvkVersion)/\(Self.dxvkAssetName)"
+        ) else {
+            throw WineReleaseError.notFound("The pinned DXVK download URL is invalid")
+        }
+        return RemoteGraphicsAsset(
+            tag: Self.dxvkVersion, name: Self.dxvkAssetName, url: url, sha256: Self.dxvkArchiveSHA256
+        )
+    }
+
+    /// `true` when the engine carries the complete DXVK x64 payload. The launch
+    /// path uses this to decide whether native d3d11/d3d10core overrides are
+    /// safe; the engine-level component stays authoritative.
+    static func isDXVKInstalled(in engineRoot: URL) -> Bool {
+        let x64 = engineRoot.appendingPathComponent("Graphics/DXVK/x64", isDirectory: true)
+        return FileManager.default.fileExists(atPath: x64.appendingPathComponent("d3d11.dll").path)
+            && FileManager.default.fileExists(atPath: x64.appendingPathComponent("d3d10core.dll").path)
     }
 
     private func latest(
@@ -145,6 +179,41 @@ actor GraphicsComponentService {
             try FileManager.default.copyItem(
                 at: unix, to: staging.appendingPathComponent("x86_64-unix")
             )
+        }
+    }
+
+    /// Installs the pinned DXVK x64 DLLs into `<engine>/Graphics/DXVK`. DXVK is
+    /// a native D3D11 implementation, so Wine only loads it from a prefix or the
+    /// game directory; ManagedAppService copies these files into each game's
+    /// private prefix only while the MoltenVK backend is selected.
+    func installDXVK(_ asset: RemoteGraphicsAsset, engineRoot: URL) async throws -> URL {
+        guard asset.sha256 == Self.dxvkArchiveSHA256, asset.name == Self.dxvkAssetName,
+              asset.url.host?.lowercased() == "github.com" else {
+            throw WineReleaseError.invalid("DXVK must come from the pinned macOS release")
+        }
+        let work = try makeWorkDirectory()
+        defer { try? FileManager.default.removeItem(at: work) }
+        let archive = work.appendingPathComponent("dxvk.tar.gz")
+        try await download(asset, to: archive)
+        try Self.validateTar(archive, compressedWithGzip: true)
+        let extracted = work.appendingPathComponent("Extracted", isDirectory: true)
+        try FileManager.default.createDirectory(at: extracted, withIntermediateDirectories: true)
+        _ = try Shell.run("/usr/bin/tar", ["-xzf", archive.path, "-C", extracted.path, "--no-same-owner"])
+        guard let x64 = Self.findDirectory(named: "x64", under: extracted) else {
+            throw WineReleaseError.invalid("DXVK archive does not contain its x64 payload")
+        }
+        let d3d11 = try ManagedAppFiles.regularFile(x64.appendingPathComponent("d3d11.dll"), inside: x64)
+        let d3d10core = try ManagedAppFiles.regularFile(x64.appendingPathComponent("d3d10core.dll"), inside: x64)
+        guard try WineReleaseService.sha256(of: d3d11) == Self.dxvkD3D11SHA256,
+              try WineReleaseService.sha256(of: d3d10core) == Self.dxvkD3D10CoreSHA256 else {
+            throw WineReleaseError.invalid("DXVK archive payload does not match the pinned release")
+        }
+        let destination = engineRoot.appendingPathComponent("Graphics/DXVK", isDirectory: true)
+        return try Self.replace(destination) { staging in
+            let binaries = staging.appendingPathComponent("x64", isDirectory: true)
+            try FileManager.default.createDirectory(at: binaries, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: d3d11, to: binaries.appendingPathComponent("d3d11.dll"))
+            try FileManager.default.copyItem(at: d3d10core, to: binaries.appendingPathComponent("d3d10core.dll"))
         }
     }
 

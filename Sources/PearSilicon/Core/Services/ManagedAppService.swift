@@ -142,6 +142,11 @@ struct ManagedAppService: Sendable {
             case .moltenVK:
                 break
             case .dxmt:
+                guard Self.engineExposesMetalViewAPI(engine) else {
+                    throw PearError.launchFailed(
+                        "This Wine engine does not export winemac's Metal view API, so DXMT cannot create its Metal surface. Use the MoltenVK + DXVK backend instead."
+                    )
+                }
                 let dxmt = engine.rootURL.appendingPathComponent("Graphics/DXMT", isDirectory: true)
                 guard FileManager.default.fileExists(atPath: dxmt.appendingPathComponent("x86_64-windows/d3d11.dll").path),
                       FileManager.default.fileExists(atPath: dxmt.appendingPathComponent("x86_64-unix/winemetal.so").path) else {
@@ -240,6 +245,13 @@ struct ManagedAppService: Sendable {
         }
         try Task.checkCancellation()
         if entry.platform == .wine {
+            if let engine {
+                // DXVK is a native D3D11 implementation. Wine only looks for it
+                // in the game directory or the prefix, so the engine-level
+                // component is mirrored into this game's private prefix (and
+                // restored when another backend is selected).
+                try Self.synchronizeDXVK(for: entry, engine: engine)
+            }
             // Use a real Windows drive letter for the program path. Without it,
             // GameMaker resolves data.win through \\?\unix\... and shows a file
             // dialog instead of starting the game.
@@ -326,6 +338,166 @@ struct ManagedAppService: Sendable {
         return "\(wineGameDriveLetter.uppercased()):\\\(relative)"
     }
 
+    // MARK: - DXVK (native D3D11 → Vulkan → MoltenVK)
+
+    static let dxvkMarkerFilename = "pear-dxvk.json"
+    static let dxvkBackupDirectory = "pear-dxvk-backup"
+    static let dxvkFileNames = ["d3d11.dll", "d3d10core.dll"]
+
+    private struct DXVKMarker: Codable {
+        var version: Int = 1
+        var files: [String: String]
+    }
+
+    /// Mirrors the engine's DXVK component into this game's prefix before a
+    /// launch, or restores Wine's original files when another backend is chosen.
+    /// The marker records exactly which files this app wrote, so a foreign file
+    /// is never deleted. Runs after prefix initialization and before spawning.
+    static func synchronizeDXVK(for entry: LibraryEntry, engine: WineEngine) throws {
+        guard entry.platform == .wine else { return }
+        let backend = entry.manifest.graphicsBackend ?? .moltenVK
+        let install = backend == .moltenVK && GraphicsComponentService.isDXVKInstalled(in: engine.rootURL)
+        let system32 = entry.prefixURL.appendingPathComponent("drive_c/windows/system32", isDirectory: true)
+        guard ManagedAppFiles.exists(system32) else {
+            if install {
+                throw PearError.launchFailed(
+                    "The Wine prefix is not initialized yet; start the game once before DXVK can be prepared."
+                )
+            }
+            return
+        }
+        let markerURL = entry.prefixURL.appendingPathComponent(dxvkMarkerFilename)
+        let marker = try readDXVKMarker(markerURL, inside: entry.prefixURL)
+        let backup = entry.prefixURL.appendingPathComponent(dxvkBackupDirectory, isDirectory: true)
+        let updated = install
+            ? try installDXVKFiles(from: engine.rootURL, into: system32, backup: backup, marker: marker)
+            : try restoreDXVKFiles(in: system32, backup: backup, marker: marker)
+        try writeDXVKMarker(updated, to: markerURL, inside: entry.prefixURL)
+    }
+
+    private static func readDXVKMarker(_ url: URL, inside prefix: URL) throws -> DXVKMarker? {
+        guard ManagedAppFiles.exists(url) else { return nil }
+        let file = try ManagedAppFiles.regularFile(url, inside: prefix)
+        guard let marker = try? JSONDecoder().decode(DXVKMarker.self, from: ManagedAppFiles.readSmallFile(file)),
+              marker.version == 1 else {
+            return nil
+        }
+        return marker
+    }
+
+    private static func writeDXVKMarker(_ marker: DXVKMarker?, to url: URL, inside prefix: URL) throws {
+        guard let marker, !marker.files.isEmpty else {
+            if ManagedAppFiles.exists(url) {
+                _ = try ManagedAppFiles.regularFile(url, inside: prefix)
+                try FileManager.default.removeItem(at: url)
+            }
+            return
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(marker).write(to: url, options: .atomic)
+    }
+
+    private static func installDXVKFiles(
+        from engineRoot: URL, into system32: URL, backup: URL, marker: DXVKMarker?
+    ) throws -> DXVKMarker {
+        let component = engineRoot.appendingPathComponent("Graphics/DXVK/x64", isDirectory: true)
+        var files = marker?.files ?? [:]
+        for name in dxvkFileNames {
+            let source = try ManagedAppFiles.regularFile(component.appendingPathComponent(name), inside: component)
+            let sourceHash = try WineReleaseService.sha256(of: source)
+            let destination = system32.appendingPathComponent(name)
+            var currentHash: String?
+            if ManagedAppFiles.exists(destination) {
+                let current = try ManagedAppFiles.regularFile(destination, inside: system32)
+                currentHash = try WineReleaseService.sha256(of: current)
+            }
+            if currentHash != sourceHash {
+                // Back up Wine's original once. A previous DXVK copy (tracked in
+                // the marker, or recognised by its pinned hash after a manual
+                // marker deletion) is ours and must not overwrite that backup.
+                let known = name == "d3d11.dll"
+                    ? GraphicsComponentService.dxvkD3D11SHA256
+                    : GraphicsComponentService.dxvkD3D10CoreSHA256
+                if let currentHash, currentHash != known, files[name] != currentHash {
+                    try backupDXVKFile(destination, to: backup, name: name)
+                }
+                try replaceFile(at: destination, with: source)
+            }
+            files[name] = sourceHash
+        }
+        return DXVKMarker(files: files)
+    }
+
+    private static func restoreDXVKFiles(
+        in system32: URL, backup: URL, marker: DXVKMarker?
+    ) throws -> DXVKMarker? {
+        guard let marker, !marker.files.isEmpty else { return marker }
+        for name in dxvkFileNames {
+            guard let recorded = marker.files[name] else { continue }
+            let destination = system32.appendingPathComponent(name)
+            guard ManagedAppFiles.exists(destination) else { continue }
+            let current = try ManagedAppFiles.regularFile(destination, inside: system32)
+            guard try WineReleaseService.sha256(of: current) == recorded else { continue }
+            let saved = backup.appendingPathComponent(name)
+            if ManagedAppFiles.exists(saved) {
+                let original = try ManagedAppFiles.regularFile(saved, inside: backup)
+                try replaceFile(at: destination, with: original)
+                try FileManager.default.removeItem(at: original)
+            } else {
+                try FileManager.default.removeItem(at: destination)
+            }
+        }
+        if ManagedAppFiles.exists(backup),
+           (try? FileManager.default.contentsOfDirectory(atPath: backup.path).isEmpty) == true {
+            try? FileManager.default.removeItem(at: backup)
+        }
+        return nil
+    }
+
+    private static func backupDXVKFile(_ file: URL, to backup: URL, name: String) throws {
+        if !ManagedAppFiles.exists(backup) { try ManagedAppFiles.makeDirectory(backup) }
+        let destination = backup.appendingPathComponent(name)
+        guard !ManagedAppFiles.exists(destination) else { return }
+        let temporary = backup.appendingPathComponent(".pear-\(name)-\(UUID().uuidString)")
+        try FileManager.default.copyItem(at: file, to: temporary)
+        guard rename(temporary.path, destination.path) == 0 else {
+            let error = ManagedAppFiles.posix(destination)
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+    }
+
+    /// Publishes a copied file with rename(2) so a partially written DLL can
+    /// never be loaded, and a symlink at the destination is replaced, not followed.
+    private static func replaceFile(at destination: URL, with source: URL) throws {
+        let temporary = destination.deletingLastPathComponent()
+            .appendingPathComponent(".pear-\(destination.lastPathComponent)-\(UUID().uuidString)")
+        try FileManager.default.copyItem(at: source, to: temporary)
+        guard rename(temporary.path, destination.path) == 0 else {
+            let error = ManagedAppFiles.posix(destination)
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+    }
+
+    /// DXMT dlsyms winemac's C API (`macdrv_view_create_metal_view`,
+    /// `get_win_data`, ...). Release Wine builds hide those symbols, and DXMT
+    /// aborts while creating its swapchain. Refuse the backend instead of
+    /// presenting a doomed launch. A missing `nm` answers conservatively false.
+    static func engineExposesMetalViewAPI(_ engine: WineEngine) -> Bool {
+        let wineLib = engine.rootURL.appendingPathComponent("Runtime/lib/wine", isDirectory: true)
+        for arch in ["x86_64-unix", "aarch64-unix", "i386-unix", "arm-unix"] {
+            let winemac = wineLib.appendingPathComponent(arch).appendingPathComponent("winemac.so")
+            guard FileManager.default.fileExists(atPath: winemac.path) else { continue }
+            let symbols = (try? Shell.run("/usr/bin/nm", ["-gU", winemac.path])) ?? ""
+            if symbols.contains("macdrv_view_create_metal_view") || symbols.contains("macdrv_functions") {
+                return true
+            }
+        }
+        return false
+    }
+
     static func environment(
         for entry: LibraryEntry, engine: WineEngine? = nil, metalHUDEnabled: Bool? = nil,
         inherited: [String: String] = ProcessInfo.processInfo.environment
@@ -384,7 +556,12 @@ struct ManagedAppService: Sendable {
                     result["DYLD_FALLBACK_LIBRARY_PATH"] =
                         driver.appendingPathComponent("lib/avk143").path + ":" + result["DYLD_FALLBACK_LIBRARY_PATH"]!
                 case .moltenVK:
-                    break
+                    // DXVK is native D3D11; without it the game falls back to
+                    // wined3d's OpenGL renderer, which presents black on this
+                    // engine for GameMaker-style D3D11 titles.
+                    if GraphicsComponentService.isDXVKInstalled(in: engine.rootURL) {
+                        result["WINEDLLOVERRIDES"] = "d3d11,d3d10core=n;winemenubuilder.exe=d"
+                    }
                 }
             }
         }

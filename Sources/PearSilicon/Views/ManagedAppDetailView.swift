@@ -323,9 +323,21 @@ struct ManagedAppDetailView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if state.graphicsBackend(for: entry) == .moltenVK,
+               !state.isGraphicsComponentInstalled(.moltenVK, for: entry) {
+                Text("Direct3D 11 games need the DXVK component; without it Wine's OpenGL renderer is used and may show a black window.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Install DXVK") {
+                    Task { await state.installGraphicsComponent(.moltenVK, for: entry) }
+                }
+                .buttonStyle(.glass)
+                .disabled(state.isBusy)
+            }
             if state.graphicsBackend(for: entry) == .dxmt,
                !state.isGraphicsComponentInstalled(.dxmt, for: entry) {
-                Text("DXMT is not installed for this engine; install it in Settings → Wine.")
+                Text("DXMT is not installed for this engine.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                 Button("Install DXMT") {

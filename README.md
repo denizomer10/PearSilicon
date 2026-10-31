@@ -84,10 +84,12 @@ can be newer than the published ZIP.
   exposes only that game's `Payload/Program` so Windows runners can resolve their
   data files. Wine runs as a direct native process (no VM or nested sandbox) with
   HOME/TMPDIR redirected into the game entry.
-- Graphics API is selectable per game: **MoltenVK** (default, bundled with Wine),
-  **DXMT** (D3D10/11 → Metal) and **KosmicKrisp** (Mesa Vulkan → Metal). DXMT and
-  KosmicKrisp are optional GitHub-downloaded components. KosmicKrisp is arm64-only
-  and refuses to launch with the current x86_64 Wine builds.
+- Graphics API is selectable per game: **MoltenVK + DXVK** (default; D3D11 →
+  Vulkan → Metal), **DXMT** (D3D10/11 → Metal, requires a Wine build that exports
+  winemac's Metal view API) and **KosmicKrisp** (Mesa Vulkan → Metal). All three are
+  optional GitHub-downloaded components; DXVK and DXMT assets are pinned and
+  SHA-256-verified. KosmicKrisp is arm64-only and refuses to launch with the current
+  x86_64 Wine builds.
 - Keymapper, opt-in per iOS app and off by default: tap, hold, joystick, mouse-look
   and swipe. Mac and Wine entries do not use the iOS keymapper.
 - Per-app Metal HUD and pointer-lock controls for iOS; Metal HUD for managed entries.
@@ -226,6 +228,17 @@ and the absence of runtime signal/exception markers. It does not verify gameplay
 input coordinates, downloads or account flows. See
 [Testing and validation](docs/TESTING.md) for the exact scope and manual checklist.
 
+The DXVK path has opt-in real-download and real-engine checks. The second one
+launches the installed game through the same `AppState` path as the GUI and
+requires DXVK plus the game's main loop in its log; it does not prove that pixels
+are visible (that was verified visually and cannot be asserted without a screenshot):
+
+```sh
+PEAR_GRAPHICS_INTEGRATION=1 swift test --filter GraphicsComponentIntegrationTests
+PEAR_REAL_SUPPORT_ROOT="$HOME/Library/Application Support/PearSilicon" \
+  PEAR_DXVK_E2E=1 swift test --filter testLaunchesInstalledDeltaruneWithDXVK
+```
+
 ## Build
 
 ```sh
@@ -298,8 +311,18 @@ entry automatically; with several engines, the app asks instead of guessing.
 
 Graphics backends are selected per game:
 
-- **MoltenVK** — default; bundled with the Wine engine and used for Vulkan.
+- **MoltenVK + DXVK** — default. Install **DXVK** from the game's detail pane;
+  PearSilicon mirrors the engine-level `Graphics/DXVK` component into that game's
+  private prefix, selects native `d3d11`/`d3d10core` only while this backend is
+  active, and restores Wine's files when another backend is chosen. DXVK is pinned
+  to 1.10.3 (Gcenx macOS build) because newer releases require Vulkan geometry
+  shaders that MoltenVK does not provide. Without DXVK, Direct3D 11 falls back to
+  Wine's OpenGL renderer, which can present a black window on current engines.
 - **DXMT** — D3D10/11 → Metal; installed as a per-engine `Graphics/DXMT` overlay.
+  DXMT also needs a Wine build that exports winemac's Metal view symbols (winemac's
+  `macdrv_view_create_metal_view`/`get_win_data`). The automatic Gcenx Wine builds
+  hide those symbols, so DXMT cannot present with them; the app reports that instead
+  of silently showing a black window.
 - **KosmicKrisp** — Mesa Vulkan → Metal; arm64-only. The current macOS WineHQ
   engines are x86_64, so selecting it with those engines is refused with an
   explanation. It does not silently fall back.

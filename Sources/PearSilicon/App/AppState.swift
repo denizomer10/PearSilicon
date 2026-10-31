@@ -567,7 +567,7 @@ final class AppState: ObservableObject {
         guard let engine = engine(id: entry.manifest.wineEngineID) else { return false }
         switch backend {
         case .moltenVK:
-            return true
+            return GraphicsComponentService.isDXVKInstalled(in: engine.rootURL)
         case .dxmt:
             return FileManager.default.fileExists(
                 atPath: engine.rootURL.appendingPathComponent("Graphics/DXMT/x86_64-windows/d3d11.dll").path
@@ -1214,23 +1214,29 @@ final class AppState: ObservableObject {
     func installGraphicsComponent(
         _ backend: LibraryManifest.GraphicsBackend, for entry: LibraryEntry
     ) async {
-        guard backend != .moltenVK else { return }
         guard !isBusy, let engine = engine(id: entry.manifest.wineEngineID) else { return }
         isBusy = true
         defer { finishBusyWork() }
         do {
             statusMessage = "Fetching \(backend.title)…"
             let service = wineApps.graphics
-            if backend == .dxmt {
+            switch backend {
+            case .moltenVK:
+                let asset = try await service.latestDXVK()
+                statusMessage = "Installing DXVK \(asset.tag)…"
+                _ = try await service.installDXVK(asset, engineRoot: engine.rootURL)
+                statusMessage = "Installed DXVK \(asset.tag) for \(engine.name)"
+            case .dxmt:
                 let asset = try await service.latestDXMT()
                 statusMessage = "Installing DXMT \(asset.tag)…"
                 _ = try await service.installDXMT(asset, engineRoot: engine.rootURL)
-            } else {
+                statusMessage = "Installed DXMT for \(engine.name)"
+            case .kosmicKrisp:
                 let asset = try await service.latestKosmicKrisp()
                 statusMessage = "Installing KosmicKrisp \(asset.tag)…"
                 _ = try await service.installKosmicKrisp(asset, engineRoot: engine.rootURL)
+                statusMessage = "Installed KosmicKrisp for \(engine.name)"
             }
-            statusMessage = "Installed \(backend.title) for \(engine.name)"
         } catch {
             statusMessage = L10n.error("\(backend.title) install failed: \(error.localizedDescription)")
         }

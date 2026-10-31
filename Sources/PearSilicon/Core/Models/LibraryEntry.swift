@@ -40,8 +40,8 @@ struct LibraryManifest: Codable, Hashable, Sendable {
         }
         var detail: String {
             switch self {
-            case .moltenVK: "Vulkan → Metal (bundled with Wine); default"
-            case .dxmt: "Direct3D 10/11 → Metal; requires the DXMT component"
+            case .moltenVK: "D3D11 → Vulkan → Metal via DXVK + MoltenVK; install the DXVK component for D3D11 games"
+            case .dxmt: "Direct3D 10/11 → Metal; needs a Wine build that exports winemac's Metal view API"
             case .kosmicKrisp: "Mesa Vulkan → Metal; requires an arm64 Wine engine"
             }
         }

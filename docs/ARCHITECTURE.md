@@ -56,11 +56,17 @@ public Atom feed and asset page provide the same tag and hash. The tar archive i
 listed and path-admitted before extraction, then the runtime is moved into place
 without a second copy. GPTK is no longer supported.
 
-Graphics selection is per game: MoltenVK is the default and bundled; DXMT is an
-optional per-engine overlay installed from `3Shain/dxmt`; KosmicKrisp is an
-optional arm64 ICD installed from `Anonymous137-sudo/Khronos_AppleICDs`. The
-current macOS WineHQ engines are x86_64, so KosmicKrisp is rejected rather than
-silently degraded when selected with them.
+Graphics selection is per game. The MoltenVK backend pairs MoltenVK with an
+optional, pinned DXVK 1.10.3 x64 component (`Gcenx/DXVK-macOS`): the component
+lives under `<engine>/Graphics/DXVK`, is mirrored into that game's private prefix
+before launch, and Wine's originals are restored when another backend is chosen.
+The prefix marker records which files belong to us, so a foreign DLL is never
+deleted. DXMT is an optional per-engine overlay installed from `3Shain/dxmt`, but
+it also requires a Wine build that exports winemac's Metal view symbols; release
+Gcenx builds hide them, so the launch plan refuses DXMT instead of aborting in
+DXMT's swapchain. KosmicKrisp is an optional arm64 ICD installed from
+`Anonymous137-sudo/Khronos_AppleICDs`. The current macOS WineHQ engines are
+x86_64, so KosmicKrisp is rejected rather than silently degraded when selected.
 
 ## Updates and runtime refresh
 

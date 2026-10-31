@@ -210,6 +210,36 @@ final class WineEngineTests: XCTestCase {
         XCTAssertThrowsError(try ManagedAppService().launchConfiguration(for: entry, engine: wrong))
     }
 
+    /// DXMT aborts when winemac does not export its Metal view API. Gcenx Wine
+    /// builds hide those symbols, so the backend must refuse rather than launch
+    /// into a black window or a crash.
+    func testEngineWithoutExportedMetalViewAPICannotSelectDXMT() throws {
+        let fixture = try ManagedAppTestFixture()
+        defer { fixture.remove() }
+        let engine = try WineEngineStore(rootURL: fixture.enginesRoot).registerLocalEngine(
+            from: fixture.engineFolder(), id: "engine", name: "Engine", version: "1",
+            executablePath: "bin/wine64", licenseConfirmed: true
+        )
+        XCTAssertFalse(ManagedAppService.engineExposesMetalViewAPI(engine))
+
+        let service = ManagedAppService()
+        let entry = try service.importWindowsFolder(
+            from: fixture.windowsFolder(), executablePath: "bin/Game.exe",
+            libraryRoot: fixture.library, engineID: engine.id
+        )
+        var manifest = try JSONDecoder().decode(
+            LibraryManifest.self, from: Data(contentsOf: entry.manifestURL)
+        )
+        manifest.graphicsBackend = .dxmt
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(manifest).write(to: entry.manifestURL, options: .atomic)
+        let updated = LibraryEntry(manifest: manifest, directoryURL: entry.directoryURL)
+        XCTAssertThrowsError(try service.launchConfiguration(for: updated, engine: engine)) { error in
+            XCTAssertTrue("\(error)".contains("Metal view API"), "\(error)")
+        }
+    }
+
     func testCommunityDownloadVerifiesHashWithoutExtractingExecutingOrRegistering() async throws {
         let fixture = try ManagedAppTestFixture()
         defer { fixture.remove() }
