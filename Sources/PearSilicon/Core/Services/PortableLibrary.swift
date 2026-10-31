@@ -104,10 +104,18 @@ struct PortableLibrary: Sendable {
             NSDictionary(contentsOf: url) as? [String: Any]
         }
         if let info = plist(bundle.appendingPathComponent("Contents/Info.plist")) {
-            let name = (info["DTPlatformName"] as? String)?.lowercased()
+            // A Contents/Info.plist is a macOS layout. Some hand-built apps omit
+            // DTPlatformName/CFBundleSupportedPlatforms, so absence is not proof
+            // that the bundle is an iOS app. The importer validates the actual
+            // Mach-O build platform and will reject an iOS binary explicitly.
+            if let name = (info["DTPlatformName"] as? String)?.lowercased(), name != "macosx" {
+                throw PearError.invalidPackage("This bundle declares a non-macOS platform: \(name)")
+            }
             let supported = info["CFBundleSupportedPlatforms"] as? [String] ?? []
-            if name == "macosx" || supported.contains("MacOSX") { return .macOS }
-            throw PearError.invalidPackage("This bundle is not a native macOS app")
+            if !supported.isEmpty, !supported.contains("MacOSX") {
+                throw PearError.invalidPackage("This bundle is not a native macOS app")
+            }
+            return .macOS
         }
         if let info = plist(bundle.appendingPathComponent("Info.plist")) {
             if info["LSRequiresIPhoneOS"] as? Bool == true { return .iOS }

@@ -57,7 +57,23 @@ final class PortableLibraryTests: XCTestCase {
         let ios = fixture.root.appendingPathComponent("ExampleIOS.app")
         try fixture.writeIOSBundle(at: ios, id: "com.example.ios")
 
+        // Hand-built macOS apps may omit both platform keys; Contents/Info.plist
+        // still identifies a macOS layout and must not fall through to the iOS
+        // installer.
+        let minimalMac = fixture.root.appendingPathComponent("Minimal.app")
+        try FileManager.default.createDirectory(
+            at: minimalMac.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true
+        )
+        let minimal: [String: Any] = [
+            "CFBundleIdentifier": "io.github.example.port",
+            "CFBundleExecutable": "Port", "CFBundleName": "Port",
+            "CFBundlePackageType": "APPL",
+        ]
+        try PropertyListSerialization.data(fromPropertyList: minimal, format: .xml, options: 0)
+            .write(to: minimalMac.appendingPathComponent("Contents/Info.plist"))
+
         XCTAssertEqual(try PortableLibrary.classify(mac), .macOS)
+        XCTAssertEqual(try PortableLibrary.classify(minimalMac), .macOS)
         XCTAssertEqual(try PortableLibrary.classify(ios), .iOS)
     }
 

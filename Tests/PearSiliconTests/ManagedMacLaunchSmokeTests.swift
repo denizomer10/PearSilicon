@@ -9,7 +9,29 @@ import XCTest
 @MainActor
 final class ManagedMacLaunchSmokeTests: XCTestCase {
 
-    func testMinimalNativeMacAppLaunchesAndStopsInsideTheSandbox() async throws {
+    func testImportsAUserSuppliedMacBundleWithoutReSigning() throws {
+        guard let path = ProcessInfo.processInfo.environment["PEAR_REAL_MAC_APP"], !path.isEmpty else {
+            throw XCTSkip("Set PEAR_REAL_MAC_APP to an .app path to opt in")
+        }
+        let root = URL(fileURLWithPath: try Self.realPath(FileManager.default.temporaryDirectory))
+            .appendingPathComponent("pear-real-mac-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = URL(fileURLWithPath: path).standardizedFileURL
+        let before = try Data(contentsOf: source.appendingPathComponent("Contents/Info.plist"))
+        let entry = try ManagedAppService().importMacApp(
+            from: source, libraryRoot: root.appendingPathComponent("Library", isDirectory: true)
+        )
+        XCTAssertEqual(entry.platform, .macOS)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: entry.payloadURL.path))
+        XCTAssertEqual(
+            try Data(contentsOf: entry.payloadURL.appendingPathComponent("Contents/Info.plist")),
+            before
+        )
+        XCTAssertNoThrow(try ManagedAppService().launchConfiguration(for: entry))
+    }
+
+    func testMinimalNativeMacAppLaunchesAndStops() async throws {
         let swiftc = "/usr/bin/swiftc"
         guard FileManager.default.isExecutableFile(atPath: swiftc) else {
             throw XCTSkip("swiftc is not available")

@@ -711,7 +711,10 @@ final class AppState: ObservableObject {
                 // historical iOS-bundle path.
                 if url.pathExtension.lowercased() == "app",
                    FileManager.default.fileExists(atPath: url.path),
-                   (try? PortableLibrary.classify(url)) == .macOS {
+                   ((try? PortableLibrary.classify(url)) == .macOS
+                    || FileManager.default.fileExists(
+                        atPath: url.appendingPathComponent("Contents/Info.plist").path
+                    )) {
                     _ = try await importMacApp(entry: url)
                     statusMessage = "Installed Mac app: \(url.deletingPathExtension().lastPathComponent)"
                     continue
