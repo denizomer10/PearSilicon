@@ -71,8 +71,11 @@ struct ManagedAppDetailView: View {
             "Remove the quarantine flag from this managed copy?",
             isPresented: $confirmingQuarantine
         ) {
-            Button("Allow This App", role: .destructive) {
-                state.allowQuarantinedApp(entry)
+            Button("Allow and Launch") {
+                Task { await state.allowAndLaunch(entry) }
+            }
+            Button("Open Privacy & Security") {
+                state.openPrivacySecuritySettings()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -113,7 +116,7 @@ struct ManagedAppDetailView: View {
                     .tint(.red)
                 }
                 Button {
-                    Task { await state.launch(entry) }
+                    requestLaunch()
                 } label: {
                     Label(L10n.launch, systemImage: "play.fill").padding(.horizontal, 6)
                 }
@@ -163,7 +166,7 @@ struct ManagedAppDetailView: View {
             VStack(alignment: .leading, spacing: 14) {
                 SectionTitle(text: "Actions")
                 Button {
-                    Task { await state.launch(entry) }
+                    requestLaunch()
                 } label: {
                     Label(L10n.launch, systemImage: "play.fill").frame(maxWidth: .infinity)
                 }
@@ -188,6 +191,13 @@ struct ManagedAppDetailView: View {
                         confirmingQuarantine = true
                     } label: {
                         Label("Allow This App…", systemImage: "checkmark.shield")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glass)
+                    Button {
+                        state.openPrivacySecuritySettings()
+                    } label: {
+                        Label("Open Privacy & Security", systemImage: "gearshape")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.glass)
@@ -281,6 +291,14 @@ struct ManagedAppDetailView: View {
             .font(.callout)
             .lineLimit(2)
             .truncationMode(.middle)
+        }
+    }
+
+    private func requestLaunch() {
+        if state.isQuarantined(entry) {
+            confirmingQuarantine = true
+        } else {
+            Task { await state.launch(entry) }
         }
     }
 

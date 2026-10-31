@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import PearSilicon
@@ -109,6 +110,35 @@ final class PortableLibraryAppStateTests: XCTestCase {
 
         await state.restoreBackup(from: backup, replacing: true)
         XCTAssertFalse(state.statusMessage.lowercased().contains("error"), state.statusMessage)
+    }
+
+    func testAllowingAQuarantinedManagedCopyClearsOnlyThatCopy() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let directory = fixture.root.appendingPathComponent("mac-apps/io.github.example.port")
+        let payload = directory.appendingPathComponent("Payload/Port.app")
+        try FileManager.default.createDirectory(at: payload, withIntermediateDirectories: true)
+        try fixture.write("binary", to: payload.appendingPathComponent("Contents/MacOS/Port"))
+        let manifest = LibraryManifest(
+            id: "io.github.example.port", platform: .macOS, displayName: "Port",
+            version: "1", payloadPath: "Payload/Port.app"
+        )
+        try JSONEncoder().encode(manifest).write(to: directory.appendingPathComponent(LibraryManifest.filename))
+        let value = "0083;00000000;Safari;"
+        XCTAssertEqual(
+            payload.path.withCString { setxattr($0, Quarantine.attribute, value, value.utf8.count, 0, 0) },
+            0
+        )
+
+        let state = fixture.state()
+        try await state.refreshLibrary()
+        let entry = try XCTUnwrap(state.managedEntries.first)
+        XCTAssertTrue(state.isQuarantined(entry))
+
+        state.allowQuarantinedApp(entry)
+
+        XCTAssertFalse(state.isQuarantined(entry))
+        XCTAssertFalse(Quarantine.isQuarantined(payload))
     }
 
     // MARK: - Fixture

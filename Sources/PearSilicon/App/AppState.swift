@@ -28,6 +28,20 @@ final class AppState: ObservableObject {
     @Published private(set) var wineEngines: [WineEngine] = []
     @Published private(set) var libraryWarnings: [String] = []
     @Published private(set) var quarantinedMacEntryIDs: Set<String> = []
+    /// Set after an import when the managed copy still carries a download
+    /// quarantine flag. The window asks once and can clear it or open macOS
+    /// Privacy & Security.
+    @Published private(set) var pendingQuarantineEntry: LibraryEntry?
+
+    /// Off by default. The user can opt in to clearing the quarantine flag on
+    /// every imported Mac app after reading the warning in Settings.
+    @Published var autoApproveImportedMacApps: Bool = AppSettings.defaults.bool(
+        forKey: "macApp.autoApproveQuarantine"
+    ) {
+        didSet {
+            AppSettings.defaults.set(autoApproveImportedMacApps, forKey: "macApp.autoApproveQuarantine")
+        }
+    }
 
     /// Explicit, user-triggered updater state. No timer or telemetry.
     @Published private(set) var availableUpdate: AppUpdateCheck?
@@ -477,10 +491,35 @@ final class AppState: ObservableObject {
         do {
             try Quarantine.remove(from: entry.payloadURL)
             quarantinedMacEntryIDs.remove(entry.id)
+            if pendingQuarantineEntry?.id == entry.id { pendingQuarantineEntry = nil }
             statusMessage = "Gatekeeper quarantine removed for \(entry.displayName) (this managed copy only)"
         } catch {
             statusMessage = L10n.error("Could not clear quarantine: \(error.localizedDescription)")
         }
+    }
+
+    func allowAndLaunch(_ entry: LibraryEntry) async {
+        allowQuarantinedApp(entry)
+        guard !isQuarantined(entry) else { return }
+        await launch(entry)
+    }
+
+    func clearPendingQuarantine() {
+        pendingQuarantineEntry = nil
+    }
+
+    /// Opens the exact Privacy & Security pane. It deliberately does not script
+    /// clicks or enter credentials; the user remains in control of Gatekeeper.
+    func openPrivacySecuritySettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
+            "x-apple.systempreferences:com.apple.preference.security?General",
+            "x-apple.systempreferences:com.apple.preference.security",
+        ]
+        for candidate in candidates {
+            if let url = URL(string: candidate), NSWorkspace.shared.open(url) { return }
+        }
+        statusMessage = L10n.error("Could not open Privacy & Security settings")
     }
 
     private func updateManifest(_ entry: LibraryEntry, change: (inout LibraryManifest) -> Void) {
@@ -737,10 +776,24 @@ final class AppState: ObservableObject {
                         atPath: url.appendingPathComponent("Contents/Info.plist").path
                     )) {
                     let entry = try await importMacApp(entry: url)
-                    statusMessage = "Installed Mac app: \(entry.displayName)"
-                        + (Quarantine.isQuarantined(entry.payloadURL)
-                           ? " — macOS may ask for approval; use Allow This App in the detail pane for this managed copy."
-                           : "")
+                    if Quarantine.isQuarantined(entry.payloadURL) {
+                        quarantinedMacEntryIDs.insert(entry.id)
+                        if autoApproveImportedMacApps {
+                            do {
+                                try Quarantine.remove(from: entry.payloadURL)
+                                quarantinedMacEntryIDs.remove(entry.id)
+                                statusMessage = "Installed and allowed Mac app: \(entry.displayName)"
+                            } catch {
+                                pendingQuarantineEntry = entry
+                                statusMessage = L10n.error("Imported, but quarantine could not be cleared: \(error.localizedDescription)")
+                            }
+                        } else {
+                            pendingQuarantineEntry = entry
+                            statusMessage = "Installed Mac app: \(entry.displayName) — macOS needs one approval before launch"
+                        }
+                    } else {
+                        statusMessage = "Installed Mac app: \(entry.displayName)"
+                    }
                     continue
                 }
 

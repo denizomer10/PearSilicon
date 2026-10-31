@@ -65,6 +65,27 @@ struct ContentView: View {
         .alert(item: $alert) { payload in
             Alert(title: Text(payload.title), message: Text(payload.message), dismissButton: .default(Text("OK")))
         }
+        .confirmationDialog(
+            "Allow this downloaded app?",
+            isPresented: Binding(
+                get: { state.pendingQuarantineEntry != nil },
+                set: { if !$0 { state.clearPendingQuarantine() } }
+            )
+        ) {
+            if let entry = state.pendingQuarantineEntry {
+                Button("Allow This App") {
+                    state.allowQuarantinedApp(entry)
+                }
+                Button("Open Privacy & Security") {
+                    state.openPrivacySecuritySettings()
+                }
+                Button("Later", role: .cancel) {
+                    state.clearPendingQuarantine()
+                }
+            }
+        } message: {
+            Text("macOS attached a download quarantine flag to this imported copy. PearSilicon does not remove it silently. Allow it only if you trust the source; this does not notarize the app.")
+        }
     }
 
     private var backdrop: some View {

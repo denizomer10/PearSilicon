@@ -127,9 +127,12 @@ This project does **not** silently bypass that protection.
   local test copy only, `xattr -dr com.apple.quarantine /Applications/PearSilicon.app`
   removes the flag.
 - **Imported Mac apps:** if the original download is quarantined, the managed
-  copy keeps that flag. Open the app's detail pane and use **Allow This App…**
-  only if you trust the source. This affects that imported copy only and does not
-  notarize it.
+  copy keeps that flag. PearSilicon asks once after import: **Allow This App**
+  clears the flag on that copy, **Open Privacy & Security** shows the system
+  pane, and **Later** leaves it untouched. The same copy is not asked again after
+  an in-app approval. You may opt in to automatic approval in **Settings →
+  Downloaded Mac apps**, with the same warning; it is off by default and does not
+  notarize the app.
 - **No-warning distribution:** requires an Apple Developer Program membership, a
   **Developer ID Application** certificate, hardened-runtime signing and Apple
   notarization. Prepare credentials once with `xcrun notarytool store-credentials`,

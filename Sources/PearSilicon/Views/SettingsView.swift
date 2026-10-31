@@ -74,6 +74,16 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("Downloaded Mac apps") {
+                Toggle("Automatically allow imported Mac apps", isOn: $state.autoApproveImportedMacApps)
+                Text("Off by default. When enabled, PearSilicon removes the macOS download quarantine flag from each imported Mac app copy. This is the same one-time approval macOS asks for in Privacy & Security, but it is applied automatically to apps you import. It does not notarize the app, and absolute host paths remain reachable. Only enable it for sources you trust.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Open Privacy & Security") {
+                    state.openPrivacySecuritySettings()
+                }
+            }
         }
         .formStyle(.grouped)
         .confirmationDialog(
