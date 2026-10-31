@@ -90,7 +90,10 @@ final class AppState: ObservableObject {
     private let managedApps = ManagedAppService()
     private let portableLibrary: PortableLibrary
     private let wineStore: WineEngineStore
+    private let wineReleases = WineReleaseService()
     private lazy var updater = AppUpdateService()
+
+    @Published private(set) var wineReleaseCheck: WineReleaseCheck?
 
     /// Managed launches are tracked by entry directory, never by a caller-supplied
     /// PID. Detached Wine helpers can outlive the direct child.
@@ -1004,6 +1007,39 @@ final class AppState: ObservableObject {
             statusMessage = "Engine archive verified and saved: \(file.path). \(WineEngineStore.communityDownloadNotice)"
         } catch {
             statusMessage = L10n.error("Engine download failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Explicit check of the open-source WineHQ release feed. No timer or
+    /// automatic background download.
+    func checkWineRelease(channel: WineReleaseChannel) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            statusMessage = "Checking open-source Wine releases…"
+            let check = try await wineReleases.latest(channel: channel)
+            wineReleaseCheck = check
+            statusMessage = "Wine \(check.tag) is available (\(check.assetName))"
+        } catch {
+            wineReleaseCheck = nil
+            statusMessage = L10n.error("Wine release check failed: \(error.localizedDescription)")
+        }
+    }
+
+    func installWineRelease() async {
+        guard !isBusy, let check = wineReleaseCheck else { return }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            let store = wineStore
+            let engine = try await wineReleases.install(check, store: store) { message in
+                Task { @MainActor [weak self] in self?.statusMessage = message }
+            }
+            reloadEngines()
+            statusMessage = "Installed \(engine.name) \(engine.version)"
+        } catch {
+            statusMessage = L10n.error("Wine install failed: \(error.localizedDescription)")
         }
     }
 

@@ -39,25 +39,24 @@ final class WineEngineTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: engine.rootURL.path).sorted(), ["Runtime", WineEngine.manifestFilename].sorted())
     }
 
-    func testOfficialGPTKIsManualLicensedLocalRegistrationNotAnAutomaticLatestDownload() throws {
+    func testLocalOpenSourceEngineRequiresExplicitLicenseConfirmation() throws {
         let fixture = try ManagedAppTestFixture()
         defer { fixture.remove() }
         let source = try fixture.engineFolder()
         let store = WineEngineStore(rootURL: fixture.enginesRoot)
         XCTAssertThrowsError(try store.registerLocalEngine(
-            from: source, id: "gptk-test", name: "GPTK", version: "user-supplied",
-            executablePath: "bin/wine64", distribution: .gamePortingToolkit, licenseConfirmed: false
+            from: source, id: "local-test", name: "Local Wine", version: "user-supplied",
+            executablePath: "bin/wine64", distribution: .community, licenseConfirmed: false
         ))
         XCTAssertFalse(ManagedAppFiles.exists(fixture.enginesRoot))
         let engine = try store.registerLocalEngine(
-            from: source, id: "gptk-test", name: "GPTK", version: "user-supplied",
-            executablePath: "bin/wine64", distribution: .gamePortingToolkit, licenseConfirmed: true
+            from: source, id: "local-test", name: "Local Wine", version: "user-supplied",
+            executablePath: "bin/wine64", distribution: .community, licenseConfirmed: true
         )
-        XCTAssertEqual(engine.distribution, .gamePortingToolkit)
+        XCTAssertEqual(engine.distribution, .community)
         XCTAssertEqual(engine.version, "user-supplied")
-        XCTAssertEqual(WineEngineStore.officialGPTKDownloadURL.host, "developer.apple.com")
-        XCTAssertTrue(WineEngineStore.gptkDownloadNotice.contains("Apple"))
-        XCTAssertTrue(WineEngineStore.gptkDownloadNotice.contains("license"))
+        XCTAssertTrue(WineEngineStore.openSourceNotice.contains("LGPL"))
+        XCTAssertTrue(WineEngineStore.openSourceNotice.contains("Gcenx"))
     }
 
     func testMovedEngineStoreRebasesPersistedRootAndExecutablePaths() throws {

@@ -19,7 +19,7 @@ platform receives its first item:
 | Folder | Layout | Launch model |
 | --- | --- | --- |
 | `ios-apps` | flat `<bundle-id>.app` bundles | Mac Catalyst preparation + in-process runtime |
-| `mac-apps` | `<id>/Payload/<name>.app`, `Data/` | copy-only import, `sandbox-exec`, private `HOME` |
+| `mac-apps` | `<id>/Payload/<name>.app`, `Data/` | copy-only import, direct native launch, private `HOME` |
 | `wine-apps` | `<id>/Payload/Program`, `Data/`, `Prefix/` | registered Wine engine + per-game prefix |
 
 The legacy `Applications/` folder is still scanned for iOS apps, so an existing
@@ -36,17 +36,24 @@ activates the entry after validation.
 
 ## Managed launch boundaries
 
-Mac and Wine launches use an allowlist environment and a generated
-`sandbox-exec` profile. Native Mac apps get read access to system frameworks and
-the usual Apple XPC services, write access only to their entry `Data` and temp
-directories, and no host-home access. Wine also gets write access to its private
-prefix. Host drive mappings are removed before launch and the engine is reloaded
-from a self-contained copy.
+Mac entries launch directly from their managed payload with an allowlist
+environment and private home/temp directories. There is no sandbox wrapper, VM
+or emulation layer; absolute host paths remain reachable. Wine entries use a
+generated `sandbox-exec` profile, a private prefix and a self-contained engine.
+Host drive mappings are removed before a Wine launch.
 
 This is **not** a virtual machine, kernel sandbox or anti-cheat-safe environment.
 A native app that requires an unsupported helper or entitlement may fail; Wine
 games that require kernel drivers or anti-cheat will not work. Process handles are
 created only by our own launcher and never from a caller-supplied PID.
+
+## Open-source Wine engines
+
+Automatic engines come from the open-source `Gcenx/macOS_Wine_builds` release
+feed. GitHub's SHA-256 is mandatory; if the rate-limited API is unavailable, the
+public Atom feed and asset page provide the same tag and hash. The tar archive is
+listed and path-admitted before extraction, then the runtime is moved into place
+without a second copy. GPTK is no longer supported.
 
 ## Updates and runtime refresh
 

@@ -6,7 +6,7 @@ import Foundation
 /// codesign, LaunchServices, a shell, or the caller's injection environment.
 struct ManagedAppService: Sendable {
     static let windowsExecutableOnlyImportHint = "Executable-only import copies just this .exe, not its DLLs or game assets. Prefer importing the program's folder and selecting an executable relative to that folder."
-    static let isolationNotice = "Managed launches require sandbox-exec and restrict direct filesystem access. They are not a VM or a guarantee of complete isolation: GUI/system services and network access still exist, and apps needing host files, helpers, entitlements, or writes beside their executable may not work."
+    static let isolationNotice = "Mac apps launch natively from the managed copy with HOME, CFFIXED_USER_HOME and TMPDIR redirected into the entry's Data folder. This is not a VM and does not add filesystem isolation: an app that opens absolute host paths can still reach them. Apps that require installers, privileged helpers or write beside their executable may not work."
 
     @MainActor private static var processes: [UUID: ManagedAppProcess] = [:]
 
@@ -136,6 +136,13 @@ struct ManagedAppService: Sendable {
                 throw PearError.launchFailed("Select the Wine engine recorded in this game's manifest")
             }
             try engine.validate()
+            let archs = (try? Shell.run("/usr/bin/lipo", ["-archs", engine.executableURL.path])) ?? ""
+            if !archs.split(whereSeparator: \.isWhitespace).contains("arm64"),
+               !FileManager.default.fileExists(atPath: "/Library/Apple/usr/libexec/oah") {
+                throw PearError.launchFailed(
+                    "This Wine build is x86_64 and needs Rosetta 2. Install it with `softwareupdate --install-rosetta` or register an arm64 engine."
+                )
+            }
             try ManagedExecutable.validatePE(try ManagedAppFiles.regularFile(entry.payloadURL, inside: entry.directoryURL))
             executable = engine.executableURL
             arguments = [entry.payloadURL.path]
@@ -143,10 +150,21 @@ struct ManagedAppService: Sendable {
         case .iOS:
             throw PearError.invalidPackage("Use the iOS launcher for an iOS library entry")
         }
-        let profile = try Self.sandboxProfile(for: entry, engine: engine)
+        let profile = entry.platform == .wine ? try Self.sandboxProfile(for: entry, engine: engine) : ""
+        let configuredExecutable: URL
+        let configuredArguments: [String]
+        if entry.platform == .wine {
+            configuredExecutable = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+            configuredArguments = ["-p", profile, executable.path] + arguments
+        } else {
+            // Native launch: no sandbox wrapper, VM or emulation layer. The
+            // private HOME/TMPDIR still keep the app's own data in its entry.
+            configuredExecutable = executable
+            configuredArguments = arguments
+        }
         return ManagedAppLaunchConfiguration(
-            executableURL: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
-            arguments: ["-p", profile, executable.path] + arguments,
+            executableURL: configuredExecutable,
+            arguments: configuredArguments,
             environment: Self.environment(for: entry, engine: engine, metalHUDEnabled: metalHUDEnabled),
             workingDirectoryURL: workingDirectory, sandboxProfile: profile
         )
@@ -160,8 +178,9 @@ struct ManagedAppService: Sendable {
         _ entry: LibraryEntry, engine: WineEngine? = nil,
         metalHUDEnabled: Bool? = nil, activate: Bool = true
     ) async throws -> ManagedAppProcess {
-        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else {
-            throw PearError.launchFailed("sandbox-exec is unavailable; refusing an unconfined launch")
+        if entry.platform == .wine,
+           !FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") {
+            throw PearError.launchFailed("sandbox-exec is unavailable; refusing an unconfined Wine launch")
         }
         guard !runningProcesses.contains(where: { $0.entryDirectoryURL == entry.directoryURL.standardizedFileURL }) else {
             throw PearError.launchFailed("This managed entry already has a tracked running process")

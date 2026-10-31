@@ -13,8 +13,8 @@ struct SettingsView: View {
     @State private var engineName = ""
     @State private var engineVersion = "user-supplied"
     @State private var engineExecutablePath = "bin/wine64"
-    @State private var engineDistribution: WineEngine.Distribution = .community
     @State private var engineLicenseConfirmed = false
+    @State private var wineChannel: WineReleaseChannel = .staging
 
     // Community download form.
     @State private var downloadURL = ""
@@ -146,9 +146,44 @@ struct SettingsView: View {
 
     private var wine: some View {
         Form {
+            Section("Open-source Wine — automatic") {
+                Picker("Channel", selection: $wineChannel) {
+                    ForEach(WineReleaseChannel.allCases) { channel in
+                        Text(channel.title).tag(channel)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Button("Check Latest Release") {
+                    Task { await state.checkWineRelease(channel: wineChannel) }
+                }
+                .disabled(state.isBusy)
+                if let check = state.wineReleaseCheck {
+                    LabeledContent("Version", value: check.tag)
+                    LabeledContent("Asset", value: check.assetName)
+                    if check.size > 0 {
+                        LabeledContent("Size", value: ByteCountFormatter.string(fromByteCount: check.size, countStyle: .file))
+                    }
+                    LabeledContent("SHA-256") {
+                        Text(check.sha256)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Button("Download and Install") {
+                        Task { await state.installWineRelease() }
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(state.isBusy)
+                }
+                Text(WineEngineStore.openSourceNotice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Registered engines") {
                 if state.wineEngines.isEmpty {
-                    Text("No Wine engine registered. Add a self-contained runtime below.")
+                    Text("No Wine engine registered. Check for an open-source build above or add a custom runtime.")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(state.wineEngines) { engine in
@@ -162,7 +197,7 @@ struct SettingsView: View {
                     }
                 }
                 HStack {
-                    Button("Add Engine…") { showingEngineSheet = true }
+                    Button("Add Local Engine…") { showingEngineSheet = true }
                         .disabled(state.isBusy)
                     Button("Open Engines Folder") {
                         let folder = state.storageRootURL.appendingPathComponent("Engines", isDirectory: true)
@@ -170,15 +205,9 @@ struct SettingsView: View {
                         NSWorkspace.shared.activateFileViewerSelecting([folder])
                     }
                 }
-                Text(WineEngineStore.gptkDownloadNotice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Open Apple's Game Porting Toolkit page") {
-                    NSWorkspace.shared.open(WineEngineStore.officialGPTKDownloadURL)
-                }
             }
 
-            Section("Download a community engine") {
+            Section("Advanced: verified community archive") {
                 Text(WineEngineStore.communityDownloadNotice)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -193,7 +222,7 @@ struct SettingsView: View {
             }
 
             Section("How games are stored") {
-                Text("Each Windows game gets Payload, Data and Prefix directories. Saves stay with the game and are included in its backup. Host drive mappings are removed; the launch is sandboxed. This is not a virtual machine and cannot run kernel-level anti-cheat.")
+                Text("Each Windows game gets Payload, Data and Prefix directories. Saves stay with the game and are included in its backup. Host drive mappings are removed; the launch is sandboxed. This is not a virtual machine and cannot run kernel-level anti-cheat. The macOS WineHQ packages are currently osx64; Apple silicon may require Rosetta 2.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -223,10 +252,6 @@ struct SettingsView: View {
                 TextField("Display name", text: $engineName)
                 TextField("Version", text: $engineVersion)
                 TextField("Native Wine executable (relative to folder)", text: $engineExecutablePath)
-                Picker("Distribution", selection: $engineDistribution) {
-                    Text("Community").tag(WineEngine.Distribution.community)
-                    Text("Apple Game Porting Toolkit").tag(WineEngine.Distribution.gamePortingToolkit)
-                }
                 Toggle("I reviewed this engine's license", isOn: $engineLicenseConfirmed)
             }
             .formStyle(.grouped)
@@ -240,13 +265,12 @@ struct SettingsView: View {
                     let name = engineName
                     let version = engineVersion
                     let executable = engineExecutablePath
-                    let distribution = engineDistribution
                     let license = engineLicenseConfirmed
                     showingEngineSheet = false
                     Task {
                         await state.registerEngine(
                             from: folder, id: id, name: name, version: version,
-                            executablePath: executable, distribution: distribution,
+                            executablePath: executable, distribution: .community,
                             licenseConfirmed: license
                         )
                     }

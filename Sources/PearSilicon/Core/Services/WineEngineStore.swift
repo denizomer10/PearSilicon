@@ -7,7 +7,9 @@ import Foundation
 /// relative to rootURL. The store rebases rootURL when loading a moved store.
 struct WineEngine: Codable, Hashable, Identifiable, Sendable {
     enum Distribution: String, Codable, Sendable {
-        case gamePortingToolkit
+        /// Open-source WineHQ build downloaded by PearSilicon.
+        case wineHQ
+        /// User-provided open-source or community build.
         case community
     }
 
@@ -40,11 +42,12 @@ struct WineEngine: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
-/// Registration never executes an engine. There is intentionally no automatic
-/// "latest GPTK", Apple-account login, license acceptance, or archive extractor.
+/// Registration never executes an engine. Automatic downloads use verified
+/// open-source WineHQ builds from a GitHub release feed; local registration is
+/// still available for custom self-contained runtimes.
 struct WineEngineStore: Sendable {
-    static let officialGPTKDownloadURL = URL(string: "https://developer.apple.com/games/game-porting-toolkit/")!
-    static let gptkDownloadNotice = "Download Game Porting Toolkit from Apple yourself and review/accept Apple's license. Choose its self-contained runtime directory and native Wine executable. PearSilicon does not fetch GPTK, claim a latest version, install Homebrew dependencies, or accept a license on your behalf."
+    static let automaticReleaseSource = "Gcenx/macOS_Wine_builds"
+    static let openSourceNotice = "Automatic engines are open-source WineHQ builds packaged for macOS by Gcenx/macOS_Wine_builds. Wine is licensed under the LGPL; review its license and the release notes. Builds are verified against the SHA-256 published by GitHub before extraction. They are not signed or notarized by PearSilicon."
     static let communityDownloadNotice = "Only download an engine from a URL you trust after reviewing its license. Supply an independently obtained SHA-256. A matching hash proves integrity, not publisher identity or safety. Downloads are saved as opaque archives; inspect/extract them manually and then register a self-contained runtime directory."
     static let defaultMaximumDownloadBytes: Int64 = 2 * 1_024 * 1_024 * 1_024
     static let maximumAllowedDownloadBytes: Int64 = 8 * 1_024 * 1_024 * 1_024
@@ -100,6 +103,52 @@ struct WineEngineStore: Sendable {
         }
         guard let installed else { throw PearError.invalidPackage("Wine engine transaction did not produce a descriptor") }
         return installed
+    }
+
+    /// Installs a verified, already-extracted downloaded engine by moving the
+    /// runtime into its final directory instead of copying it a second time.
+    /// The source must be our private extraction directory; all other callers use
+    /// `registerLocalEngine` so a user's existing engine is never modified.
+    func installDownloadedEngine(
+        extractedRoot: URL, id: String, name: String, version: String,
+        executablePath: String, distribution: WineEngine.Distribution = .wineHQ
+    ) throws -> WineEngine {
+        try Self.validateID(id)
+        _ = try ManagedAppFiles.displayText(name)
+        _ = try ManagedAppFiles.displayText(version)
+        try LibraryPath.validateRelative(executablePath)
+        let source = try ManagedAppFiles.existingDirectory(extractedRoot)
+        try ManagedAppFiles.validateTree(source)
+        try ManagedExecutable.validateMacOS(try ManagedAppFiles.regularFile(
+            source.appendingPathComponent(executablePath), inside: source
+        ))
+        let root = try ManagedAppFiles.canonicalRoot(rootURL)
+        let madeRoot = !ManagedAppFiles.exists(root)
+        if madeRoot { try ManagedAppFiles.makeDirectory(root) }
+        let destination = root.appendingPathComponent(id, isDirectory: true)
+        guard !ManagedAppFiles.exists(destination) else {
+            throw PearError.invalidPackage("A Wine engine with this version is already installed")
+        }
+        do {
+            try ManagedAppFiles.makeDirectory(destination)
+            let runtime = destination.appendingPathComponent("Runtime", isDirectory: true)
+            try FileManager.default.moveItem(at: source, to: runtime)
+            try ManagedAppFiles.validateTree(runtime)
+            let engine = WineEngine(
+                id: id, name: name, version: version, rootURL: destination,
+                executablePath: "Runtime/\(executablePath)", distribution: distribution
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(engine).write(
+                to: destination.appendingPathComponent(WineEngine.manifestFilename), options: .atomic
+            )
+            return engine
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            if madeRoot { _ = rmdir(root.path) }
+            throw error
+        }
     }
 
     /// Read-only, including for a store that has never been created. Malformed

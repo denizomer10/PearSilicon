@@ -376,7 +376,7 @@ struct ContentView: View {
         guard let engine = state.wineEngines.first else {
             alert = AlertPayload(
                 title: "No Wine engine",
-                message: "Register a Wine engine in Settings before adding a Windows game. PearSilicon never downloads or accepts Apple's GPTK license on your behalf."
+                message: "Register an open-source Wine engine in Settings before adding a Windows game. PearSilicon can download the latest WineHQ Stable, Staging or Development build for you."
             )
             return
         }

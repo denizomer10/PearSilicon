@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>One portable library for iOS apps, Mac apps and Wine games.</strong><br>
-  Mac Catalyst-based iOS preparation, sandboxed Mac apps, private Wine prefixes and single-file backups.
+  Mac Catalyst-based iOS preparation, native Mac app launches, private Wine prefixes and single-file backups.
 </p>
 
 <p align="center">
@@ -49,8 +49,8 @@ further. Published artifacts keep their own release notes and tested commit.
 | | |
 | :--- | :--- |
 | **iOS Apps** | `.ipa` / iOS `.app` preparation, opt-in keymapper, Metal HUD, pointer lock |
-| **Mac Apps** | Copy-only `.app` import, private data directory, sandboxed launch |
-| **Wine Games** | Per-game prefix, private data, user-registered GPTK/community engines |
+| **Mac Apps** | Copy-only `.app` import, private data directory, direct native launch |
+| **Wine Games** | Per-game prefix, private data, automatic open-source WineHQ engines |
 | **Library** | `ios-apps`, `mac-apps`, `wine-apps`; attach or move a whole library to an external disk |
 | **Backups** | One `.pearbackup` file per app or game, including saves, keychain data, ODR and prefixes |
 | **Updates** | Explicit GitHub release check, verified staging and atomic relaunch helper |
@@ -75,15 +75,17 @@ can be newer than the published ZIP.
 
 - Three library tabs with a Liquid Glass switch: **iOS Apps**, **Mac Apps** and **Wine Games**.
 - Install IPA archives and iOS device `.app` bundles through the GUI or CLI.
-- Native Mac `.app` import without patching or re-signing; launches use a private
-  home and a `sandbox-exec` profile. This is container-style process isolation,
-  not a virtual machine, and some Mac apps will need unsupported system access.
+- Native Mac `.app` import without patching or re-signing. Apps launch **directly
+  and natively** from the managed copy with HOME, CFFIXED_USER_HOME and TMPDIR
+  redirected into the entry's `Data` folder. There is no VM or emulation layer;
+  absolute host paths remain reachable by the app.
 - Windows games run in per-game Wine prefixes with isolated data. Host `z:` and
   absolute drive links are removed and the process is sandboxed.
-- Register Apple Game Porting Toolkit or a community Wine runtime yourself; the
-  app never downloads GPTK or accepts its license on your behalf. Community
-  archives can be downloaded only with an explicit HTTPS URL, SHA-256 and license
-  confirmation.
+- Automatically fetch the latest open-source WineHQ **Stable**, **Staging** or
+  **Development** build published for macOS by `Gcenx/macOS_Wine_builds`. GitHub's
+  SHA-256 is mandatory, archives are path-admitted before extraction, and the
+  runtime is installed without a second full copy. Local open-source engines can
+  still be registered manually. GPTK is no longer supported or offered.
 - Keymapper, opt-in per iOS app and off by default: tap, hold, joystick, mouse-look
   and swipe. Mac and Wine entries do not use the iOS keymapper.
 - Per-app Metal HUD and pointer-lock controls for iOS; Metal HUD for managed entries.
@@ -170,7 +172,7 @@ python3 scripts/e2e-games.py --cli <path-to-PearSilicon-executable> --stress
 
 `swift test` covers installer atomicity, archive admission, stopped-app leases,
 storage migration, GUI import routing/FIFO/cancellation, portable library
-scanning, backup/restore round trips, managed Mac sandbox launches, the fake-Wine
+scanning, backup/restore round trips, native Mac launches, the fake-Wine
 prefix/launch path and update parsing. The runtime suites use temporary data and
 exercise permissions, keychain generation, IPC deadlines and cloud-identity
 compatibility. External-volume migration has an opt-in real-disk test:
@@ -229,22 +231,21 @@ than PlayCover. A successful launch check is not a gameplay compatibility result
 ### Mac apps
 
 A native `.app` is copied into `mac-apps/<bundle-id>/Payload` without patching or
-re-signing. Its `Data`, `Library` and `tmp` are redirected into the entry, and the
-launch runs under `sandbox-exec` with no host-home write access. This is
-container-style process isolation, **not** a VM, a security boundary against
-hostile native code, or a guarantee that every Mac app works. Apps that require
-unsupported helpers, entitlements, kernel extensions or broad system access may
-fail; the last launch log is in `Data/launch.log`.
+re-signing. Its `HOME`, `CFFIXED_USER_HOME`, `TMPDIR`, caches and preferences are
+redirected into the entry, then the app is launched directly as a native macOS
+process. There is no virtual machine, Wine layer or `sandbox-exec` wrapper. This
+means the app can still reach absolute host paths; the feature is for central
+organization, portable data and one-click backups, not security isolation.
 
 ### Wine games
 
 Windows entries live in `wine-apps/<id>/` with `Payload`, `Data` and `Prefix`.
 Each game gets its own prefix, and host drive mappings are removed before the
-game starts. PearSilicon copies a user-selected, self-contained runtime into
-`Engines/`; it does not execute an engine while registering it. GPTK remains a
-manual Apple download and license acceptance. Community archives require an
-explicit HTTPS URL, an independently supplied SHA-256 and per-request license
-confirmation. Real games, anti-cheat and kernel drivers are not guaranteed.
+game starts. **Settings → Wine** checks the public release feed for the latest
+open-source WineHQ build and installs it after SHA-256 verification and safe
+tar-path admission. The macOS builds are currently `osx64`, so Apple silicon may
+need Rosetta 2. Wine is not a Windows VM; anti-cheat and kernel drivers are not
+supported. Local open-source runtimes can still be registered manually.
 
 ### Portable library
 
@@ -381,8 +382,9 @@ your app, or generate a starter map with `pearsilicon keymap <id> --generate`:
 
 - iOS apps still depend on Apple's Mac Catalyst/`/System/iOSSupport` stack. No
   kernel-level iOS emulation or full UIKit reimplementation is provided.
-- Mac app isolation is process-level and can be stricter than an app tolerates;
-  Wine is not a Windows VM and cannot run kernel anti-cheat.
+- Mac apps run natively; `HOME` and temp data are redirected, but absolute host
+  paths remain reachable and no filesystem sandbox is claimed. Wine is not a
+  Windows VM and cannot run kernel anti-cheat.
 - Backups are unencrypted. The keychain and app data included in a backup may be
   sensitive; store the file accordingly.
 - GitHub release digests verify downloaded bytes against GitHub metadata. They

@@ -281,26 +281,20 @@ final class ManagedAppTests: XCTestCase {
         XCTAssertFalse(ManagedAppFiles.exists(fixture.library))
     }
 
-    func testMacLaunchPlanIsSandboxedHasOnlyPrivateWritableHomeAndCleanEnvironment() throws {
+    func testMacLaunchPlanUsesTheNativeExecutableWithPrivateHomeAndCleanEnvironment() throws {
         let fixture = try ManagedAppTestFixture(name: "quoted-\"-path")
         defer { fixture.remove() }
         let source = try fixture.macBundle()
         let service = ManagedAppService()
         let entry = try service.importMacApp(from: source, libraryRoot: fixture.library)
         let plan = try service.launchConfiguration(for: entry, metalHUDEnabled: true)
-        XCTAssertEqual(plan.executableURL.path, "/usr/bin/sandbox-exec")
-        XCTAssertEqual(plan.arguments.prefix(2), ["-p", plan.sandboxProfile])
-        XCTAssertEqual(plan.arguments.last, entry.payloadURL.appendingPathComponent("Contents/MacOS/Fixture").path)
-        XCTAssertTrue(plan.sandboxProfile.contains("(deny default)"))
-        XCTAssertFalse(plan.sandboxProfile.contains("(allow default)"))
-        XCTAssertFalse(plan.sandboxProfile.contains("(subpath \"/Users\")"))
-                XCTAssertFalse(plan.sandboxProfile.contains("(subpath \"/System\")"))
-        XCTAssertFalse(plan.sandboxProfile.contains("(subpath \"/private/tmp\")"))
-        XCTAssertTrue(plan.sandboxProfile.contains("quoted-\\\"-path"))
-        let writeRule = try XCTUnwrap(plan.sandboxProfile.split(separator: "\n").first { $0.contains("allow file-write*") })
-        XCTAssertTrue(writeRule.contains("/Data"))
-        XCTAssertFalse(writeRule.contains("/Prefix"))
-        XCTAssertFalse(writeRule.contains("/Payload"))
+        XCTAssertEqual(
+            plan.executableURL.path,
+            entry.payloadURL.appendingPathComponent("Contents/MacOS/Fixture").path
+        )
+        XCTAssertEqual(plan.arguments, [])
+        XCTAssertTrue(plan.sandboxProfile.isEmpty, "Mac apps run natively, without sandbox-exec")
+        XCTAssertFalse(plan.executableURL.path.contains("sandbox-exec"))
         let environment = ManagedAppService.environment(for: entry, metalHUDEnabled: true, inherited: [
             "HOME": "/host", "TMPDIR": "/host-tmp", "PATH": "/untrusted", "LANG": "en_US.UTF-8",
             "DYLD_INSERT_LIBRARIES": "/inject", "DYLD_LIBRARY_PATH": "/inject",

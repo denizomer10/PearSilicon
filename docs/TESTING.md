@@ -33,10 +33,12 @@ service.
 
 | Suite | Main checks |
 | --- | --- |
-| `swift test` | Installer atomic replacement, CRC and archive admission, stopped-app leases, mode switches, storage migration, GUI import routing/FIFO/cancellation, portable-library scan, backup/restore round trips, managed Mac sandbox launch, fake-Wine prefix/launch, update parsing and host protocol |
+| `swift test` | Installer atomic replacement, CRC and archive admission, stopped-app leases, mode switches, storage migration, GUI import routing/FIFO/cancellation, portable-library scan, backup/restore round trips, native Mac launch, fake-Wine prefix/launch, update parsing and host protocol |
 | `ExternalDiskStorageTests` | Opt-in move of a synthetic library to a real external APFS volume; opt-in because it requires `PEAR_EXTERNAL_TEST_DIR` |
-| `ManagedMacLaunchSmokeTests` | Compiles a minimal Cocoa app, imports it copy-only, launches under `sandbox-exec` and stops it |
+| `ManagedMacLaunchSmokeTests` | Compiles a minimal Cocoa app, imports it copy-only, launches it natively and stops it |
 | `ManagedWineLaunchSmokeTests` | Compiles a fake native Wine engine plus a minimal PE; verifies prefix bootstrap, host-mapping removal, sandboxed spawn and stop |
+| `WineReleaseTests` | Open-source Wine release/asset selection, GitHub digest parsing, Atom fallback parsing and engine IDs |
+| `WineReleaseIntegrationTests` | Opt-in real download of an open-source WineHQ build; verifies SHA-256, tar admission, extraction, executable discovery and engine registration |
 | `filesystem-smoke.py` | Writable reopen repair only inside `PEAR_HOME_DIR`; path/symlink/hardlink escapes; mode and errno preservation; pre-fix negative control |
 | `keychain-smoke.py` | Symmetric public/private sanitization, tagged lookup across processes, signing/verification, real Catalyst legacy generation |
 | `runtime-client-smoke.py` | Authenticated IPC framing, timeouts, loss/ACK behavior, malformed replies, immutable KV cache, stable `NSData` ubiquity token |
@@ -76,16 +78,22 @@ future instrumented harness. Do not describe a passing run as "the game works".
 The Mac/Wine smoke tests prove the managed launch/stop plumbing only; they do not
 prove that a particular commercial Mac app or Windows game is compatible.
 
-## External disk check
+## External disk and real Wine checks
 
 ```sh
 PEAR_EXTERNAL_TEST_DIR=/Volumes/YourDisk swift test --filter ExternalDiskStorageTests
+PEAR_WINE_INTEGRATION_DIR=/Volumes/YourDisk swift test --filter WineReleaseIntegrationTests
 ```
 
-The test creates a private synthetic library, moves it to a uniquely named folder
-on the selected volume, verifies every file and the marker, and removes its own
-destination. It never touches the real `~/Library/Application Support/PearSilicon`
-library. A skipped test is not a pass.
+The storage test creates a private synthetic library, moves it to a uniquely named
+folder on the selected volume, verifies every file and the marker, and removes its
+own destination. The Wine test downloads a published open-source build, verifies
+its SHA-256, admits every tar entry, extracts it, finds the native Wine executable
+and registers the engine. Both tests write only under unique temporary roots and
+remove them afterwards. They never touch the real
+`~/Library/Application Support/PearSilicon` library. A skipped test is not a pass.
+On Apple silicon the current macOS WineHQ packages are `osx64` and may require
+Rosetta 2; the test prints the architecture.
 
 ## Manual checks
 

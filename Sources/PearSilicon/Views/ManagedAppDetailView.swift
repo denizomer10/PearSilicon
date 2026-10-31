@@ -233,8 +233,8 @@ struct ManagedAppDetailView: View {
     private var isolationNote: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 8) {
-                Label(entry.platform == .wine ? "Private Wine prefix" : "Container-style Mac app",
-                      systemImage: "lock.shield")
+                Label(entry.platform == .wine ? "Private Wine prefix" : "Native Mac app",
+                      systemImage: entry.platform == .wine ? "lock.shield" : "desktopcomputer")
                     .font(.callout.weight(.medium))
                 Text(entry.platform == .wine
                      ? "Windows games run with a per-game prefix. Host drive mappings are removed and the process is sandboxed. This is process-level isolation, not a virtual machine; a game that needs a kernel driver or anti-cheat will not work."
