@@ -9,6 +9,43 @@ import XCTest
 @MainActor
 final class ManagedMacLaunchSmokeTests: XCTestCase {
 
+    func testLaunchesTheInstalledZedEntryWhenConfigured() async throws {
+        guard let path = ProcessInfo.processInfo.environment["PEAR_INSTALLED_MAC_ENTRY"], !path.isEmpty else {
+            throw XCTSkip("Set PEAR_INSTALLED_MAC_ENTRY to an installed mac-apps entry")
+        }
+        let directory = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        let manifestURL = directory.appendingPathComponent(LibraryManifest.filename)
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+            throw XCTSkip("No installed entry at \(directory.path)")
+        }
+        let manifest = try JSONDecoder().decode(LibraryManifest.self, from: Data(contentsOf: manifestURL))
+        let entry = LibraryEntry(manifest: manifest, directoryURL: directory)
+        XCTAssertEqual(entry.platform, .macOS)
+
+        let plan = try ManagedAppService().launchConfiguration(for: entry)
+        XCTAssertFalse(plan.executableURL.path.contains("sandbox-exec"))
+        XCTAssertTrue(plan.arguments.isEmpty)
+
+        let process = try await ManagedAppService().launch(entry, activate: false)
+        defer { process.stop() }
+        try await Task.sleep(for: .seconds(3))
+        if !process.isRunning {
+            let log = entry.dataURL.appendingPathComponent("launch.log")
+            let output = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+            if output.localizedCaseInsensitiveContains("already running") {
+                throw XCTSkip("Zed is already running; quit it fully before testing the managed copy")
+            }
+            XCTFail("The installed entry exited during launch. Log:\n\(output.suffix(4_000))")
+            return
+        }
+        process.stop()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+        while process.isRunning, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertFalse(process.isRunning, "The installed entry did not stop")
+    }
+
     func testImportsAUserSuppliedMacBundleWithoutReSigning() throws {
         guard let path = ProcessInfo.processInfo.environment["PEAR_REAL_MAC_APP"], !path.isEmpty else {
             throw XCTSkip("Set PEAR_REAL_MAC_APP to an .app path to opt in")
