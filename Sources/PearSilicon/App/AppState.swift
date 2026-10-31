@@ -102,11 +102,10 @@ final class AppState: ObservableObject {
     var keymapStore: KeymapStore
     private var packageImports: PackageImportOperations
     private let observesWorkspace: Bool
-    private let managedApps = ManagedAppService()
+    private var iosApps: IOSAppService
+    private let macApps = MacAppService()
     private let portableLibrary: PortableLibrary
-    private let wineStore: WineEngineStore
-    private let wineReleases = WineReleaseService()
-    private let graphicsComponents = GraphicsComponentService()
+    private let wineApps: WineAppService
     private lazy var updater = AppUpdateService()
 
     @Published private(set) var wineReleaseCheck: WineReleaseCheck?
@@ -158,13 +157,15 @@ final class AppState: ObservableObject {
         self.libraryURL = library
         self.storageRootURL = base
         self.portableLibrary = PortableLibrary(rootURL: base)
-        self.wineStore = WineEngineStore(rootURL: base.appendingPathComponent("Engines", isDirectory: true))
+        let engines = WineEngineStore(rootURL: base.appendingPathComponent("Engines", isDirectory: true))
+        self.wineApps = WineAppService(engines: engines)
         self.previousStorageRootURL = explicitRoot == nil ? StorageLocationStore.shared.previousRootURL : nil
         let installer = PackageInstaller(libraryURL: library)
         self.packageInstaller = installer
         self.packageImports = packageImports ?? .live(installer: installer)
         self.observesWorkspace = observesWorkspace
         self.launcher = AppLauncher(libraryURL: library)
+        self.iosApps = IOSAppService(launcher: self.launcher, installer: installer)
         self.keymapStore = KeymapStore(baseURL: keymaps)
 
         if observesWorkspace { observeWorkspace() }
@@ -180,6 +181,7 @@ final class AppState: ObservableObject {
         packageInstaller = PackageInstaller(libraryURL: libraryURL)
         packageImports = .live(installer: packageInstaller)
         launcher = AppLauncher(libraryURL: libraryURL)
+        iosApps = IOSAppService(launcher: launcher, installer: packageInstaller)
         keymapStore = KeymapStore(baseURL: base.appendingPathComponent("Keymaps", isDirectory: true))
         currentKeymap = selectedApp.flatMap { try? keymapStore.load(for: $0.id) }
     }
@@ -311,7 +313,7 @@ final class AppState: ObservableObject {
 
     func reloadEngines() {
         do {
-            wineEngines = try wineStore.engines()
+            wineEngines = try wineApps.engines.engines()
         } catch {
             wineEngines = []
             libraryWarnings.append("Wine engines: \(error.localizedDescription)")
@@ -417,33 +419,65 @@ final class AppState: ObservableObject {
         isBusy = true
         defer { finishBusyWork() }
         do {
+            var target = entry
             let engine: WineEngine?
             switch entry.platform {
             case .wine:
-                guard let id = entry.manifest.wineEngineID else {
-                    throw PearError.launchFailed("This game has no Wine engine selected")
-                }
-                guard let found = try wineStore.engine(id: id) else {
-                    throw PearError.launchFailed("The selected Wine engine is no longer installed")
-                }
-                engine = found
+                let resolved = try resolveWineEngine(for: entry)
+                target = resolved.entry
+                engine = resolved.engine
             case .macOS:
                 engine = nil
             case .iOS:
                 throw PearError.launchFailed("Use the iOS launcher for this entry")
             }
-            statusMessage = "Launching \(entry.displayName)…"
-            let process = try await managedApps.launch(
-                entry, engine: engine,
-                metalHUDEnabled: entry.manifest.metalHUDEnabled
-            )
-            managedRunning[entry.id] = process
-            platform = entry.platform
-            selectedManagedEntryID = entry.id
-            statusMessage = L10n.launching(entry.displayName)
+            statusMessage = "Launching \(target.displayName)…"
+            let process: ManagedAppProcess
+            if target.platform == .macOS {
+                process = try await macApps.launch(
+                    target, metalHUDEnabled: target.manifest.metalHUDEnabled
+                )
+            } else {
+                guard let engine else {
+                    throw PearError.launchFailed("Select the Wine engine recorded in this game's manifest")
+                }
+                process = try await wineApps.launch(
+                    target, engine: engine, metalHUDEnabled: target.manifest.metalHUDEnabled
+                )
+            }
+            managedRunning[target.id] = process
+            platform = target.platform
+            selectedManagedEntryID = target.id
+            statusMessage = L10n.launching(target.displayName)
         } catch {
             statusMessage = L10n.error("Launch failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Repairs a stale manifest before launch. A single installed engine is
+    /// linked automatically; with several engines the user must choose one, so
+    /// the launcher never guesses silently across versions.
+    private func resolveWineEngine(for entry: LibraryEntry) throws -> (entry: LibraryEntry, engine: WineEngine) {
+        if let id = entry.manifest.wineEngineID, let found = try wineApps.engines.engine(id: id) {
+            return (entry, found)
+        }
+        let installed = try wineApps.engines.engines()
+        guard !installed.isEmpty else {
+            throw PearError.launchFailed(
+                "No Wine engine is installed. Open Settings → Wine and download an open-source build first."
+            )
+        }
+        guard installed.count == 1 else {
+            throw PearError.launchFailed(
+                "\(entry.displayName) has no matching Wine engine. Choose one in the game's detail pane."
+            )
+        }
+        let engine = installed[0]
+        updateManifest(entry) { $0.wineEngineID = engine.id }
+        reloadEngines()
+        let refreshed = managedEntries.first { $0.directoryURL == entry.directoryURL } ?? entry
+        statusMessage = "Linked \(entry.displayName) to \(engine.name) \(engine.version)"
+        return (refreshed, engine)
     }
 
     func stop(_ entry: LibraryEntry) {
@@ -478,7 +512,45 @@ final class AppState: ObservableObject {
     }
 
     func setWineEngine(_ engineID: String, for entry: LibraryEntry) {
+        guard wineEngines.contains(where: { $0.id == engineID }) else {
+            statusMessage = L10n.error("That Wine engine is not installed")
+            return
+        }
         updateManifest(entry) { $0.wineEngineID = engineID }
+        statusMessage = "Wine engine set to \(engineID)"
+    }
+
+    /// Executables already inside this entry's Payload/Program folder. Used to
+    /// repair an entry without re-importing (and re-downloading) the game.
+    func wineExecutables(for entry: LibraryEntry) -> [WineExecutableCandidate] {
+        guard entry.platform == .wine else { return [] }
+        let program = entry.directoryURL.appendingPathComponent("Payload/Program", isDirectory: true)
+        return WineExecutableDiscovery.candidates(in: program)
+    }
+
+    /// Finds an already-imported Wine entry by its library id (the folder name).
+    func wineEntry(withID id: String) -> LibraryEntry? {
+        managedEntries.first { $0.platform == .wine && $0.manifest.id == id }
+    }
+
+    /// Points an existing Wine entry at a different program inside its imported
+    /// folder. The path is always relative to Payload/Program and is validated as
+    /// a real PE file before the manifest is written.
+    func setWineExecutable(_ relativePath: String, for entry: LibraryEntry) {
+        guard entry.platform == .wine else { return }
+        do {
+            try LibraryPath.validateRelative(relativePath)
+            let program = entry.directoryURL.appendingPathComponent("Payload/Program", isDirectory: true)
+            let candidate = program.appendingPathComponent(relativePath).standardizedFileURL
+            guard LibraryPath.isInside(candidate, root: program) else {
+                throw PearError.invalidPackage("The executable must be inside this game's Payload/Program folder")
+            }
+            try ManagedExecutable.validatePE(candidate)
+            updateManifest(entry) { $0.payloadPath = "Payload/Program/\(relativePath)" }
+            statusMessage = "Executable set to \(relativePath)"
+        } catch {
+            statusMessage = L10n.error("Could not change executable: \(error.localizedDescription)")
+        }
     }
 
     func setGraphicsBackend(_ backend: LibraryManifest.GraphicsBackend, for entry: LibraryEntry) {
@@ -847,9 +919,9 @@ final class AppState: ObservableObject {
     /// must not freeze the window.
     private func importMacApp(entry url: URL) async throws -> LibraryEntry {
         let root = storageRootURL
-        let service = managedApps
+        let service = macApps
         return try await Task.detached(priority: .userInitiated) {
-            try service.importMacApp(from: url, libraryRoot: root)
+            try service.importApp(from: url, libraryRoot: root)
         }.value
     }
 
@@ -859,9 +931,9 @@ final class AppState: ObservableObject {
         do {
             statusMessage = "Importing Windows game: \(url.lastPathComponent)"
             let root = storageRootURL
-            let service = managedApps
+            let service = wineApps
             let entry = try await Task.detached(priority: .userInitiated) {
-                try service.importWindowsFolder(
+                try service.importFolder(
                     from: url, executablePath: executablePath, libraryRoot: root,
                     engineID: engineID, displayName: nil
                 )
@@ -881,9 +953,9 @@ final class AppState: ObservableObject {
         do {
             statusMessage = "Importing Windows program: \(url.lastPathComponent)"
             let root = storageRootURL
-            let service = managedApps
+            let service = wineApps
             let entry = try await Task.detached(priority: .userInitiated) {
-                try service.importWindowsExecutable(
+                try service.importExecutable(
                     from: url, libraryRoot: root, engineID: engineID, displayName: nil
                 )
             }.value
@@ -962,27 +1034,14 @@ final class AppState: ObservableObject {
         // no keymap is passed, so the runtime installs no input handlers.
         let enabled = isKeymapperEnabled(for: app)
         let keymapURL = enabled ? keymapStore.fileURL(for: app.id) : nil
-        var extra: [String: String] = [:]
-        if isMetalHUDEnabled(for: app) {
-            extra["MTL_HUD_ENABLED"] = "1"
-        }
-        if isPointerLockAllowed(for: app) {
-            extra["PEAR_ALLOW_POINTER_LOCK"] = "1"
-        }
-        // The iOS-like filesystem view is part of the base environment.
-        extra["PEAR_IOS_SANDBOX"] = "1"
 
-        let nativeContainer = false
         do {
-            let launchLease = try AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
-            defer { launchLease.release() }
-            try AppLauncher.requireStopped(app)
-            let mode: PreparationMode = packageInstaller.currentPreparationMode(for: app) == .compatibilityEnvironment
-                ? .compatibilityEnvironment : .compatibility
-            try packageInstaller.setPreparationMode(mode, for: app, launchLease: launchLease)
-            let running = try await launcher.launch(
-                app, keymapURL: keymapURL, extraEnvironment: extra,
-                nativeContainer: nativeContainer, launchLease: launchLease
+            let running = try await iosApps.launch(
+                app,
+                libraryURL: libraryURL,
+                keymapURL: keymapURL,
+                metalHUDEnabled: isMetalHUDEnabled(for: app),
+                pointerLockAllowed: isPointerLockAllowed(for: app)
             )
             statusMessage = L10n.launching(app.displayName)
             launchingAppID = app.id
@@ -1021,7 +1080,7 @@ final class AppState: ObservableObject {
         do {
             overlays[app.id]?.detach()
             overlays[app.id] = nil
-            try packageInstaller.uninstall(app)
+            try iosApps.uninstall(app)
             try? keymapStore.delete(for: app.id)
             installedApps.removeAll { $0.id == app.id }
             if selection == app.id {
@@ -1089,7 +1148,7 @@ final class AppState: ObservableObject {
         isBusy = true
         defer { finishBusyWork() }
         do {
-            let store = wineStore
+            let store = wineApps.engines
             let engine = try await Task.detached(priority: .userInitiated) {
                 try store.registerLocalEngine(
                     from: url, id: id, name: name, version: version,
@@ -1110,7 +1169,7 @@ final class AppState: ObservableObject {
         defer { finishBusyWork() }
         do {
             statusMessage = "Downloading Wine engine…"
-            let store = wineStore
+            let store = wineApps.engines
             let file = try await store.downloadCommunityArchive(
                 from: url, sha256: sha256, licenseConfirmed: licenseConfirmed
             )
@@ -1128,7 +1187,7 @@ final class AppState: ObservableObject {
         defer { finishBusyWork() }
         do {
             statusMessage = "Checking open-source Wine releases…"
-            let check = try await wineReleases.latest(channel: channel)
+            let check = try await wineApps.releases.latest(channel: channel)
             wineReleaseCheck = check
             statusMessage = "Wine \(check.tag) is available (\(check.assetName))"
         } catch {
@@ -1142,9 +1201,8 @@ final class AppState: ObservableObject {
         isBusy = true
         defer { finishBusyWork() }
         do {
-            let store = wineStore
-            let engine = try await wineReleases.install(check, store: store) { message in
-                Task { @MainActor [weak self] in self?.statusMessage = message }
+            let engine = try await wineApps.releases.install(check, store: wineApps.engines) { [weak self] message in
+                Task { @MainActor in self?.statusMessage = message }
             }
             reloadEngines()
             statusMessage = "Installed \(engine.name) \(engine.version)"
@@ -1162,7 +1220,7 @@ final class AppState: ObservableObject {
         defer { finishBusyWork() }
         do {
             statusMessage = "Fetching \(backend.title)…"
-            let service = graphicsComponents
+            let service = wineApps.graphics
             if backend == .dxmt {
                 let asset = try await service.latestDXMT()
                 statusMessage = "Installing DXMT \(asset.tag)…"

@@ -159,7 +159,10 @@ This project does **not** silently bypass that protection.
    - **iOS Apps:** `.ipa` or iOS device `.app`
    - **Mac Apps:** native macOS `.app`
    - **Wine Games:** a program folder or `.exe`, after registering a Wine engine
-     in **Settings → Wine**
+     in **Settings → Wine**. Installers and redistributables are hidden from the
+     executable chooser, and the likely game program is preselected. If the
+     chosen folder is an empty original download and the game is already in the
+     library, PearSilicon selects the existing entry instead of asking again.
 4. Select an item to launch, stop, back up, reveal its data, or remove it.
 5. Use **Backup** to write one `.pearbackup` file and **Restore** (or **Restore and
    Replace Existing**) to bring it back.
@@ -280,6 +283,14 @@ open-source WineHQ build and installs it after SHA-256 verification and safe
 tar-path admission. Wine runs directly, because a nested sandbox breaks Rosetta
 and wineserver on current macOS; this is not a VM or a security sandbox.
 
+Importing a folder never runs anything from the source. PearSilicon scans it for
+`.exe` files, hides installers/redistributables when a game program is present,
+and preselects the likely main executable. A game already in the library can be
+repaired without re-importing: **Change Executable…** in the detail pane picks a
+different program inside that entry's own `Payload/Program`. If a manifest's
+engine was removed, launching with exactly one installed engine relinks the
+entry automatically; with several engines, the app asks instead of guessing.
+
 Graphics backends are selected per game:
 
 - **MoltenVK** — default; bundled with the Wine engine and used for Vulkan.
@@ -291,6 +302,21 @@ Graphics backends are selected per game:
 The macOS builds are currently `osx64`, so Apple silicon may need Rosetta 2.
 Wine is not a Windows VM; anti-cheat and kernel drivers are not supported. Local
 open-source runtimes can still be registered manually.
+
+### Platform service boundaries
+
+`AppState` is the SwiftUI-facing coordinator. Platform policy lives in separate
+services, so changing one platform cannot alter another's launch rules:
+
+| Service | Owns |
+| --- | --- |
+| `IOSAppService` | Catalyst preparation, runtime environment, keymapper/HUD flags, iOS uninstall |
+| `MacAppService` | Copy-only native Mac import and native launch |
+| `WineAppService` | Wine import, engine resolution, launch, release checks, graphics components |
+
+`ManagedAppService` remains the shared low-level copy/launch primitive used by
+the Mac and Wine services; it is never called directly from the UI. Tests cover
+each boundary plus opt-in end-to-end launches against a real installed engine.
 
 ### Portable library
 

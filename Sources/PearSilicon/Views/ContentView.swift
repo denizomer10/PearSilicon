@@ -50,12 +50,14 @@ struct ContentView: View {
             return true
         }
         .sheet(item: $wineExecutablePicker) { picker in
-            WineExecutableChooser(picker: picker) { executable in
+            WineExecutableSelectionView(
+                folder: picker.folder,
+                candidates: picker.executables
+            ) { executable in
                 wineExecutablePicker = nil
-                guard let engine = state.wineEngines.first else { return }
                 Task {
                     await state.importWindowsFolder(
-                        at: picker.folder, executablePath: executable, engineID: engine.id
+                        at: picker.folder, executablePath: executable, engineID: picker.engineID
                     )
                 }
             } onCancel: {
@@ -420,36 +422,34 @@ struct ContentView: View {
             return
         }
 
-        let executables = Self.findExecutables(in: url)
-        if executables.isEmpty {
-            alert = AlertPayload(title: "No executable found", message: "The selected folder does not contain a Windows .exe.")
-        } else if executables.count == 1 {
-            Task { await state.importWindowsFolder(at: url, executablePath: executables[0], engineID: engine.id) }
+        let candidates = WineExecutableDiscovery.candidates(in: url)
+        if candidates.isEmpty {
+            // A common dead end: the game was already imported and the original
+            // download folder is now empty. Take the user to the existing entry
+            // instead of asking for a path again.
+            if let existing = state.wineEntry(withID: url.lastPathComponent) {
+                state.platform = .wine
+                state.select(existing)
+                alert = AlertPayload(
+                    title: "Already in your library",
+                    message: "This folder has no executable because \u{201C}\(existing.displayName)\u{201D} is already imported. It is selected in the Wine list; press Launch."
+                )
+            } else {
+                alert = AlertPayload(
+                    title: "No executable found",
+                    message: "This folder does not contain a Windows .exe. Choose the folder that contains the game program, or select the .exe itself. If you already added this game, open the Wine tab and select it instead."
+                )
+            }
+        } else if candidates.count == 1 {
+            Task {
+                await state.importWindowsFolder(
+                    at: url, executablePath: candidates[0].path, engineID: engine.id
+                )
+            }
         } else {
-            wineExecutablePicker = WineExecutablePicker(folder: url, executables: executables)
-        }
-    }
-
-    private static func findExecutables(in folder: URL) -> [String] {
-        guard let enumerator = FileManager.default.enumerator(
-            at: folder, includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return [] }
-        var result: [String] = []
-        let rootPath = folder.standardizedFileURL.path
-        var visited = 0
-        for case let url as URL in enumerator {
-            visited += 1
-            if visited > 20_000 { break }
-            guard url.pathExtension.lowercased() == "exe" else { continue }
-            let relative = String(url.standardizedFileURL.path.dropFirst(rootPath.count + 1))
-            result.append(relative)
-            if result.count >= 200 { break }
-        }
-        return result.sorted { lhs, rhs in
-            let lhsDepth = lhs.split(separator: "/").count
-            let rhsDepth = rhs.split(separator: "/").count
-            return lhsDepth == rhsDepth ? lhs.localizedStandardCompare(rhs) == .orderedAscending : lhsDepth < rhsDepth
+            wineExecutablePicker = WineExecutablePicker(
+                folder: url, executables: candidates, engineID: engine.id
+            )
         }
     }
 
@@ -539,43 +539,8 @@ private struct AlertPayload: Identifiable {
 struct WineExecutablePicker: Identifiable {
     let id = UUID()
     let folder: URL
-    let executables: [String]
-}
-
-private struct WineExecutableChooser: View {
-    let picker: WineExecutablePicker
-    let onImport: (String) -> Void
-    let onCancel: () -> Void
-    @State private var selection: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Choose the game's executable").font(.title3.weight(.semibold))
-            Text(picker.folder.path)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            List(picker.executables, id: \.self, selection: $selection) { path in
-                Text(path).font(.callout.monospaced())
-            }
-            .frame(minHeight: 260)
-            Text(ManagedAppService.windowsExecutableOnlyImportHint)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack {
-                Spacer()
-                Button("Cancel", action: onCancel)
-                Button("Import") {
-                    if let selection { onImport(selection) }
-                }
-                .buttonStyle(.glassProminent)
-                .disabled(selection == nil)
-            }
-        }
-        .padding(22)
-        .frame(width: 560, height: 460)
-    }
+    let executables: [WineExecutableCandidate]
+    let engineID: String
 }
 
 /// Bottom status bar rendered as a glass strip.

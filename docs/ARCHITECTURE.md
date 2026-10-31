@@ -106,6 +106,23 @@ Implementation references:
 `arm64-apple-ios15.0-macabi`, linked against Apple frameworks including UIKit,
 Foundation, Metal and QuartzCore.
 
+### Platform service boundaries
+
+`AppState` is a SwiftUI coordinator; platform rules are kept in separate
+services so a change to one platform cannot silently alter another:
+
+| Boundary | Responsibility |
+| --- | --- |
+| `IOSAppService` | Catalyst preparation, lease handling, runtime environment flags, iOS uninstall |
+| `MacAppService` | Copy-only native Mac import and launch (no Wine engine argument) |
+| `WineAppService` | Wine import, engine resolution, launch, release checks, graphics components |
+| `ManagedAppService` | Shared low-level copy/launch primitive used only by the Mac and Wine services |
+
+`WineExecutableDiscovery` and `WineExecutableSelectionView` keep folder
+inspection and executable selection out of the launcher. Import never executes
+anything from the source folder, and a repair action can repoint an existing
+entry at another program inside its own `Payload/Program`.
+
 The read-only `pearsilicon validate <App.app|Mach-O>` command exposes input
 preflight without launching a game or creating app-data directories. It does not
 prove decryption, complete ABI correctness or GPU compatibility. See

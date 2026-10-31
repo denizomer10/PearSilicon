@@ -50,6 +50,7 @@ struct ManagedAppDetailView: View {
     let entry: LibraryEntry
     @State private var confirmingUninstall = false
     @State private var confirmingQuarantine = false
+    @State private var showingExecutablePicker = false
 
     private var running: Bool { state.isRunning(entry) }
 
@@ -87,6 +88,32 @@ struct ManagedAppDetailView: View {
         ) {
             Button("Remove", role: .destructive) { state.uninstall(entry) }
             Button("Cancel", role: .cancel) {}
+        }
+        .sheet(isPresented: $showingExecutablePicker) {
+            let candidates = state.wineExecutables(for: entry)
+            if candidates.isEmpty {
+                VStack(spacing: 14) {
+                    Text("No executable inside this game's folder")
+                        .font(.title3.weight(.semibold))
+                    Text("Payload/Program does not contain a Windows .exe. Remove the entry and re-import the game folder.")
+                        .foregroundStyle(.secondary)
+                    Button("Close") { showingExecutablePicker = false }
+                        .buttonStyle(.glassProminent)
+                }
+                .padding(22)
+                .frame(width: 520, height: 200)
+            } else {
+                WineExecutableSelectionView(
+                    folder: entry.payloadURL.deletingLastPathComponent(),
+                    candidates: candidates,
+                    importTitle: "Use This Program"
+                ) { relativePath in
+                    showingExecutablePicker = false
+                    state.setWineExecutable(relativePath, for: entry)
+                } onCancel: {
+                    showingExecutablePicker = false
+                }
+            }
         }
     }
 
@@ -155,6 +182,7 @@ struct ManagedAppDetailView: View {
                 if entry.platform == .wine {
                     infoRow("Wine prefix", entry.prefixURL.path, selectable: true)
                     infoRow("Engine", entry.manifest.wineEngineID ?? "not selected")
+                    infoRow("Program", programRelativePath, selectable: true)
                 }
                 infoRow("Installed", entry.manifest.createdAt.formatted(date: .abbreviated, time: .shortened))
             }
@@ -245,6 +273,13 @@ struct ManagedAppDetailView: View {
         }
     }
 
+    private var programRelativePath: String {
+        let prefix = "Payload/Program/"
+        return entry.manifest.payloadPath.hasPrefix(prefix)
+            ? String(entry.manifest.payloadPath.dropFirst(prefix.count))
+            : entry.manifest.payloadPath
+    }
+
     private var enginePicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Wine engine").font(.caption).foregroundStyle(.secondary)
@@ -263,6 +298,15 @@ struct ManagedAppDetailView: View {
                 }
                 .labelsHidden()
             }
+
+            Button {
+                showingExecutablePicker = true
+            } label: {
+                Label("Change Executable…", systemImage: "terminal")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.glass)
+            .disabled(running)
 
             Text("Graphics API").font(.caption).foregroundStyle(.secondary)
                 .padding(.top, 4)

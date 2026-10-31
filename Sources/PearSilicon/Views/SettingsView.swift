@@ -232,7 +232,7 @@ struct SettingsView: View {
             }
 
             Section("How games are stored") {
-                Text("Each Windows game gets Payload, Data and Prefix directories. Saves stay with the game and are included in its backup. Host drive mappings are removed; the launch is sandboxed. This is not a virtual machine and cannot run kernel-level anti-cheat. The macOS WineHQ packages are currently osx64; Apple silicon may require Rosetta 2.")
+                Text("Each Windows game gets Payload, Data and Prefix directories. Saves stay with the game and are included in its backup. Host drive mappings are removed. Wine runs as a direct native process because a nested sandbox breaks Rosetta/wineserver; this is not a virtual machine and cannot run kernel-level anti-cheat. The macOS WineHQ packages are currently x86_64; Apple silicon may require Rosetta 2.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

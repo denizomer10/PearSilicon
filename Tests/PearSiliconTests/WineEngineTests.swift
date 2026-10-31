@@ -59,6 +59,16 @@ final class WineEngineTests: XCTestCase {
         XCTAssertTrue(WineEngineStore.openSourceNotice.contains("Gcenx"))
     }
 
+    func testLoadsARealInstalledEngineWhenConfigured() throws {
+        guard let path = ProcessInfo.processInfo.environment["PEAR_REAL_ENGINE_ROOT"], !path.isEmpty else {
+            throw XCTSkip("Set PEAR_REAL_ENGINE_ROOT to an Engines directory")
+        }
+        let store = WineEngineStore(rootURL: URL(fileURLWithPath: path, isDirectory: true))
+        let engines = try store.engines()
+        XCTAssertFalse(engines.isEmpty)
+        for engine in engines { try engine.validate() }
+    }
+
     func testMovedEngineStoreRebasesPersistedRootAndExecutablePaths() throws {
         let fixture = try ManagedAppTestFixture()
         defer { fixture.remove() }
