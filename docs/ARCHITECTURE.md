@@ -39,8 +39,9 @@ activates the entry after validation.
 Mac entries launch directly from their managed payload with an allowlist
 environment and private home/temp directories. There is no sandbox wrapper, VM
 or emulation layer; absolute host paths remain reachable. Wine entries use a
-generated `sandbox-exec` profile, a private prefix and a self-contained engine.
-Host drive mappings are removed before a Wine launch.
+private prefix and a self-contained engine. Host root mappings (`z:`) are
+removed; a per-entry `g:` mapping exposes only that game's `Payload/Program` as
+a Windows drive so the runner can resolve its own data files and relative paths.
 
 This is **not** a virtual machine, kernel sandbox or anti-cheat-safe environment.
 A native app that requires an unsupported helper or entitlement may fail; Wine

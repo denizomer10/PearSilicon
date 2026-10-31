@@ -233,6 +233,32 @@ final class ManagedAppTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(LibraryManifest.self, from: Data(contentsOf: entry.manifestURL)), entry.manifest)
     }
 
+    func testWineGameDriveMappingIsRelativeAndUsesAPortableTarget() throws {
+        let fixture = try ManagedAppTestFixture()
+        defer { fixture.remove() }
+        let source = try fixture.windowsFolder()
+        let entry = try ManagedAppService().importWindowsFolder(
+            from: source, executablePath: "bin/Game.exe", libraryRoot: fixture.library,
+            engineID: "community-test"
+        )
+
+        let executable = try ManagedAppService.prepareWineGameDrive(for: entry)
+        XCTAssertEqual(executable, "G:\\bin\\Game.exe")
+
+        let link = entry.prefixURL.appendingPathComponent("dosdevices/g:")
+        let target = try FileManager.default.destinationOfSymbolicLink(atPath: link.path)
+        XCTAssertEqual(target, "../../Payload/Program")
+        XCTAssertFalse(target.hasPrefix("/"))
+
+        // The mapping must survive the normal prefix sanitizer and stay inside
+        // the portable entry, so backups do not turn into host-root links.
+        XCTAssertNoThrow(try ManagedAppService.sanitizeWinePrefix(for: entry))
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: link.path), target
+        )
+        XCTAssertEqual(try ManagedAppService.prepareWineGameDrive(for: entry), executable)
+    }
+
     func testExecutableOnlyImportNeverCopiesAnUnselectedSiblingDirectory() throws {
         let fixture = try ManagedAppTestFixture()
         defer { fixture.remove() }

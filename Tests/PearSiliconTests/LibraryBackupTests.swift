@@ -105,6 +105,20 @@ struct LibraryBackupTests {
     }
 
     @Test
+    func preservesThePerGameDriveMappingAcrossBackupAndRestore() async throws {
+        let fixture = try Fixture(platform: .wine)
+        defer { fixture.remove() }
+        let game = Data("game under the per-game drive".utf8)
+        try fixture.write("Payload/Program/Game/game.exe", game)
+        try fixture.link("Prefix/dosdevices/g:", target: "../../Payload/Program")
+        let archive = try await fixture.service().backup(entry: fixture.entry, to: fixture.output)
+        let restored = try await fixture.service().restore(from: archive, to: fixture.restoreRoot)
+        let link = restored.prefixURL.appendingPathComponent("dosdevices/g:")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: link.path) == "../../Payload/Program")
+        #expect(try Data(contentsOf: link.appendingPathComponent("Game/game.exe")) == game)
+    }
+
+    @Test
     func flattensHardlinks() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

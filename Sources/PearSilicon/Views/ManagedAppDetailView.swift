@@ -364,7 +364,7 @@ struct ManagedAppDetailView: View {
                       systemImage: entry.platform == .wine ? "lock.shield" : "desktopcomputer")
                     .font(.callout.weight(.medium))
                 Text(entry.platform == .wine
-                     ? "Windows games run with a per-game prefix and a private engine. Host drive mappings are removed. Wine runs directly because a nested sandbox breaks Rosetta/wineserver; this is not a virtual machine, a security sandbox, or an anti-cheat-safe environment."
+                     ? "Windows games run with a per-game prefix and a private engine. Host root drive mappings are removed; a g: drive exposes only this game's own program folder so Windows runners can find their data. Wine runs directly because a nested sandbox breaks Rosetta/wineserver; this is not a virtual machine, a security sandbox, or an anti-cheat-safe environment."
                      : ManagedAppService.isolationNotice)
                     .font(.caption)
                     .foregroundStyle(.secondary)

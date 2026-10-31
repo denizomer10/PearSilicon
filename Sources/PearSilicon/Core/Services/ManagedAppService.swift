@@ -192,7 +192,8 @@ struct ManagedAppService: Sendable {
     }
 
     /// Wine bootstrap and the game run as direct native processes. The private
-    /// prefix and redirected HOME stay in place; host drive mappings are removed.
+    /// prefix and redirected HOME stay in place; host root drive mappings are
+    /// removed and a per-entry g: drive exposes only the game's Payload/Program.
     /// Only a direct child Process is tracked/stopped; detached Wine helpers may
     /// outlive it. We never kill by PID supplied by a caller or by bundle ID.
     @MainActor
@@ -238,6 +239,12 @@ struct ManagedAppService: Sendable {
             configuration = try launchConfiguration(for: entry, engine: engine, metalHUDEnabled: metalHUDEnabled)
         }
         try Task.checkCancellation()
+        if entry.platform == .wine {
+            // Use a real Windows drive letter for the program path. Without it,
+            // GameMaker resolves data.win through \\?\unix\... and shows a file
+            // dialog instead of starting the game.
+            configuration.arguments = [try Self.prepareWineGameDrive(for: entry)]
+        }
         return try spawn(configuration, entry: entry, purpose: .application, activate: activate)
     }
 
@@ -276,6 +283,47 @@ struct ManagedAppService: Sendable {
             }
         }
         return handle
+    }
+
+    /// A per-entry drive letter that exposes only this game's Payload/Program
+    /// directory. GameMaker-style runners derive their data path from the module
+    /// path and fail on Wine's `\\?\unix\...` form, which appears when the
+    /// prefix has no host drive mapping. The relative link stays inside the
+    /// entry, so backups and portable moves keep working without exposing `/`.
+    static let wineGameDriveLetter = "g"
+
+    static func prepareWineGameDrive(for entry: LibraryEntry) throws -> String {
+        guard entry.platform == .wine else {
+            throw PearError.invalidPackage("A game drive is only valid for Wine entries")
+        }
+        let programRoot = entry.directoryURL.appendingPathComponent("Payload/Program", isDirectory: true)
+        _ = try ManagedAppFiles.existingDirectory(programRoot)
+        let dosdevices = entry.prefixURL.appendingPathComponent("dosdevices", isDirectory: true)
+        if !ManagedAppFiles.exists(dosdevices) { try ManagedAppFiles.makeDirectory(dosdevices) }
+
+        let link = dosdevices.appendingPathComponent("\(wineGameDriveLetter):")
+        let target = "../../Payload/Program"
+        if let current = try? FileManager.default.destinationOfSymbolicLink(atPath: link.path) {
+            guard current == target else {
+                throw PearError.launchFailed(
+                    "The Wine prefix has a conflicting \(wineGameDriveLetter): drive mapping; remove it from dosdevices first"
+                )
+            }
+        } else if ManagedAppFiles.exists(link) {
+            throw PearError.launchFailed(
+                "The Wine prefix has a conflicting \(wineGameDriveLetter): entry; it is not a symlink"
+            )
+        } else {
+            try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target)
+        }
+
+        let prefix = "Payload/Program/"
+        guard entry.manifest.payloadPath.hasPrefix(prefix) else {
+            throw PearError.invalidPackage("Wine payload is not inside Payload/Program")
+        }
+        let relative = entry.manifest.payloadPath.dropFirst(prefix.count)
+            .replacingOccurrences(of: "/", with: "\\")
+        return "\(wineGameDriveLetter.uppercased()):\\\(relative)"
     }
 
     static func environment(
@@ -422,11 +470,14 @@ struct ManagedAppService: Sendable {
             }
             let target = try FileManager.default.destinationOfSymbolicLink(atPath: url.path)
             let isZ = url.lastPathComponent.lowercased() == "z:" && url.deletingLastPathComponent().lastPathComponent == "dosdevices"
-            if isZ || target.hasPrefix("/") || !LibraryPath.isInside(url, root: prefix) {
+            // A per-entry drive mapping (for example g: -> ../../Payload/Program)
+            // is portable because it resolves inside this entry, not to the host.
+            let staysInEntry = LibraryPath.isInside(url, root: entry.directoryURL)
+            if isZ || target.hasPrefix("/") || !staysInEntry {
                 try FileManager.default.removeItem(at: url)
             }
         }
-        try ManagedAppFiles.validateTree(prefix)
+        try ManagedAppFiles.validateTree(prefix, allowedLinkRoot: entry.directoryURL)
     }
 
     private static func validateEntry(_ entry: LibraryEntry) throws {
@@ -655,7 +706,7 @@ enum ManagedAppFiles {
         try recurse(root, depth: 0)
     }
 
-    static func validateTree(_ root: URL) throws {
+    static func validateTree(_ root: URL, allowedLinkRoot: URL? = nil) throws {
         try rejectRootSymlink(root)
         try walk(root) { url, info in
             switch info.st_mode & S_IFMT {
@@ -667,7 +718,9 @@ enum ManagedAppFiles {
                 }
             case S_IFLNK:
                 let target = try FileManager.default.destinationOfSymbolicLink(atPath: url.path)
-                guard !target.hasPrefix("/"), LibraryPath.isInside(url, root: root),
+                let staysInRoot = LibraryPath.isInside(url, root: root)
+                let staysInAllowed = allowedLinkRoot.map { LibraryPath.isInside(url, root: $0) } ?? false
+                guard !target.hasPrefix("/"), staysInRoot || staysInAllowed,
                       FileManager.default.fileExists(atPath: url.path) else {
                     throw PearError.invalidPackage("External, absolute or dangling symlink is not allowed: \(url.lastPathComponent)")
                 }

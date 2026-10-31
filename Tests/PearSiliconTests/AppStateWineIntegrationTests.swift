@@ -42,12 +42,12 @@ final class AppStateWineIntegrationTests: XCTestCase {
             let size = logSize()
             if size > before,
                let text = try? String(contentsOf: logURL, encoding: .utf8),
-               text.contains("mvk-info") || text.contains("MoltenVK") {
+               text.contains("Entering main loop") || text.contains("Resizing win") {
                 rendered = true
                 break
             }
         }
-        XCTAssertTrue(rendered, "Wine did not initialize the game's renderer; see \(logURL.path)")
+        XCTAssertTrue(rendered, "Wine did not reach the game's main loop; see \(logURL.path)")
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: entry.prefixURL.appendingPathComponent("system.reg").path),
             "Wine prefix was not initialized"

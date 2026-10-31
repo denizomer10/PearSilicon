@@ -79,9 +79,11 @@ can be newer than the published ZIP.
   and natively** from the managed copy with HOME, CFFIXED_USER_HOME and TMPDIR
   redirected into the entry's `Data` folder. There is no VM or emulation layer;
   absolute host paths remain reachable by the app.
-- Windows games run in per-game Wine prefixes with isolated data. Host `z:` and
-  absolute drive links are removed. Wine runs as a direct native process (no VM
-  or nested sandbox) with HOME/TMPDIR redirected into the game entry.
+- Windows games run in per-game Wine prefixes with isolated data. Host root
+  mappings (`z:`) and absolute drive links are removed; a per-game `g:` drive
+  exposes only that game's `Payload/Program` so Windows runners can resolve their
+  data files. Wine runs as a direct native process (no VM or nested sandbox) with
+  HOME/TMPDIR redirected into the game entry.
 - Graphics API is selectable per game: **MoltenVK** (default, bundled with Wine),
   **DXMT** (D3D10/11 → Metal) and **KosmicKrisp** (Mesa Vulkan → Metal). DXMT and
   KosmicKrisp are optional GitHub-downloaded components. KosmicKrisp is arm64-only
@@ -277,8 +279,11 @@ organization, portable data and one-click backups, not security isolation.
 ### Wine games
 
 Windows entries live in `wine-apps/<id>/` with `Payload`, `Data` and `Prefix`.
-Each game gets its own prefix, and host drive mappings are removed before the
-game starts. **Settings → Wine** checks the public release feed for the latest
+Each game gets its own prefix. Host root mappings (`z:`) and absolute drive links
+are removed; a relative `g:` drive exposes only that game's own `Payload/Program`
+as a Windows drive. Without it, GameMaker-style runners cannot turn their Unix
+program path into a Windows path and show a file dialog instead of loading
+`data.win`. **Settings → Wine** checks the public release feed for the latest
 open-source WineHQ build and installs it after SHA-256 verification and safe
 tar-path admission. Wine runs directly, because a nested sandbox breaks Rosetta
 and wineserver on current macOS; this is not a VM or a security sandbox.
