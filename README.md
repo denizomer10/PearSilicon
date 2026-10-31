@@ -115,6 +115,37 @@ notarized, so downloaded copies may require explicit Gatekeeper approval.
 `pearsilicon doctor` reports build-tool availability, runtime location and
 library status; it does not certify game compatibility.
 
+## Gatekeeper, signing and notarization
+
+An ad-hoc build is not a malware verdict, but macOS cannot verify its publisher.
+This project does **not** silently bypass that protection.
+
+- **Local builds:** `scripts/build-app.sh` removes stale quarantine flags from
+  the build output. A locally built app normally opens without a download prompt.
+- **Downloaded PearSilicon:** approve it once in **System Settings → Privacy &
+  Security → Open Anyway**, or right-click the app and choose **Open**. For a
+  local test copy only, `xattr -dr com.apple.quarantine /Applications/PearSilicon.app`
+  removes the flag.
+- **Imported Mac apps:** if the original download is quarantined, the managed
+  copy keeps that flag. Open the app's detail pane and use **Allow This App…**
+  only if you trust the source. This affects that imported copy only and does not
+  notarize it.
+- **No-warning distribution:** requires an Apple Developer Program membership, a
+  **Developer ID Application** certificate, hardened-runtime signing and Apple
+  notarization. Prepare credentials once with `xcrun notarytool store-credentials`,
+  then run:
+
+  ```sh
+  PEAR_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" \
+  PEAR_NOTARY_PROFILE="pearsilicon-notary" \
+  ./scripts/notarize.sh build/PearSilicon.app
+  ```
+
+  The script signs nested dylibs/frameworks, submits with `notarytool --wait`,
+  staples the ticket and runs a Gatekeeper assessment. It cannot create a
+  certificate or enroll an account for you. Notarization covers PearSilicon; we
+  cannot notarize a third-party app such as FH2 Port on its publisher's behalf.
+
 ## Install and run
 
 1. Download the [development beta](https://github.com/denizomer10/PearSilicon/releases/tag/development-beta),

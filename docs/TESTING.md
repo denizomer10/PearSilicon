@@ -38,6 +38,7 @@ service.
 | `ManagedMacLaunchSmokeTests` | Compiles a minimal Cocoa app, imports it copy-only, launches it natively and stops it |
 | `ManagedWineLaunchSmokeTests` | Compiles a fake native Wine engine plus a minimal PE; verifies prefix bootstrap, host-mapping removal, sandboxed spawn and stop |
 | `WineReleaseTests` | Open-source Wine release/asset selection, GitHub digest parsing, Atom fallback parsing and engine IDs |
+| `QuarantineTests` | Explicit quarantine detection/removal on a managed copy only |
 | `WineReleaseIntegrationTests` | Opt-in real download of an open-source WineHQ build; verifies SHA-256, tar admission, extraction, executable discovery and engine registration |
 | `filesystem-smoke.py` | Writable reopen repair only inside `PEAR_HOME_DIR`; path/symlink/hardlink escapes; mode and errno preservation; pre-fix negative control |
 | `keychain-smoke.py` | Symmetric public/private sanitization, tagged lookup across processes, signing/verification, real Catalyst legacy generation |

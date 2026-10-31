@@ -116,5 +116,8 @@ PLIST
 echo ">> Adhoc signing"
 codesign --force --deep --sign - "$OUT"
 codesign --verify --deep --strict "$OUT"
+# A locally built app must not inherit a stale browser quarantine flag. This
+# does not affect a ZIP downloaded later; that copy gets its own flag.
+xattr -dr com.apple.quarantine "$OUT" 2>/dev/null || true
 
 echo ">> Done: $OUT"

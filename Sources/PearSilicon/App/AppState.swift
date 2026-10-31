@@ -27,6 +27,7 @@ final class AppState: ObservableObject {
     @Published var selectedManagedEntryID: LibraryEntry.ID?
     @Published private(set) var wineEngines: [WineEngine] = []
     @Published private(set) var libraryWarnings: [String] = []
+    @Published private(set) var quarantinedMacEntryIDs: Set<String> = []
 
     /// Explicit, user-triggered updater state. No timer or telemetry.
     @Published private(set) var availableUpdate: AppUpdateCheck?
@@ -285,6 +286,9 @@ final class AppState: ObservableObject {
         self.installedApps = snapshot.iosApps
         self.managedEntries = snapshot.macEntries + snapshot.wineEntries
         self.libraryWarnings = snapshot.warnings
+        self.quarantinedMacEntryIDs = Set(managedEntries.filter {
+            $0.platform == .macOS && Quarantine.isQuarantined($0.payloadURL)
+        }.map(\.id))
         loadKeymapperSettings()
         reloadEngines()
         refreshRunningApps()
@@ -460,6 +464,23 @@ final class AppState: ObservableObject {
 
     func setWineEngine(_ engineID: String, for entry: LibraryEntry) {
         updateManifest(entry) { $0.wineEngineID = engineID }
+    }
+
+    func isQuarantined(_ entry: LibraryEntry) -> Bool {
+        quarantinedMacEntryIDs.contains(entry.id)
+    }
+
+    /// Explicit user decision for this managed copy only. This does not change
+    /// the original download and does not claim the app is notarized.
+    func allowQuarantinedApp(_ entry: LibraryEntry) {
+        guard entry.platform == .macOS, !isBusy, !isRunning(entry) else { return }
+        do {
+            try Quarantine.remove(from: entry.payloadURL)
+            quarantinedMacEntryIDs.remove(entry.id)
+            statusMessage = "Gatekeeper quarantine removed for \(entry.displayName) (this managed copy only)"
+        } catch {
+            statusMessage = L10n.error("Could not clear quarantine: \(error.localizedDescription)")
+        }
     }
 
     private func updateManifest(_ entry: LibraryEntry, change: (inout LibraryManifest) -> Void) {
@@ -715,8 +736,11 @@ final class AppState: ObservableObject {
                     || FileManager.default.fileExists(
                         atPath: url.appendingPathComponent("Contents/Info.plist").path
                     )) {
-                    _ = try await importMacApp(entry: url)
-                    statusMessage = "Installed Mac app: \(url.deletingPathExtension().lastPathComponent)"
+                    let entry = try await importMacApp(entry: url)
+                    statusMessage = "Installed Mac app: \(entry.displayName)"
+                        + (Quarantine.isQuarantined(entry.payloadURL)
+                           ? " — macOS may ask for approval; use Allow This App in the detail pane for this managed copy."
+                           : "")
                     continue
                 }
 

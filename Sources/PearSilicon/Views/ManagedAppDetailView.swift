@@ -49,6 +49,7 @@ struct ManagedAppDetailView: View {
     @EnvironmentObject private var state: AppState
     let entry: LibraryEntry
     @State private var confirmingUninstall = false
+    @State private var confirmingQuarantine = false
 
     private var running: Bool { state.isRunning(entry) }
 
@@ -65,6 +66,17 @@ struct ManagedAppDetailView: View {
             }
             .padding(22)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .confirmationDialog(
+            "Remove the quarantine flag from this managed copy?",
+            isPresented: $confirmingQuarantine
+        ) {
+            Button("Allow This App", role: .destructive) {
+                state.allowQuarantinedApp(entry)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This bypasses Gatekeeper only for this imported copy. Do it only if you trust the app's source. The original download is not changed and the app is still not notarized.")
         }
         .confirmationDialog(
             "Remove \(entry.displayName)? This deletes its app files, data and Wine prefix.",
@@ -170,6 +182,20 @@ struct ManagedAppDetailView: View {
                 Text("Shows Metal's FPS/performance overlay. Relaunch to apply.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if state.isQuarantined(entry) {
+                    Button {
+                        confirmingQuarantine = true
+                    } label: {
+                        Label("Allow This App…", systemImage: "checkmark.shield")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glass)
+                    Text("The imported copy still carries macOS's download quarantine flag. Allow it only if you trust the source; this does not notarize the app.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 Divider()
 
