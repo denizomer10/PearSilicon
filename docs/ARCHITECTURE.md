@@ -5,12 +5,64 @@ iOS apps on macOS. It prepares installed app copies and adds an in-process
 compatibility runtime on top of Apple's frameworks. It is not an independent
 implementation of iOS, UIKit or a device kernel.
 
-This document tracks development source. Experimental host/environment loading,
-Package drop handling and storage relocation are not part of stable v0.2.0. See
-[release channels](../README.md#release-channels) and each artifact's release notes
+This document tracks development source. The three-platform portable library,
+backups, external-library support, managed Mac/Wine launch and updater are
+current source features on a separate feature branch; they are not part of a
+published stable release. See [release channels](../README.md#release-channels)
 for the distinction between source features and published builds.
 
-## Execution path
+## Library model
+
+The root holds three platform folders. They are created lazily, only when that
+platform receives its first item:
+
+| Folder | Layout | Launch model |
+| --- | --- | --- |
+| `ios-apps` | flat `<bundle-id>.app` bundles | Mac Catalyst preparation + in-process runtime |
+| `mac-apps` | `<id>/Payload/<name>.app`, `Data/` | copy-only import, `sandbox-exec`, private `HOME` |
+| `wine-apps` | `<id>/Payload/Program`, `Data/`, `Prefix/` | registered Wine engine + per-game prefix |
+
+The legacy `Applications/` folder is still scanned for iOS apps, so an existing
+library keeps working without a forced migration. `PortableLibrary` reads
+manifests (`pear-app.json`) for Mac/Wine entries, validates relative paths and
+rejects entries that escape their directory. No platform folder is created by a
+read-only scan.
+
+`LibraryEntry` is the shared unit for Mac/Wine entries and for backup snapshots.
+An iOS backup is assembled from APFS clones of the flat bundle, its `Games` data,
+keychain store, ODR folder and keymap; the archive itself uses the same verified
+single-file format. Restore writes into a private staging library first and only
+activates the entry after validation.
+
+## Managed launch boundaries
+
+Mac and Wine launches use an allowlist environment and a generated
+`sandbox-exec` profile. Native Mac apps get read access to system frameworks and
+the usual Apple XPC services, write access only to their entry `Data` and temp
+directories, and no host-home access. Wine also gets write access to its private
+prefix. Host drive mappings are removed before launch and the engine is reloaded
+from a self-contained copy.
+
+This is **not** a virtual machine, kernel sandbox or anti-cheat-safe environment.
+A native app that requires an unsupported helper or entitlement may fail; Wine
+games that require kernel drivers or anti-cheat will not work. Process handles are
+created only by our own launcher and never from a caller-supplied PID.
+
+## Updates and runtime refresh
+
+Update checks are explicit user actions against `denizomer10/PearSilicon`. After
+a GitHub SHA-256 and bundle-signature check, the app is staged privately. The
+relaunch helper waits for the exact parent process, validates the staged and
+installed bundles again, clones the staged app beside the destination, swaps them
+with `RENAME_SWAP` and keeps the old app as a visible rollback copy. GitHub's
+digest is not a publisher signature, and builds are not notarized.
+
+After a new build is installed, **Settings → Updates → Refresh iOS Runtimes Now**
+compares the content fingerprint of each stopped iOS app's runtime directory with
+the app's bundled runtime. Only differing apps are staged, prepared and re-signed;
+the app's own files and data are preserved.
+
+## Mac Catalyst execution path
 
 1. The installer admits an IPA only after reading its ZIP central directory and
    rejecting traversal, absolute, drive-letter and ambiguous entry paths; then it

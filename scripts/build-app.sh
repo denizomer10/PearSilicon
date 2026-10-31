@@ -10,6 +10,9 @@ cd "$ROOT"
 
 APP_NAME="PearSilicon"
 BUNDLE_ID="com.pearsilicon.app"
+APP_VERSION="0.3.0"
+APP_BUILD="11"
+COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 CONFIG="${1:-release}"
 BUILD_DIR="${PEAR_BUILD_DIR:-$ROOT/build}"
 case "$BUILD_DIR" in /*) ;; *) BUILD_DIR="$ROOT/$BUILD_DIR" ;; esac
@@ -97,8 +100,10 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.2.0</string>
-  <key>CFBundleVersion</key><string>10</string>
+  <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
+  <key>CFBundleVersion</key><string>$APP_BUILD</string>
+  <key>PearBuildCommit</key><string>$COMMIT</string>
+  <key>PearBuildChannel</key><string>development-beta</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>

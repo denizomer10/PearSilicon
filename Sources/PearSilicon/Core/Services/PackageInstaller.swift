@@ -321,21 +321,15 @@ final class PackageInstaller: @unchecked Sendable {
 
     // MARK: - Relocation
 
-    /// Rebases a copied app bundle from one storage root to another and signs
-    /// the copy. The original bundle is never modified.
-    ///
-    /// The installer hard-codes absolute paths for the runtime and compatibility
-    /// dylibs (some binaries reject `@` expansion), so a plain file move would
-    /// leave every load command pointing at the old disk. This rewrites those
-    /// commands inside the staged copy, then re-signs it with the same
-    /// preparation mode it already had.
+    /// Rewrites absolute load-command paths that point inside the original
+    /// bundle so they point inside the copied bundle. Matching the bundle prefix
+    /// instead of a two-level library root keeps flat (`Applications/*.app`)
+    /// and wrapped (`ios-apps/<id>/Payload/*.app`) layouts working.
     func relocateInstalledBundle(
         at stagedBundleURL: URL, from originalBundleURL: URL, to targetBundleURL: URL
     ) throws {
-        let oldRoot = originalBundleURL.deletingLastPathComponent()
-            .deletingLastPathComponent().standardizedFileURL.path
-        let newRoot = targetBundleURL.deletingLastPathComponent()
-            .deletingLastPathComponent().standardizedFileURL.path
+        let oldRoot = originalBundleURL.standardizedFileURL.path
+        let newRoot = targetBundleURL.standardizedFileURL.path
         guard oldRoot != newRoot else { return }
         try validateStagingIsolation(at: stagedBundleURL)
 
@@ -359,6 +353,12 @@ final class PackageInstaller: @unchecked Sendable {
         try signBundle(at: stagedBundleURL, mode: mode)
         _ = try preparationTools.run(
             "/usr/bin/codesign", ["--verify", "--deep", "--strict", stagedBundleURL.path]
+        )
+        // A rebase must leave every compatibility load path pointing at the
+        // staged bundle's own Frameworks directory. Without this check a stale
+        // absolute path could still resolve on the old disk and hide the fault.
+        try validatePreparationMode(
+            at: stagedBundleURL, mode: mode, targetBundleURL: targetBundleURL
         )
         guard !loadPaths(at: stagedBundleURL).contains(where: { $0.hasPrefix(oldRoot + "/") }) else {
             throw PearError.invalidPackage(
@@ -533,12 +533,12 @@ final class PackageInstaller: @unchecked Sendable {
     /// the installed bundle. Until that exchange, rollback is just discarding
     /// the copy; no failed preparation or signature can alter the original.
     @MainActor
-    func setPreparationMode(_ mode: PreparationMode, for app: InstalledApp, launchLease: AppLaunchLease? = nil) throws {
+    func setPreparationMode(_ mode: PreparationMode, for app: InstalledApp, launchLease: AppLaunchLease? = nil, force: Bool = false) throws {
         let lease = try launchLease ?? AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
         defer { if launchLease == nil { lease.release() } }
         try lease.validate(appID: app.id, libraryURL: libraryURL)
         try validateBundleForPreparation(at: app.bundleURL)
-        if try preparationModeIsValid(at: app.bundleURL, mode: mode, targetBundleURL: app.bundleURL) {
+        if !force, try preparationModeIsValid(at: app.bundleURL, mode: mode, targetBundleURL: app.bundleURL) {
             return
         }
         try preparationTools.requireStopped(app)
@@ -558,6 +558,26 @@ final class PackageInstaller: @unchecked Sendable {
         try finalizeInstall(at: staged, mode: mode, targetBundleURL: app.bundleURL)
         try preparationTools.requireStopped(app)
         try commitBundle(at: staged, to: app.bundleURL, replacing: true)
+    }
+
+    /// Installs a new PearSilicon build's runtime into an already-installed iOS
+    /// app. Only runs when the runtime fingerprint differs; the app's own files
+    /// and data are preserved and the staged copy is re-signed before exchange.
+    @MainActor
+    func refreshRuntimeIfNeeded(
+        for app: InstalledApp, sourceRuntimeDirectory: URL, launchLease: AppLaunchLease? = nil
+    ) throws -> Bool {
+        let mode = currentPreparationMode(for: app)
+        guard mode != .nativeContainer else { return false }
+        let installed = app.bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
+        let installedRevision = try RuntimeRevision.fingerprint(in: installed)
+        let sourceRevision = try RuntimeRevision.fingerprint(in: sourceRuntimeDirectory)
+        guard let sourceRevision else {
+            throw PearError.missingRuntimeComponent("libPearRuntime.dylib")
+        }
+        guard installedRevision != sourceRevision else { return false }
+        try setPreparationMode(mode, for: app, launchLease: launchLease, force: true)
+        return true
     }
 
     /// Read-only admission check, not a decryption or runtime-compatibility test.

@@ -1,32 +1,51 @@
+import AppKit
 import SwiftUI
 
 /// Settings window (⌘,).
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
     @State private var removingPreviousCopy = false
+    @State private var showingEngineSheet = false
+
+    // Engine registration form.
+    @State private var engineFolder: URL?
+    @State private var engineID = ""
+    @State private var engineName = ""
+    @State private var engineVersion = "user-supplied"
+    @State private var engineExecutablePath = "bin/wine64"
+    @State private var engineDistribution: WineEngine.Distribution = .community
+    @State private var engineLicenseConfirmed = false
+
+    // Community download form.
+    @State private var downloadURL = ""
+    @State private var downloadSHA256 = ""
+    @State private var downloadLicenseConfirmed = false
 
     var body: some View {
         TabView {
-            general
-                .tabItem { Label(L10n.settings, systemImage: "gearshape") }
-            keymapper
-                .tabItem { Label("Keymapper", systemImage: "keyboard") }
+            general.tabItem { Label("General", systemImage: "gearshape") }
+            library.tabItem { Label("Library", systemImage: "square.stack.3d.up") }
+            wine.tabItem { Label("Wine", systemImage: "gamecontroller") }
+            updates.tabItem { Label("Updates", systemImage: "arrow.down.circle") }
+            keymapper.tabItem { Label("Keymapper", systemImage: "keyboard") }
         }
-        .frame(width: 560, height: 420)
+        .frame(width: 700, height: 580)
         .padding()
+        .sheet(isPresented: $showingEngineSheet) { engineSheet }
     }
+
+    // MARK: - General
 
     private var general: some View {
         Form {
-            LabeledContent(L10n.library) {
-                Text(state.libraryURL.path)
-                    .font(.caption)
-                    .textSelection(.enabled)
-            }
-
-            Section {
-                LabeledContent("Storage folder") {
+            Section("Storage folder") {
+                LabeledContent("Root") {
                     Text(state.storageRootURL.path)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                }
+                LabeledContent("iOS library") {
+                    Text(state.libraryURL.path)
                         .font(.caption)
                         .textSelection(.enabled)
                 }
@@ -45,16 +64,18 @@ struct SettingsView: View {
                         .disabled(state.isBusy)
                     }
                 }
-                Text("Experimental: copies managed apps and data, retaining the previous copy. "
-                     + "Close games and keep a separate backup first. Launch moved apps through "
-                     + "PearSilicon; direct launches may use default paths. External-disk "
-                     + "operation has not been tested end to end.")
+                Text("A move copies apps, saves, keymaps, ODR, keychain data, Mac app data and Wine prefixes, verifies the copy, then switches over. The previous copy is kept until you remove it. Close every game first.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } header: {
-                Text("Storage location — experimental")
+            }
+
+            Section("Portable layout") {
+                Text("ios-apps, mac-apps and wine-apps are created only when the matching platform has its first item. Existing apps in the older Applications folder are still listed and keep working.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
+        .formStyle(.grouped)
         .confirmationDialog(
             "Remove the previous storage copy? This cannot be undone.",
             isPresented: $removingPreviousCopy
@@ -75,21 +96,268 @@ struct SettingsView: View {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
         panel.prompt = "Move Storage Here"
-        panel.message = "Experimental move: choose a destination folder. Keep a backup and test the moved apps before removing the previous copy."
+        panel.message = "Choose a destination folder. The previous copy is kept for rollback."
         panel.directoryURL = state.storageRootURL.deletingLastPathComponent()
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await state.changeStorageLocation(to: url) }
     }
+
+    // MARK: - Library
+
+    private var library: some View {
+        Form {
+            Section("Use an existing library") {
+                Button("Open Existing Library…") { chooseExistingLibrary() }
+                    .disabled(state.isBusy)
+                Text("Select a PearSilicon folder (or a disk containing one) to open its apps, games and saves in place. Nothing is copied. A folder is only accepted when it carries the .pear-storage-root marker.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Library warnings") {
+                if state.libraryWarnings.isEmpty {
+                    Text("No warnings.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(state.libraryWarnings, id: \.self) { warning in
+                        Text(warning)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func chooseExistingLibrary() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "Use Library"
+        panel.message = "Choose a PearSilicon storage root or a disk that contains one."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await state.useExistingLibrary(at: url) }
+    }
+
+    // MARK: - Wine
+
+    private var wine: some View {
+        Form {
+            Section("Registered engines") {
+                if state.wineEngines.isEmpty {
+                    Text("No Wine engine registered. Add a self-contained runtime below.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(state.wineEngines) { engine in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(engine.name) \(engine.version)").font(.callout.weight(.medium))
+                            Text("\(engine.distribution.rawValue) • \(engine.executableURL.path)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+                HStack {
+                    Button("Add Engine…") { showingEngineSheet = true }
+                        .disabled(state.isBusy)
+                    Button("Open Engines Folder") {
+                        let folder = state.storageRootURL.appendingPathComponent("Engines", isDirectory: true)
+                        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                        NSWorkspace.shared.activateFileViewerSelecting([folder])
+                    }
+                }
+                Text(WineEngineStore.gptkDownloadNotice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Open Apple's Game Porting Toolkit page") {
+                    NSWorkspace.shared.open(WineEngineStore.officialGPTKDownloadURL)
+                }
+            }
+
+            Section("Download a community engine") {
+                Text(WineEngineStore.communityDownloadNotice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("HTTPS archive URL", text: $downloadURL)
+                TextField("SHA-256 (64 hex characters)", text: $downloadSHA256)
+                Toggle("I reviewed the engine license", isOn: $downloadLicenseConfirmed)
+                Button("Download and Verify") {
+                    guard let url = URL(string: downloadURL) else { return }
+                    Task { await state.downloadEngine(from: url, sha256: downloadSHA256, licenseConfirmed: downloadLicenseConfirmed) }
+                }
+                .disabled(state.isBusy || !downloadLicenseConfirmed)
+            }
+
+            Section("How games are stored") {
+                Text("Each Windows game gets Payload, Data and Prefix directories. Saves stay with the game and are included in its backup. Host drive mappings are removed; the launch is sandboxed. This is not a virtual machine and cannot run kernel-level anti-cheat.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var engineSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Register a Wine engine").font(.title3.weight(.semibold))
+            Text("PearSilicon copies the chosen runtime into its Engines folder. It never executes the engine or accepts a license for you.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Form {
+                LabeledContent("Runtime folder") {
+                    HStack {
+                        Text(engineFolder?.path ?? "not selected")
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button("Choose…") { chooseEngineFolder() }
+                    }
+                }
+                TextField("Identifier", text: $engineID)
+                TextField("Display name", text: $engineName)
+                TextField("Version", text: $engineVersion)
+                TextField("Native Wine executable (relative to folder)", text: $engineExecutablePath)
+                Picker("Distribution", selection: $engineDistribution) {
+                    Text("Community").tag(WineEngine.Distribution.community)
+                    Text("Apple Game Porting Toolkit").tag(WineEngine.Distribution.gamePortingToolkit)
+                }
+                Toggle("I reviewed this engine's license", isOn: $engineLicenseConfirmed)
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { showingEngineSheet = false }
+                Button("Register") {
+                    guard let folder = engineFolder else { return }
+                    let id = engineID
+                    let name = engineName
+                    let version = engineVersion
+                    let executable = engineExecutablePath
+                    let distribution = engineDistribution
+                    let license = engineLicenseConfirmed
+                    showingEngineSheet = false
+                    Task {
+                        await state.registerEngine(
+                            from: folder, id: id, name: name, version: version,
+                            executablePath: executable, distribution: distribution,
+                            licenseConfirmed: license
+                        )
+                    }
+                }
+                .buttonStyle(.glassProminent)
+                .disabled(engineFolder == nil || engineID.isEmpty || engineName.isEmpty || !engineLicenseConfirmed)
+            }
+        }
+        .padding(22)
+        .frame(width: 600, height: 520)
+    }
+
+    private func chooseEngineFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use Runtime"
+        panel.message = "Choose a self-contained Wine runtime directory."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        engineFolder = url
+        if engineID.isEmpty {
+            engineID = url.lastPathComponent.lowercased()
+                .replacingOccurrences(of: " ", with: "-")
+        }
+        if engineName.isEmpty { engineName = url.lastPathComponent }
+        for candidate in ["bin/wine64", "wine64", "bin/wine", "wine"] {
+            if FileManager.default.isExecutableFile(atPath: url.appendingPathComponent(candidate).path) {
+                engineExecutablePath = candidate
+                break
+            }
+        }
+    }
+
+    // MARK: - Updates
+
+    private var updates: some View {
+        Form {
+            Section("Release channel") {
+                Picker("Channel", selection: Binding(
+                    get: { state.updateChannel },
+                    set: { state.updateChannel = $0 }
+                )) {
+                    Text("Development beta").tag(UpdateChannel.developmentBeta)
+                    Text("Stable release").tag(UpdateChannel.stable)
+                }
+                .pickerStyle(.segmented)
+                Button("Check for Updates") {
+                    Task { await state.checkForUpdates(channel: state.updateChannel) }
+                }
+                .disabled(state.isBusy)
+            }
+
+            if let update = state.availableUpdate {
+                Section("Available release") {
+                    LabeledContent("Tag", value: update.release.tagName)
+                    LabeledContent("Asset", value: update.asset.name)
+                    LabeledContent("Status", value: update.isUpdateAvailable
+                        ? "New build available (\(update.reason?.rawValue ?? "unknown"))"
+                        : "Up to date")
+                    if update.isUpdateAvailable {
+                        Button("Download and Verify") {
+                            Task { await state.stageAvailableUpdate() }
+                        }
+                        .disabled(state.isBusy)
+                    }
+                }
+            }
+
+            if let staged = state.stagedUpdate {
+                Section("Staged update") {
+                    Text(staged.bundleURL.path)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                    Button("Reveal Staged App in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([staged.bundleURL])
+                    }
+                    Button("Install and Relaunch PearSilicon") {
+                        Task { await state.installStagedUpdateAndRelaunch() }
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(state.isBusy)
+                    Text("The download was verified against GitHub's SHA-256 and the app's signature. The helper waits for this app to quit, verifies the staged and installed bundles again, swaps them atomically, and keeps the previous app as a rollback copy. Save your work before continuing.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Runtime updates") {
+                Text("After installing a new PearSilicon build, iOS apps keep their own runtime copy. This action checks every stopped iOS app and updates only those whose runtime fingerprint differs. Each bundle is prepared and re-signed in a staged copy first.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Refresh iOS Runtimes Now") {
+                    Task { await state.refreshInstalledRuntimes() }
+                }
+                .disabled(state.isBusy)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - Keymapper
 
     private var keymapper: some View {
         Form {
             Section {
                 Toggle("Enable keymapper for new games by default",
                        isOn: $state.keymapperDefaultEnabled)
-                Text("Keyboard/mouse keymapping is off unless enabled. Each game has "
+                Text("Keyboard/mouse keymapping is off unless enabled. Each iOS app has "
                      + "its own switch in the Keymap tab; changing it takes effect "
-                     + "on the next launch. Saved bindings can reload while the "
-                     + "keymapper is active. Other compatibility hooks can still run.")
+                     + "on the next launch. Mac and Wine games do not use the iOS keymapper.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -105,5 +373,6 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .formStyle(.grouped)
     }
 }
