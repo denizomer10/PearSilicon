@@ -1,7 +1,8 @@
 # PearSilicon — Çalışma Durumu (Wine / grafik)
 
-Son güncelleme: 2026-10-31 22:46 · Dal: `feature/portable-multiplatform`
-Son commit: `ba7beb5` + bu oturumun DXVK entegrasyonu (commit sonrası güncellenecek)
+Son güncelleme: 2026-10-31 22:50 · Dal: `feature/portable-multiplatform`
+Son commit: `bf4c63f` (origin'a push edildi)
+Uygulama paketi: `build/PearSilicon.app` (release, ad-hoc imzalı, `bf4c63f` gömülü)
 
 Bu belge, bir sonraki geliştiricinin/agent'ın **kaldığı yerden devam edebilmesi**
 için hazırlanmıştır. Yeni işe başlamadan önce §1 ve §4'ü oku.
@@ -144,9 +145,18 @@ Değişen/eklenen dosyalar:
 3. ~~Gerçek DELTARUNE'ı uygulama yolundan (AppState) başlat~~ →
    `PEAR_DXVK_E2E=1` testi geçti: logda `DXVK: v1.10.3` + `Entering main loop`,
    süreç ayakta, test sonunda durduruldu. Görsel onay daha önce alındı.
-4. Uygulama paketini yeniden derle (`./scripts/build-app.sh release`), çalışan
-   eski uygulamayı **izinsiz kapatma**; kullanıcı yeni `build/PearSilicon.app`'i
-   açsın. Değişiklikleri `feature/portable-multiplatform` dalına commit + push et.
+4. ~~Uygulama paketini yeniden derle~~ → `build/PearSilicon.app` `bf4c63f` ile
+   derlendi ve ad-hoc imzası doğrulandı. Kullanıcı bu paketi açmalı; çalışan eski
+   uygulama izinsiz kapatılmadı (oturum sonunda zaten çalışmıyordu). Değişiklikler
+   `feature/portable-multiplatform` dalına commit + push edildi.
+
+Sonraki iyileştirmeler (acil değil):
+- DXVK bileşeni için "Kaldır" düğmesi ve sürüm durumu; şu an kurulum var, kaldırma
+  dosya sistemi üzerinden backend değişimiyle otomatik.
+- DXMT'yi gerçekten çalıştırmak isteyenler için winemac metal API'sini export eden
+  bir motor (CrossOver tabanlı) desteği; otomatik Gcenx motorlarında mümkün değil.
+- 32-bit (syswow64) DXVK dağıtımı; uygulama şu an x86_64 odaklı.
+- `docs/TESTING.md`'ye yeni bileşen testlerinin manuel kontrol listesi.
 
 ---
 
