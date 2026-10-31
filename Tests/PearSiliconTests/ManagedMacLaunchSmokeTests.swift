@@ -25,6 +25,11 @@ final class ManagedMacLaunchSmokeTests: XCTestCase {
         XCTAssertEqual(entry.platform, .macOS)
         XCTAssertTrue(FileManager.default.fileExists(atPath: entry.payloadURL.path))
         XCTAssertEqual(
+            Quarantine.isQuarantined(entry.payloadURL),
+            Quarantine.isQuarantined(source),
+            "a managed copy must preserve the original download's approval state"
+        )
+        XCTAssertEqual(
             try Data(contentsOf: entry.payloadURL.appendingPathComponent("Contents/Info.plist")),
             before
         )
