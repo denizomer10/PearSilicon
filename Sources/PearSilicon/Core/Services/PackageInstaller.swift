@@ -902,6 +902,19 @@ final class PackageInstaller: @unchecked Sendable {
         updated["CFBundleSupportedPlatforms"] = ["MacOSX"]
         updated["DTPlatformName"] = "macosx"
         updated["LSMinimumSystemVersion"] = "15.0"
+        // Xcode's Game Controllers capability writes these keys. iOS-on-Mac
+        // apps that ship without them are not treated as controller-supporting
+        // by the system, so hardware pads enumerate but input is not routed.
+        // Preserve an explicit app declaration if one exists.
+        if updated["GCSupportsControllerUserInteraction"] == nil {
+            updated["GCSupportsControllerUserInteraction"] = true
+        }
+        if updated["GCSupportedGameControllers"] == nil {
+            updated["GCSupportedGameControllers"] = [
+                ["ProfileName": "ExtendedGamepad"],
+                ["ProfileName": "MicroGamepad"],
+            ]
+        }
 
         let data = try PropertyListSerialization.data(
             fromPropertyList: updated, format: .binary, options: 0

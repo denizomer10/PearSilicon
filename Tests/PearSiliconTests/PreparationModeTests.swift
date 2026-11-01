@@ -465,6 +465,12 @@ private final class PreparationFixture {
             from: Data(contentsOf: bundleURL.appendingPathComponent("Info.plist")), format: nil
         ) as? [String: Any]
         XCTAssertEqual(info?["UserCustomKey"] as? String, "preserved", file: file, line: line)
+        XCTAssertEqual(info?["GCSupportsControllerUserInteraction"] as? Bool, true, file: file, line: line)
+        let profiles = info?["GCSupportedGameControllers"] as? [[String: Any]]
+        XCTAssertEqual(
+            profiles?.compactMap { $0["ProfileName"] as? String },
+            ["ExtendedGamepad", "MicroGamepad"], file: file, line: line
+        )
     }
 
     func assertFinalPaths(runtimeLoad: Bool, file: StaticString = #filePath, line: UInt = #line) throws {
