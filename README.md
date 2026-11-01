@@ -93,9 +93,13 @@ can be newer than the published ZIP.
   `GCSupportedGameControllers`) when the app did not declare them.
   `PEAR_CONTROLLER_NATIVE=1` opts out per launch. When a keymap exists and the
   game does not install its own pad handler, the runtime also maps the pad to
-  the keymapper (left stick WASD, A/B/X/Y to space/escape/e/f, shoulders to
-  shift/q, right stick to a virtual camera drag), so touch-only games remain
-  playable. `PEAR_CONTROLLER_KEYMAP=0` disables that fallback.
+  the keymapper, so touch-only games remain playable. The Keymap editor has a
+  Keyboard/Controller switch: controller bindings can be captured by pressing
+  A/B/X/Y, shoulders, triggers, D-pad, MENU/OPTIONS and L/R stick, or chosen
+  from a menu. L STICK drives a joystick binding and R STICK drives an analog
+  camera binding (60 Hz, deadzone and sensitivity); unbound controllers keep the
+  legacy A/B/X/Y to space/escape/e/f fallback. `PEAR_CONTROLLER_KEYMAP=0`
+  disables the fallback.
 - Graphics API is selectable per game: **MoltenVK + DXVK** (D3D11 → Vulkan →
   Metal) and **DXMT** (D3D10/11 → Metal, requires a Wine build that exports
   winemac's Metal view API). Both optional components are downloaded from GitHub;

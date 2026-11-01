@@ -10,8 +10,11 @@ import Foundation
 /// user changes input source.
 enum KeyNames {
 
-    /// Human-readable label for a stored key name.
-    static func display(_ key: String) -> String {
+    /// Human-readable label for a stored key name, including controller inputs.
+    static func display(_ key: String, source: KeymapInputSource = .keyboard) -> String {
+        if source == .controller {
+            return ControllerKey(rawValue: key)?.title ?? key.uppercased()
+        }
         switch key.lowercased() {
         case "wasd": return "WASD"
         case "mouse": return "MOUSE"

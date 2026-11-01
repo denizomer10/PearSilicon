@@ -220,7 +220,7 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
 | Alan | Durum |
 | --- | --- |
 | `swift build` | temiz |
-| `swift test` | **285 XCTest + 24 Swift Testing, 0 hata, 14 opsiyonel skip** (son koşu) |
+| `swift test` | **287 XCTest + 24 Swift Testing, 0 hata, 14 opsiyonel skip** (son koşu) |
 | Güncelleme kanalları | liste tabanlı seçim testleri ✓ |
 | Community GitHub | URL ayrıştırma + gerçek repo çözümleme testi ✓ |
 | Motor kaldırma | birim testi ✓ |

@@ -77,8 +77,14 @@ typedef NS_ENUM(NSInteger, PearActionKind) {
     PearActionKindSwipe,
 };
 
+typedef NS_ENUM(NSInteger, PearInputSource) {
+    PearInputSourceKeyboard = 0,
+    PearInputSourceController = 1,
+};
+
 @interface PearBinding : NSObject
 @property (nonatomic, copy) NSString *key;
+@property (nonatomic) PearInputSource source;
 @property (nonatomic) PearActionKind kind;
 @property (nonatomic) CGPoint point;      // normalized, for tap/hold/joystick
 @property (nonatomic) CGRect region;      // normalized, for mouseLook
@@ -96,9 +102,9 @@ static NSArray<PearBinding *> *gBindings = nil;
 
 static NSString *KeyNameForCode(GCKeyCode code);
 
-static PearBinding *BindingForKey(NSString *key) {
+static PearBinding *BindingForKeySource(NSString *key, PearInputSource source) {
     for (PearBinding *b in gBindings) {
-        if ([b.key caseInsensitiveCompare:key] == NSOrderedSame) return b;
+        if (b.source == source && [b.key caseInsensitiveCompare:key] == NSOrderedSame) return b;
     }
     return nil;
 }
@@ -130,6 +136,8 @@ static NSArray<PearBinding *> *LoadKeymap(NSString *path) {
 
         PearBinding *binding = [PearBinding new];
         binding.key = raw[@"key"] ?: @"";
+        binding.source = [raw[@"source"] isEqualToString:@"controller"]
+            ? PearInputSourceController : PearInputSourceKeyboard;
 
         NSDictionary *action = raw[@"action"];
         if ([action isKindOfClass:NSDictionary.class]) {
@@ -235,24 +243,23 @@ static void SynthesizeTouch(PearBinding *binding, BOOL down, CGPoint point) {
 // W/A/S/D drive a single virtual joystick. A joystick binding's `key` is
 // "wasd"; while any of the four keys is held the touch sits at
 // `center + direction * radius`, and moving between keys drags the finger.
-static PearBinding *gJoystickBinding = nil;
+static PearBinding *gJoystickBinding = nil;       // keyboard joystick (wasd)
+static PearBinding *gControllerJoystick = nil;    // controller left stick
 static BOOL gJoyUp = NO, gJoyDown = NO, gJoyLeft = NO, gJoyRight = NO;
 static BOOL gJoystickActive = NO;
 static CGPoint gJoystickTouch = {0, 0};
 static CGPoint gJoystickTarget = {0, 0};
 static uint64_t gJoystickGeneration = 0;
 
-static void UpdateJoystick(void) {
-    if (!gJoystickBinding) return;
+static void UpdateJoystickWithBinding(PearBinding *binding, CGFloat dx, CGFloat dy) {
+    if (!binding) return;
 
-    CGFloat dx = (gJoyRight ? 1.0 : 0.0) - (gJoyLeft ? 1.0 : 0.0);
-    CGFloat dy = (gJoyDown ? 1.0 : 0.0) - (gJoyUp ? 1.0 : 0.0);
     CGFloat len = sqrt(dx * dx + dy * dy);
-    BOOL want = len > 0;
+    BOOL want = len > 0.15; // analog dead zone; keyboard values are 0/1
+    if (len > 1.0) { dx /= len; dy /= len; }
 
-    CGPoint center = gJoystickBinding.point;
-    CGFloat radius = gJoystickBinding.radius;
-    if (len > 0) { dx /= len; dy /= len; }
+    CGPoint center = binding.point;
+    CGFloat radius = binding.radius;
     CGPoint target = CGPointMake(center.x + dx * radius, center.y + dy * radius);
 
     NSString *key = @"f:joystick";
@@ -284,6 +291,12 @@ static void UpdateJoystick(void) {
         gJoystickGeneration++;
         PearSynthesizeVirtualFinger(NO, key, gJoystickTouch.x, gJoystickTouch.y);
     }
+}
+
+static void UpdateJoystick(void) {
+    CGFloat dx = (gJoyRight ? 1.0 : 0.0) - (gJoyLeft ? 1.0 : 0.0);
+    CGFloat dy = (gJoyDown ? 1.0 : 0.0) - (gJoyUp ? 1.0 : 0.0);
+    UpdateJoystickWithBinding(gJoystickBinding, dx, dy);
 }
 
 #pragma mark - Mouse look
@@ -435,7 +448,7 @@ static void HandleKeyPress(GCKeyCode keyCode, BOOL pressed) {
         if ([key isEqualToString:@"d"]) { gJoyRight = pressed; UpdateJoystick(); return; }
     }
 
-    PearBinding *binding = BindingForKey(key);
+    PearBinding *binding = BindingForKeySource(key, PearInputSourceKeyboard);
     if (!binding) return;
     if (getenv("PEAR_DEBUG_TOUCH")) {
         PearLog(@"[PearRuntime][key] %@ %s", key, pressed ? "down" : "up");
@@ -592,33 +605,148 @@ static IMP gOriginalSetGamepadChanged = NULL;
 static PearGamepadChangedBlock gGameGamepadChanged = nil;
 static PearGamepadChangedBlock gCombinedGamepadChanged = nil;
 static BOOL gGamepadKeymapEnabled = NO;
+static BOOL gHasControllerBindings = NO;
+static GCController *gCurrentController = nil;
+static PearBinding *gControllerLookBinding = nil;
 static BOOL gPadW, gPadA, gPadS, gPadD, gPadAttack, gPadSkill, gPadInteract, gPadMenu, gPadSprint, gPadBurst;
 static NSString *const kPearControllerLookKey = @"f:controllerlook";
 static BOOL gControllerLookActive = NO;
 static CGPoint gControllerLookPoint = {0.75, 0.5};
 static NSUInteger gControllerLookGeneration = 0;
+static dispatch_source_t gControllerLookTimer = nil;
+static NSMutableSet<NSString *> *gControllerPressedKeys = nil;
 
-static void ControllerLook(float dx, float dy) {
-    if (fabs(dx) < 0.0001 && fabs(dy) < 0.0001) return;
+static CGFloat ControllerLookSensitivity(void) {
+    if (gControllerLookBinding && gControllerLookBinding.sensitivity > 0) {
+        return gControllerLookBinding.sensitivity;
+    }
+    return 1.0;
+}
+
+static CGRect ControllerLookRegion(void) {
+    if (gControllerLookBinding) return gControllerLookBinding.region;
+    return CGRectMake(0.55, 0.18, 0.40, 0.64);
+}
+
+static void ControllerLookStep(CGFloat dx, CGFloat dy) {
+    if (fabs(dx) < 0.00001 && fabs(dy) < 0.00001) return;
+    CGRect region = ControllerLookRegion();
     if (!gControllerLookActive) {
         gControllerLookActive = YES;
-        gControllerLookPoint = CGPointMake(0.75, 0.5);
+        gControllerLookPoint = CGPointMake(CGRectGetMidX(region), CGRectGetMidY(region));
         PearSynthesizeVirtualFinger(YES, kPearControllerLookKey,
                                    gControllerLookPoint.x, gControllerLookPoint.y);
     }
-    CGFloat nx = MIN(MAX(gControllerLookPoint.x + dx * 0.06, 0.55), 0.95);
-    CGFloat ny = MIN(MAX(gControllerLookPoint.y + dy * 0.06, 0.20), 0.80);
+    CGFloat nx = gControllerLookPoint.x + dx * ControllerLookSensitivity();
+    CGFloat ny = gControllerLookPoint.y + dy * ControllerLookSensitivity();
+    if (nx < CGRectGetMinX(region) || nx > CGRectGetMaxX(region) ||
+        ny < CGRectGetMinY(region) || ny > CGRectGetMaxY(region)) {
+        PearSynthesizeVirtualFinger(NO, kPearControllerLookKey,
+                                   gControllerLookPoint.x, gControllerLookPoint.y);
+        gControllerLookPoint = CGPointMake(CGRectGetMidX(region), CGRectGetMidY(region));
+        PearSynthesizeVirtualFinger(YES, kPearControllerLookKey,
+                                   gControllerLookPoint.x, gControllerLookPoint.y);
+        nx = MIN(MAX(gControllerLookPoint.x + dx * ControllerLookSensitivity(), CGRectGetMinX(region)), CGRectGetMaxX(region));
+        ny = MIN(MAX(gControllerLookPoint.y + dy * ControllerLookSensitivity(), CGRectGetMinY(region)), CGRectGetMaxY(region));
+    }
     gControllerLookPoint = CGPointMake(nx, ny);
     PearSynthesizeVirtualFinger(YES, kPearControllerLookKey, nx, ny);
     gControllerLookGeneration++;
     NSUInteger generation = gControllerLookGeneration;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (generation != gControllerLookGeneration || !gControllerLookActive) return;
         gControllerLookActive = NO;
         PearSynthesizeVirtualFinger(NO, kPearControllerLookKey,
                                    gControllerLookPoint.x, gControllerLookPoint.y);
     });
+}
+
+static void StartControllerLookTimer(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gControllerLookTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                      dispatch_get_main_queue());
+        uint64_t interval = NSEC_PER_SEC / 60;
+        dispatch_source_set_timer(gControllerLookTimer,
+                                  dispatch_time(DISPATCH_TIME_NOW, interval),
+                                  interval, interval / 4);
+        dispatch_source_set_event_handler(gControllerLookTimer, ^{
+            if (!gGamepadKeymapEnabled || gGameGamepadChanged) return;
+            GCExtendedGamepad *pad = gCurrentController.extendedGamepad;
+            if (!pad) return;
+            // An explicit right-stick binding customizes the region and
+            // sensitivity; without one, use the default right-hand region so
+            // adding a single button binding does not disable the camera.
+            if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+            float x = pad.rightThumbstick.xAxis.value;
+            float y = pad.rightThumbstick.yAxis.value;
+            float magnitude = sqrtf(x * x + y * y);
+            const float deadzone = 0.12f;
+            if (magnitude <= deadzone) return;
+            float scaled = (magnitude - deadzone) / (1.0f - deadzone);
+            scaled = powf(scaled, 1.35f);
+            // Per-frame normalized drag. 1.5 at full deflection gives a
+            // gamepad-like rotation speed; the sensitivity slider scales it.
+            float speed = 1.5f / 60.0f;
+            ControllerLookStep((x / magnitude) * scaled * speed,
+                               -(y / magnitude) * scaled * speed);
+        });
+        dispatch_resume(gControllerLookTimer);
+    });
+}
+
+static BOOL ControllerButtonState(GCExtendedGamepad *pad, NSString *key) {
+    if ([key isEqualToString:@"buttonA"]) return pad.buttonA.isPressed;
+    if ([key isEqualToString:@"buttonB"]) return pad.buttonB.isPressed;
+    if ([key isEqualToString:@"buttonX"]) return pad.buttonX.isPressed;
+    if ([key isEqualToString:@"buttonY"]) return pad.buttonY.isPressed;
+    if ([key isEqualToString:@"leftShoulder"]) return pad.leftShoulder.isPressed;
+    if ([key isEqualToString:@"rightShoulder"]) return pad.rightShoulder.isPressed;
+    if ([key isEqualToString:@"leftTrigger"]) return pad.leftTrigger.value > 0.5f;
+    if ([key isEqualToString:@"rightTrigger"]) return pad.rightTrigger.value > 0.5f;
+    if ([key isEqualToString:@"dpadUp"]) return pad.dpad.up.isPressed;
+    if ([key isEqualToString:@"dpadDown"]) return pad.dpad.down.isPressed;
+    if ([key isEqualToString:@"dpadLeft"]) return pad.dpad.left.isPressed;
+    if ([key isEqualToString:@"dpadRight"]) return pad.dpad.right.isPressed;
+    if ([key isEqualToString:@"menu"]) return pad.buttonMenu.isPressed;
+    if ([key isEqualToString:@"options"]) {
+        if (@available(macOS 11.0, *)) return pad.buttonOptions.isPressed;
+        return NO;
+    }
+    return NO;
+}
+
+static void ControllerKeyChanged(NSString *key, BOOL pressed) {
+    if (!gControllerPressedKeys) gControllerPressedKeys = [NSMutableSet set];
+    if ([gControllerPressedKeys containsObject:key] == pressed) return;
+    if (pressed) [gControllerPressedKeys addObject:key];
+    else [gControllerPressedKeys removeObject:key];
+    PearBinding *binding = BindingForKeySource(key, PearInputSourceController);
+    if (!binding) return;
+    if (binding.kind == PearActionKindJoystick || binding.kind == PearActionKindMouseLook) return;
+    SynthesizeTouch(binding, pressed, binding.point);
+    if (getenv("PEAR_DEBUG_TOUCH")) {
+        PearLog(@"[PearRuntime][controller] %@ %s", key, pressed ? "down" : "up");
+    }
+}
+
+static void TranslateControllerBindings(GCExtendedGamepad *gamepad) {
+    static NSString *const buttons[] = {
+        @"buttonA", @"buttonB", @"buttonX", @"buttonY",
+        @"leftShoulder", @"rightShoulder", @"leftTrigger", @"rightTrigger",
+        @"dpadUp", @"dpadDown", @"dpadLeft", @"dpadRight", @"menu", @"options",
+    };
+    for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
+        ControllerKeyChanged(buttons[i], ControllerButtonState(gamepad, buttons[i]));
+    }
+    PearBinding *joystick = gControllerJoystick ?: gJoystickBinding;
+    if (joystick) {
+        float x = gamepad.leftThumbstick.xAxis.value;
+        float y = gamepad.leftThumbstick.yAxis.value;
+        if (fabsf(x) < 0.12f && fabsf(y) < 0.12f) { x = 0; y = 0; }
+        UpdateJoystickWithBinding(joystick, x, -y);
+    }
 }
 
 static void PadSetKey(GCKeyCode code, BOOL pressed, BOOL *state) {
@@ -632,6 +760,12 @@ static void PadSetKey(GCKeyCode code, BOOL pressed, BOOL *state) {
 
 static void TranslateGamepad(GCExtendedGamepad *gamepad) {
     if (!gGamepadKeymapEnabled || gGameGamepadChanged) return;
+    if (gHasControllerBindings) {
+        TranslateControllerBindings(gamepad);
+        return;
+    }
+    // Backward-compatible fallback for apps whose keymaps predate controller
+    // bindings: the standard pad drives the keyboard bindings.
     const float deadzone = 0.35f;
     float x = gamepad.leftThumbstick.xAxis.value;
     float y = gamepad.leftThumbstick.yAxis.value;
@@ -645,11 +779,6 @@ static void TranslateGamepad(GCExtendedGamepad *gamepad) {
     PadSetKey(GCKeyCodeKeyF, gamepad.buttonY.isPressed, &gPadInteract);
     PadSetKey(GCKeyCodeLeftShift, gamepad.leftShoulder.isPressed, &gPadSprint);
     PadSetKey(GCKeyCodeKeyQ, gamepad.rightShoulder.isPressed, &gPadBurst);
-    float rx = gamepad.rightThumbstick.xAxis.value;
-    float ry = gamepad.rightThumbstick.yAxis.value;
-    if (fabs(rx) > 0.15 || fabs(ry) > 0.15) {
-        ControllerLook(rx * 6.0, -ry * 6.0);
-    }
 }
 
 static void PearSetGamepadChanged(id self, SEL _cmd, PearGamepadChangedBlock handler) {
@@ -668,6 +797,7 @@ static void PadAttach(GCController *controller) {
     if (!gGamepadKeymapEnabled) return;
     GCExtendedGamepad *gamepad = controller.extendedGamepad;
     if (!gamepad) return;
+    gCurrentController = controller;
     if (gOriginalSetGamepadChanged) {
         ((void (*)(id, SEL, PearGamepadChangedBlock))gOriginalSetGamepadChanged)(
             gamepad, @selector(setValueChangedHandler:), gCombinedGamepadChanged
@@ -680,6 +810,21 @@ static void PadAttach(GCController *controller) {
 static void InstallGamepadKeymapper(void) {
     NSString *setting = NSProcessInfo.processInfo.environment[@"PEAR_CONTROLLER_KEYMAP"];
     gGamepadKeymapEnabled = gBindings.count > 0 && (!setting || setting.boolValue);
+    gHasControllerBindings = NO;
+    gControllerJoystick = nil;
+    gControllerLookBinding = nil;
+    for (PearBinding *binding in gBindings) {
+        if (binding.source != PearInputSourceController) continue;
+        gHasControllerBindings = YES;
+        if (binding.kind == PearActionKindJoystick
+            && [binding.key isEqualToString:@"leftStick"] && !gControllerJoystick) {
+            gControllerJoystick = binding;
+        }
+        if (binding.kind == PearActionKindMouseLook
+            && [binding.key isEqualToString:@"rightStick"] && !gControllerLookBinding) {
+            gControllerLookBinding = binding;
+        }
+    }
     if (!gGamepadKeymapEnabled) {
         PearLog(@"[PearRuntime][input] gamepad keymapper off (no bindings or opted out)");
         return;
@@ -699,11 +844,13 @@ static void InstallGamepadKeymapper(void) {
     if (setter) {
         gOriginalSetGamepadChanged = method_setImplementation(setter, (IMP)PearSetGamepadChanged);
     }
+    StartControllerLookTimer();
     for (GCController *controller in [GCController controllers]) {
         PadAttach(controller);
     }
-    PearLog(@"[PearRuntime][input] gamepad keymapper installed (controllers=%lu)",
-            (unsigned long)[GCController controllers].count);
+    PearLog(@"[PearRuntime][input] gamepad keymapper installed (controllers=%lu, custom=%d, look=%d)",
+            (unsigned long)[GCController controllers].count, gHasControllerBindings,
+            gControllerLookBinding != nil);
 }
 
 static void InstallGameControllerBridge(void) {
@@ -738,6 +885,7 @@ static void InstallGameControllerBridge(void) {
                 [gControllerConnectDates removeObjectForKey:[NSValue valueWithNonretainedObject:controller]];
             }
             PearLog(@"[PearRuntime][input] game controller disconnected: %@", controller.vendorName ?: @"?");
+            if (gCurrentController == controller) gCurrentController = nil;
         }];
 
         NSArray<GCController *> *existing = [GCController controllers];
@@ -1029,6 +1177,7 @@ static void ApplyKeymap(NSString *path) {
     gJoystickBinding = nil;
     gLookBinding = nil;
     for (PearBinding *binding in gBindings) {
+        if (binding.source != PearInputSourceKeyboard) continue;
         if (binding.kind == PearActionKindJoystick && !gJoystickBinding) gJoystickBinding = binding;
         if (binding.kind == PearActionKindMouseLook && !gLookBinding) gLookBinding = binding;
     }
