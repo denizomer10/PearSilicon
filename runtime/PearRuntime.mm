@@ -9,6 +9,7 @@
 #import <GameController/GameController.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <sys/stat.h>
 #import <os/log.h>
 #import <pwd.h>
@@ -995,6 +996,94 @@ static void InstallGameControllerBridge(void) {
     });
 }
 
+// Catalyst/UIKit beeps when a key press is not handled by a responder. The
+// keymapper already turns mapped keys into touches, but the original NSEvent
+// still reaches UIKit, producing the system beep. Consume only the events that
+// a keyboard binding (or the WASD joystick) already owns.
+static id gKeyEventMonitor = nil;
+
+static NSString *KeyNameForEvent(id event) {
+    unsigned short code = ((unsigned short (*)(id, SEL))objc_msgSend)(event, @selector(keyCode));
+    switch (code) {
+        case 123: return @"left";
+        case 124: return @"right";
+        case 125: return @"down";
+        case 126: return @"up";
+        case 115: return @"home";
+        case 119: return @"end";
+        case 116: return @"pageup";
+        case 121: return @"pagedown";
+        case 51: return @"backspace";
+        case 117: return @"delete";
+        case 48: return @"tab";
+        case 36: case 76: return @"enter";
+        case 53: return @"escape";
+        case 122: return @"f1";
+        case 120: return @"f2";
+        case 99: return @"f3";
+        case 118: return @"f4";
+        case 96: return @"f5";
+        case 97: return @"f6";
+        case 98: return @"f7";
+        case 100: return @"f8";
+        case 101: return @"f9";
+        case 109: return @"f10";
+        case 103: return @"f11";
+        case 111: return @"f12";
+        default: break;
+    }
+    NSString *characters = ((id (*)(id, SEL))objc_msgSend)(event, @selector(charactersIgnoringModifiers));
+    if (![characters isKindOfClass:NSString.class] || characters.length == 0) return nil;
+    unichar c = [characters characterAtIndex:0];
+    if (c == ' ') return @"space";
+    if (c == '\t') return @"tab";
+    if (c == '\r' || c == '\n') return @"enter";
+    if (c == 0x1b) return @"escape";
+    if (c == 0x7f) return @"backspace";
+    switch (c) {
+        case '-': return @"minus";
+        case '=': return @"equal";
+        case '[': return @"openbracket";
+        case ']': return @"closebracket";
+        case '\\': return @"backslash";
+        case ';': return @"semicolon";
+        case '\'': return @"quote";
+        case '`': return @"grave";
+        case ',': return @"comma";
+        case '.': return @"period";
+        case '/': return @"slash";
+        default: break;
+    }
+    NSString *lower = characters.lowercaseString;
+    if (lower.length == 1) {
+        unichar lowerChar = [lower characterAtIndex:0];
+        if ((lowerChar >= 'a' && lowerChar <= 'z') || (lowerChar >= '0' && lowerChar <= '9')) {
+            return lower;
+        }
+    }
+    return nil;
+}
+
+static void InstallKeyEventSilencer(void) {
+    if (gBindings.count == 0) return;
+    Class eventClass = NSClassFromString(@"NSEvent");
+    SEL add = NSSelectorFromString(@"addLocalMonitorForEventsMatchingMask:handler:");
+    if (!eventClass || ![eventClass respondsToSelector:add]) return;
+    NSUInteger mask = (1u << 10) | (1u << 11); // keyDown | keyUp
+    id (^handler)(id) = ^id(id event) {
+        NSString *name = KeyNameForEvent(event);
+        if (!name) return event;
+        BOOL mapped = BindingForKeySource(name, PearInputSourceKeyboard) != nil;
+        if (!mapped && gJoystickBinding) {
+            mapped = [@[@"w", @"a", @"s", @"d"] containsObject:name];
+        }
+        return mapped ? nil : event;
+    };
+    gKeyEventMonitor = ((id (*)(id, SEL, NSUInteger, id))objc_msgSend)(eventClass, add, mask, handler);
+    PearLog(@"[PearRuntime][input] system key sound suppression %@",
+            gKeyEventMonitor ? @"installed" : @"unavailable");
+}
+
 static void InstallKeyboard(void) {
     InstallHandlerChaining();
 
@@ -1237,6 +1326,8 @@ static void WatchKeymap(NSString *path) {
     NSString *keymapPath = NSProcessInfo.processInfo.environment[@"PEAR_KEYMAP"];
     ApplyKeymap(keymapPath);
     WatchKeymap(keymapPath);
+
+    InstallKeyEventSilencer();
 
     // Controller discovery is independent of the keymapper: an app with its own
     // GameController support must see controllers even when no keymap is set.
