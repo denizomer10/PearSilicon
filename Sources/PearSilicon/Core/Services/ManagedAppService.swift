@@ -154,21 +154,6 @@ struct ManagedAppService: Sendable {
                         "DXMT is selected but not installed for this engine. Install it in Settings → Wine → Graphics components."
                     )
                 }
-            case .kosmicKrisp:
-                let archs = (try? Shell.run("/usr/bin/lipo", ["-archs", engine.executableURL.path])) ?? ""
-                guard archs.split(whereSeparator: \.isWhitespace).contains("arm64") else {
-                    throw PearError.launchFailed(
-                        "KosmicKrisp is arm64-only; this Wine engine is x86_64. Register an arm64 Wine engine to use it."
-                    )
-                }
-                let icd = engine.rootURL.appendingPathComponent(
-                    "Graphics/KosmicKrisp/share/vulkan/icd.d/avk143_kosmickrisp_icd.aarch64.json"
-                )
-                guard FileManager.default.fileExists(atPath: icd.path) else {
-                    throw PearError.launchFailed(
-                        "KosmicKrisp is selected but not installed for this engine. Install it in Settings → Wine → Graphics components."
-                    )
-                }
             }
             _ = runtime
             let archs = (try? Shell.run("/usr/bin/lipo", ["-archs", engine.executableURL.path])) ?? ""
@@ -546,15 +531,6 @@ struct ManagedAppService: Sendable {
                     let dxmt = graphics.appendingPathComponent("DXMT", isDirectory: true)
                     result["WINEDLLPATH"] = dxmt.path + ":" + result["WINEDLLPATH"]!
                     result["WINEDLLOVERRIDES"] = "d3d11,dxgi,d3d10core,winemetal=n,b;winemenubuilder.exe=d"
-                case .kosmicKrisp:
-                    let driver = graphics.appendingPathComponent("KosmicKrisp", isDirectory: true)
-                    let icd = driver.appendingPathComponent("share/vulkan/icd.d/avk143_kosmickrisp_icd.aarch64.json")
-                    if FileManager.default.fileExists(atPath: icd.path) {
-                        result["VK_ICD_FILENAMES"] = icd.path
-                        result["VK_DRIVER_FILES"] = icd.path
-                    }
-                    result["DYLD_FALLBACK_LIBRARY_PATH"] =
-                        driver.appendingPathComponent("lib/avk143").path + ":" + result["DYLD_FALLBACK_LIBRARY_PATH"]!
                 case .moltenVK:
                     // DXVK is native D3D11; without it the game falls back to
                     // wined3d's OpenGL renderer, which presents black on this

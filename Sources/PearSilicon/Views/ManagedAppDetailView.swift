@@ -346,26 +346,6 @@ struct ManagedAppDetailView: View {
                 .buttonStyle(.glass)
                 .disabled(state.isBusy)
             }
-            if state.graphicsBackend(for: entry) == .kosmicKrisp {
-                let engine = state.engine(id: entry.manifest.wineEngineID)
-                let archs = engine.flatMap {
-                    try? Shell.run("/usr/bin/lipo", ["-archs", $0.executableURL.path])
-                } ?? ""
-                if !archs.split(whereSeparator: \.isWhitespace).contains("arm64") {
-                    Text("KosmicKrisp is arm64-only; this Wine engine is x86_64.")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                } else if !state.isGraphicsComponentInstalled(.kosmicKrisp, for: entry) {
-                    Text("KosmicKrisp is not installed for this engine.")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                    Button("Install KosmicKrisp") {
-                        Task { await state.installGraphicsComponent(.kosmicKrisp, for: entry) }
-                    }
-                    .buttonStyle(.glass)
-                    .disabled(state.isBusy)
-                }
-            }
         }
     }
 

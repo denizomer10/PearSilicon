@@ -28,22 +28,27 @@ struct LibraryManifest: Codable, Hashable, Sendable {
     enum GraphicsBackend: String, Codable, CaseIterable, Identifiable, Sendable {
         case moltenVK = "moltenvk"
         case dxmt
-        case kosmicKrisp = "kosmickrisp"
 
         var id: String { rawValue }
         var title: String {
             switch self {
             case .moltenVK: "MoltenVK"
             case .dxmt: "DXMT"
-            case .kosmicKrisp: "KosmicKrisp"
             }
         }
         var detail: String {
             switch self {
             case .moltenVK: "D3D11 → Vulkan → Metal via DXVK + MoltenVK; install the DXVK component for D3D11 games"
             case .dxmt: "Direct3D 10/11 → Metal; needs a Wine build that exports winemac's Metal view API"
-            case .kosmicKrisp: "Mesa Vulkan → Metal; requires an arm64 Wine engine"
             }
+        }
+
+        // KosmicKrisp was removed from the product (arm64-only and unusable with
+        // the automatic x86_64 engines). Old manifests keep loading as the
+        // default backend instead of making the whole entry unreadable.
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = GraphicsBackend(rawValue: raw) ?? .moltenVK
         }
     }
 

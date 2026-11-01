@@ -1,162 +1,185 @@
-# PearSilicon — Çalışma Durumu (Wine / grafik)
+# PearSilicon — Çalışma Durumu
 
-Son güncelleme: 2026-10-31 22:50 · Dal: `feature/portable-multiplatform`
-Son commit: `bf4c63f` (origin'a push edildi)
-Uygulama paketi: `build/PearSilicon.app` (release, ad-hoc imzalı, `bf4c63f` gömülü)
+Son güncelleme: 2026-11-01 10:30 · Dal: `feature/portable-multiplatform`
+Son commit: bu oturumun commit'i (push sonrası `git log -1` ile doğrula)
+Uygulama paketi: `build/PearSilicon.app` (release, ad-hoc imzalı)
 
-Bu belge, bir sonraki geliştiricinin/agent'ın **kaldığı yerden devam edebilmesi**
-için hazırlanmıştır. Yeni işe başlamadan önce §1 ve §4'ü oku.
+Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam edebilir.
 
 ---
 
 ## 1. Kısa özet
 
-- Üç platformlu kütüphane (iOS Apps / Mac Apps / Wine Games) çalışıyor.
-- Wine motoru (Wine Staging 11.21, x86_64, Gcenx paketi) çalışıyor; DELTARUNE
-  başlıyor, ses geliyor, `Entering main loop` görülüyor.
-- **Açık konu (2026-10-31):** Oyun penceresi wined3d ile **siyah** kalıyordu.
-  Kök neden, önceki kayıtta yazıldığı gibi "her karede glClear hatası" değildir
-  (o hata yalnızca bağlam ilk kurulurken 1 kez oluşuyor; ayrıntı §2.2).
-- **Doğrulanmış çözüm:** DELTARUNE, **DXVK 1.10.3 (Gcenx macOS build) →
-  MoltenVK → Metal** ile görüntü veriyor. Kullanıcı ekranda görüntüyü doğruladı.
-- DXVK artık uygulamaya **motor düzeyinde, SHA-256 pinli bileşen** olarak entegre;
-  oyun başlarken yalnız ilgili prefix'e uygulanıyor ve backend değişince geri
-  alınıyor. Uçtan uca `AppState` testi geçti.
+- Üç platformlu kütüphane, Wine motorları, DXVK/DXMT grafik bileşenleri çalışıyor.
+- **Grafik (2026-10-31):** DELTARUNE siyah ekranı DXVK 1.10.3 + MoltenVK ile
+  çözüldü; uygulamaya motor düzeyinde pinli bileşen olarak entegre edildi
+  (ayrıntı için git geçmişi `bf4c63f`).
+- **Bu oturum (2026-11-01):**
+  1. GameController/denetleyici desteği runtime'a eklendi: erken keşif, kimlik
+     normalizasyonu (Switch Pro → Xbox), geç kaydedilen observer'a connect
+     bildirimi tekrarı. Catalyst probe ile doğrulandı; Genshin'in runtime kopyası
+     güncellendi (oyun çalışırken; sonraki açılışta etkin).
+  2. Güncelleme kanalları düzeltildi: Stable yalnız normal (prerelease olmayan,
+     numaralı) release'lerden; Development Beta prerelease/development
+     release'lerden seçilir.
+  3. "Community engine" artık GitHub linkiyle çalışıyor: en yeni release asset'i
+     otomatik bulunur; release yoksa repo kaynak ZIP'i indirilip açılır. Kullanıcı
+     hash girmez; GitHub digest'i varsa doğrulanır.
+  4. Kayıtlı Wine motorları Settings'ten **kaldırılabilir** (yalnız motor dizini
+     silinir; oyun prefix'leri/save'leri korunur).
+  5. **KosmicKrisp kaldırıldı**; grafik seçenekleri MoltenVK(+DXVK) ve DXMT.
+  6. GUI: PearSilicon logosu (pear) üst çubukta; platform seçici Liquid Glass ve
+     sürüklenebilir; Hakkında ve Settings'te sürüm "Development Beta" görünür.
+  7. Settings → Wine'daki **WineHQ Stable** seçeneği kaldırıldı (Staging/Development
+     kalır).
+  8. Disk temizliği: 31 GB `.build` test çöpü ve yeniden üretilebilir cache'ler
+     silindi; sistem veri alanı 14 GB → 37 GB boş. Oyun verisi indirmesi/save'ler
+     korundu.
 
 ---
 
-## 2. Kanıtlar (2026-10-31 oturumu)
+## 2. Denetleyici (GameController) — kanıt ve çözüm
 
-### 2.1 Ortam
+### 2.1 Bulgular
 
-```
-macOS 27.2 (26B123), Apple M1, harici 2560x1440@180Hz
-Wine Staging 11.21 x86_64 (Rosetta 2), Gcenx paketi
-DELTARUNE (GameMaker, D3D11), motor: wine-staging-11-21
-```
+- Runtime yalnız `GCKeyboard`/`GCMouse` kullanıyordu; `GCController` için hiçbir
+  köprü yoktu.
+- Genshin (iOS build) `GameController.framework`'ü **weak link** ediyor;
+  `MHYGameController`, `MHYJoypad`, `setupControllerInputHandler:` ve
+  `[MiHoYoGamepad] Gamepad connected:` kodları var. Uygulama
+  `GCController.controllers` sorguluyor ve 1 denetleyici görüyor, ancak
+  `[MiHoYoGamepad]` logu hiç üretilmiyordu → uygulama resmi iOS whitelist'i
+  (Xbox / Xbox Elite / DualShock 4) dışındaki "Pro Controller"ı yok sayıyor.
+- macOS, Switch Pro'yu GameController üzerinden sunuyor; Catalyst probe (scene
+  tabanlı) `controllers=0` ile başlayıp ~1 sn içinde "Pro Controller" connect
+  bildirimi alıyor. Yani keşif **asenkron**; erken sorgulayan uygulamalar boş
+  liste görüyor.
 
-### 2.2 Önceki "glClear" tanısı düzeltildi
+### 2.2 Runtime çözümü
 
-`WINEDEBUG=err+d3d,err+wined3d,...` ile 30 sn'lik koşuda hata **yalnızca 1 kez**,
-context init sırasında (`wined3d_context_gl_init` → `new_drawable` →
-`wined3d_context_gl.c:2246` glClear) oluşuyor. Kaynak: Wine 11.21
-`dlls/wined3d/context_gl.c` — bu, yeni drawable'ın ilk temizliği; kare başına
-tekrarlanmıyor. Yani "her karede glClear hatası" ifadesi **yanlıştı**.
+`runtime/PearRuntime.mm` içinde `InstallGameControllerBridge()`:
 
-macdrv izi (`WINEDEBUG=+macdrv`) 28 sn'de:
-- `macdrv_client_surface_update` 840, `macdrv_client_surface_present` 413
-  (oyun penceresi 0x100a0 için 1160/2323) → oyun kare sunuyor.
-- Pencere görünür, başlık `DELTARUNE Chapter 1` → `CONTACT` olarak değişiyor.
-- `wined3d` hem GL hem `renderer=vulkan` (`WINE_D3D_CONFIG`) ile siyah;
-  MoltenVK'nın kendisi çalışıyor (descriptor/present izleri var).
-- Sonuç: sorun pencere/sunum zincirinde değil, **wined3d'nin ürettiği içerikte**.
+- Bootstrap'ta `[GCController controllers]` çağrılarak keşif erkene alınır.
+- Connect/disconnect gözlenir; denetleyiciler canlı tutulur ve loglanır.
+- **Varsayılan açık kimlik normalizasyonu:** Xbox/Sony dışındaki denetleyiciler
+  `vendorName = "Xbox Wireless Controller"`, `productCategory = "Xbox One"`
+  olarak raporlanır. Profil/eksenler değişmez.
+- **Varsayılan açık replay:** uygulama başladıktan 3 sn sonra mevcut denetleyiciler
+  için `GCControllerDidConnectNotification` yeniden gönderilir; böylece geç
+  observer kuran oyunlar da haberdar olur.
+- `PEAR_CONTROLLER_NATIVE=1` ile ikisi de kapatılabilir; `PEAR_CONTROLLER_REPLAY=0`
+  sadece replay'i kapatır. `AppLauncher` bu varsayılanları açıkça set eder.
+- `PearRuntime` içindeki değişiklik `./runtime/build.sh` ile derlenir; her iOS app
+  kendi kopyasını taşıdığı için yeniden kurulum veya **Refresh iOS Runtimes**
+  (veya elle kopyalama) gerekir.
 
-### 2.3 DXMT bu motorda çalışamıyor (kanıt)
+### 2.3 Doğrulama
 
-1. DXMT `-builtin` arşivi upstream talimatına göre kurulunca
-   (`<runtime>/lib/wine/x86_64-windows/{d3d11,dxgi,d3d10core,winemetal}.dll`,
-   `x86_64-unix/winemetal.so`, system32'de `winemetal.dll`, **override yok**)
-   Wine gerçekten DXMT'yi yükledi; oyun `DirectX11: Using hardware device`
-   dedikten sonra:
-   ```
-   err:   Failed to create metal view, it seems like your Wine has no exported symbols needed by DXMT.
-   ```
-   ve `abort()` ile çıktı.
-2. Neden: DXMT `src/winemetal/unix/winemetal_unix.c` içinde
-   `dlsym(RTLD_DEFAULT, "macdrv_functions")` / `macdrv_view_create_metal_view`
-   / `get_win_data` sembollerini arıyor. Gcenx Wine'ın
-   `Runtime/lib/wine/x86_64-unix/winemac.so` dosyasında **yalnızca**
-   `___wine_unix_call_funcs` ve `___wine_unix_call_wow64_funcs` export ediliyor
-   (`nm -gU`). Semboller `-fvisibility=hidden`/strip nedeniyle yok.
-3. DXMT'yi `WINEDLLPATH` + `d3d11=n,b` ile denemek de yanlış: Wine'ın builtin
-   arama sırası önce `lib/wine` (dll_dir), sonra `WINEDLLPATH`. Bu yüzden
-   motorun 417 KB builtin `d3d11.dll`'i yükleniyordu (5.35 MB DXMT değil).
-4. Sonuç: DXMT, winemac metal API'sini export eden bir Wine derlemesi
-   (CrossOver tabanlı) gerektiriyor; Gcenx otomatik motorlarında mümkün değil.
-
-### 2.4 Çalışan çözüm: DXVK-macOS
-
-- Sürüm: `Gcenx/DXVK-macOS` release `v1.10.3-20230507-repack`,
-  asset `dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz`
-  - SHA-256 (tarball): `acd1520ad105d8ef124a09c8e11a259a5dc8bdc565ad18e0e52693f9807b2477`
-  - x64/d3d11.dll: `0ff0b0835dde29556bd01dfce7b1ae348d7f229cb1e1a37cc71ea1a028beeca4`
-  - x64/d3d10core.dll: `0fa08bba860c63e3abeeabfc96d0e7aa327411a975f8f23d2dc63594ef5f796e`
-- Kurulum: DLL'ler prefix `drive_c/windows/system32` içine, override
-  `WINEDLLOVERRIDES="d3d11,d3d10core=n;winemenubuilder.exe=d"`,
-  `VK_ICD_FILENAMES=<runtime>/share/vulkan/icd.d/MoltenVK_icd.json`.
-- Sonuç: DXVK `v1.10.3-20230507-async (macOS)` yüklendi, MoltenVK
-  `CAMetalLayer: WineMetalView ... on screen Main Screen` ile 1280x960
-  swapchain kurdu, oyun `Entering main loop` ve **görüntü kullanıcı tarafından
-  doğrulandı**.
-- Not: DXVK 2.x/3.x burada çalışmaz; MoltenVK `geometryShader` sunmadığı için
-  cihaz reddedilir (test edildi: "Device does not support required feature
-  'geometryShader'"). Bu yüzden 1.10.3 macOS yaması pinlendi.
-- Deney betikleri: `.build/dxvk-start.sh`, `.build/dxvk-stop.sh`,
-  `.build/dxvk-test.sh`, `.build/dxmt-builtin-diag.sh`, `.build/window-list.swift`.
-  (Bunlar teşhis betikleridir; uygulama kodu değildir.)
+- Catalyst probe (`/tmp/CatProbe2.app`, `open --env DYLD_INSERT_LIBRARIES=…`):
+  - `scene controllers=0` → `connected Xbox Wireless Controller`
+  - t+1 ve t+4: `vendor=Xbox Wireless Controller`, `extended=true`
+  - runtime: `controller 'Pro Controller' reported as Xbox Wireless Controller`,
+    `replay tick: 1 controller(s)`.
+- Genshin'in kurulu runtime'ı yeni sürümle değiştirildi (oyun çalışırken; çalışan
+  süreç eski inode'u kullanır). **Oyun yeniden başlatılınca** yeni runtime yüklenir.
+  Kullanıcı oyunu indiriyor/oynuyordu; izinsiz kapatılmadı.
 
 ---
 
-## 3. Uygulama entegrasyonu (tamamlandı)
+## 3. Bu oturumdaki diğer değişiklikler
 
-Hedef: DXVK'yı DXMT/KosmicKrisp gibi **motor düzeyinde indirilebilir bileşen**
-yapmak; her oyunun `graphicsBackend` seçimine göre yalnız o oyunun prefix'ine
-uygulamak; geri alınabilir olmak.
+### 3.1 Güncelleme kanalları
 
-Uygulama:
-- Bileşen: `<engine>/Graphics/DXVK/x64/{d3d11,d3d10core}.dll`
-  (`GraphicsComponentService.installDXVK`, arşiv + DLL'ler SHA-256 pinli).
-- Uygulama: backend `.moltenVK` ve bileşen kuruluysa, oyun başlarken prefix
-  `system32`'ye kopyalanır; Wine'ın orijinalleri `Prefix/pear-dxvk-backup/`
-  altına yedeklenir; `Prefix/pear-dxvk.json` hangi dosyaların bizim olduğunu
-  kaydeder.
-- Geri alma: backend değişince (ör. DXMT) veya bileşen kaldırılınca yedekler
-  geri konur; DXVK'ya ait olmayan (marker/hash eşleşmeyen) dosya **silinmez**.
-- Env: yalnız bu durumda
-  `WINEDLLOVERRIDES="d3d11,d3d10core=n;winemenubuilder.exe=d"`.
-- UI: oyun detayında "Install DXVK" düğmesi ve durum uyarısı; Settings →
-  Wine'da bileşen lisans notu.
-- DXMT: `launchConfiguration` artık winemac'in Metal view sembollerini
-  denetliyor; Gcenx motorlarında DXMT net bir hatayla reddediliyor (siyah
-  pencereye/sessiz başarısızlığa düşmüyor).
+- `AppUpdateService.checkForUpdates`: önce `/releases` listesi.
+  - **Stable:** draft olmayan, `prerelease == false`, numaralı (`v1.2.3`) release'ler
+    arasından en yüksek sürüm.
+  - **Development Beta:** en yeni prerelease veya `development`/`beta` etiketli
+    release (mutable `development-beta` dahil).
+  - Liste alınamazsa eski tek-release endpoint'lerine düşer.
+- `selectAsset` geliştirme kanalında artık yalnız `development-beta` etiketini
+  şart koşmuyor.
+- Testler: `AppUpdateTests` liste endpoint'ine göre güncellendi; stable'ın
+  prerelease'i yok saydığını doğrulayan test eklendi.
 
-Değişen/eklenen dosyalar:
-`Sources/PearSilicon/Core/Services/GraphicsComponentService.swift`,
-`Sources/PearSilicon/Core/Services/ManagedAppService.swift`,
-`Sources/PearSilicon/Core/Models/LibraryEntry.swift`,
-`Sources/PearSilicon/App/AppState.swift`,
-`Sources/PearSilicon/Views/ManagedAppDetailView.swift`,
-`Sources/PearSilicon/Views/SettingsView.swift`,
-`Tests/PearSiliconTests/DXVKComponentTests.swift`,
-`Tests/PearSiliconTests/GraphicsComponentIntegrationTests.swift`,
-`Tests/PearSiliconTests/AppStateWineIntegrationTests.swift`,
-`Tests/PearSiliconTests/WineEngineTests.swift`,
-`README.md`, `docs/ARCHITECTURE.md`, `docs/TESTING.md`,
-`STATUS.md`, `HYPOTHESES.md`, `DEBUG_JOURNAL.md`.
+### 3.2 Community engine (GitHub linki)
+
+- `CommunityWineService`: `https://github.com/owner/repo` (veya `owner/repo`)
+  kabul eder; `/releases` üzerinden en yeni uygun arşivi seçer
+  (`.tar.xz/.tar.gz/.zip`; macOS adı tercih edilir).
+- Release yoksa `codeload.github.com` üzerinden repo ZIP'i indirilir ve
+  `ditto` ile açılır; ZIP yolları `unzip -Z1` ile denetlenir.
+- Kullanıcıdan hash istenmez; GitHub'ın `digest` alanı varsa SHA-256 doğrulanır.
+  İndirme yalnız GitHub host'larına yönlendirilir; 8 GiB sınırı vardır.
+- Settings → Wine → "Community engine from GitHub": tek URL alanı + lisans onayı.
+- `Engines/Downloads` altına kaydedilir; motor kaydı yine açık "Add Local Engine…"
+  adımıdır (keyfi arşiv otomatik çalıştırılmaz).
+
+### 3.3 Motor kaldırma
+
+- `WineEngineStore.remove(id:)`: yalnız doğrulanmış motor dizinini siler;
+  `validateID`, manifest ve kök-yol denetimleri vardır.
+- Settings → Registered engines: çöp kutusu düğmesi + onay uyarısı. Çalışan oyun
+  varsa AppState reddeder. Oyun prefix/save'leri silinmez.
+- Test: `testRemovingAnEngineDeletesOnlyThatEngine`.
+
+### 3.4 KosmicKrisp kaldırıldı
+
+- `GraphicsBackend` artık `moltenvk` ve `dxmt`; eski manifestlerdeki
+  `"kosmickrisp"` değeri `moltenVK`'ya düşer (kod okunabilirliği korunur).
+- `GraphicsComponentService`'ten KosmicKrisp indirme/kurma kodu, UI ve testler
+  kaldırıldı; README/ARCHITECTURE güncellendi.
+
+### 3.5 GUI
+
+- Üst çubukta SF Symbol yerine `PearLogo.png` (Resources; `Image(_:bundle:.module)`).
+- Platform seçici zaten `glassEffect` kullanıyordu; `interactive()` + gölge +
+  `DragGesture` ile sürüklenebilir hale getirildi (tıklama çalışmaya devam eder).
+- Hakkında penceresi ve Settings → Updates "Current version" = **Development Beta**
+  (iç `CFBundleShortVersionString` güncelleme karşılaştırmaları için sayısal kalır).
+- WineHQ Stable seçeneği Settings'teki kanal seçicisinden kaldırıldı.
+
+### 3.6 Disk temizliği (2026-11-01)
+
+- Silinenler: repo `.build` (31 GB; eski test kopyaları, out, portable app),
+  `/tmp/pear-*` test klonları (~2.2 GB), `ms-playwright`, `pip`, `node-gyp`
+  cache'leri (~680 MB). Küçük teşhis betikleri `build/diagnostics/` altına alındı.
+- Korundu: `~/Library/Application Support/PearSilicon` (oyun verisi 32 GB dahil),
+  `Engines`, `Applications`, `Downloads`, belgeler.
+- Sonuç: `/System/Volumes/Data` boş alan **14 GB → 37 GB**.
+- Not: oyun indirmesi sürerken oyun verisine dokunulmadı.
 
 ---
 
 ## 4. Sıradaki kesin adım
 
-1. ~~`swift build` + `swift test`~~ → **279 XCTest + 24 Swift Testing, 0 hata,
-   13 opsiyonel skip** (`/tmp/pear-full-test-final.log`).
-2. ~~DXVK bileşenini gerçek motora kur~~ → kuruldu, DLL hash'leri pinlerle
-   eşleşiyor.
-3. ~~Gerçek DELTARUNE'ı uygulama yolundan (AppState) başlat~~ →
-   `PEAR_DXVK_E2E=1` testi geçti: logda `DXVK: v1.10.3` + `Entering main loop`,
-   süreç ayakta, test sonunda durduruldu. Görsel onay daha önce alındı.
-4. ~~Uygulama paketini yeniden derle~~ → `build/PearSilicon.app` `bf4c63f` ile
-   derlendi ve ad-hoc imzası doğrulandı. Kullanıcı bu paketi açmalı; çalışan eski
-   uygulama izinsiz kapatılmadı (oturum sonunda zaten çalışmıyordu). Değişiklikler
-   `feature/portable-multiplatform` dalına commit + push edildi.
+1. Kullanıcı Genshin'i yeniden başlattığında denetleyicinin çalıştığını doğrula:
+   - `pearsilicon logs com.miHoYo.GenshinImpact` veya
+     `~/Library/Application Support/PearSilicon/Logs/com.miHoYo.GenshinImpact.log`
+     içinde `[PearRuntime][input] controller 'Pro Controller' reported as Xbox…`
+     ve oyunun kendi `[MiHoYoGamepad] Gamepad connected:` satırı görünmeli.
+   - Oyun içi kontrol testi (kullanıcı).
+2. Stable kanal gerçekten kullanılacaksa GitHub'da **normal (prerelease olmayan)**
+   bir release yayınlanmalı; şu an repoda yalnız `development-beta` var. Stable
+   seçildiğinde "no stable release" hatası beklenir.
+3. `swift build`, `swift test` (aşağıdaki sonuç) ve `./scripts/build-app.sh release`
+   tekrar çalıştırılmalı; app paketi commit sonrası yeniden üretilebilir.
+4. Değişiklikleri commit + push et (`feature/portable-multiplatform`).
 
-Sonraki iyileştirmeler (acil değil):
-- DXVK bileşeni için "Kaldır" düğmesi ve sürüm durumu; şu an kurulum var, kaldırma
-  dosya sistemi üzerinden backend değişimiyle otomatik.
-- DXMT'yi gerçekten çalıştırmak isteyenler için winemac metal API'sini export eden
-  bir motor (CrossOver tabanlı) desteği; otomatik Gcenx motorlarında mümkün değil.
-- 32-bit (syswow64) DXVK dağıtımı; uygulama şu an x86_64 odaklı.
-- `docs/TESTING.md`'ye yeni bileşen testlerinin manuel kontrol listesi.
+### Bilinen sınırlar / notlar
+
+- Controller köprüsü **GCController kullanan** uygulamalara yarar. Yalnız dokunma
+  girdisi kullanan ve GameController'a hiç bağlanmayan oyunlarda denetleyici
+  girişi otomatik olarak dokunmaya çevrilmez; bu ayrı bir özellik olurdu.
+- Kimlik normalizasyonu (Switch/generic → Xbox) varsayılan açıktır; uygulama
+  Switch'e özel ikon/özellik bekliyorsa `PEAR_CONTROLLER_NATIVE=1` ile kapatılabilir.
+- Genshin resmi iOS listesi Xbox / Xbox Elite / DualShock 4'tür; Switch Pro bu
+  nedenle normalde yok sayılıyordu, köprü bunu aşar.
+- Oyun çalışırken runtime dosyası değiştirildi; mevcut süreç eski runtime'ı
+  kullanmaya devam eder, bir sonraki açılış yenisini yükler.
+- Community indirme GitHub API rate limitine takılırsa repo ZIP'ine düşer;
+  bu durumda release yerine kaynak ağacı indirilmiş olur.
+- WineHQ Stable seçeneği UI'dan kaldırıldı; servis kodu (`.stable`) geriye dönük
+  testler için duruyor.
 
 ---
 
@@ -164,39 +187,35 @@ Sonraki iyileştirmeler (acil değil):
 
 ```
 ~/Library/Application Support/PearSilicon/
-  ios-apps/  mac-apps/  wine-apps/DELTARUNE/
+  ios-apps/com.miHoYo.GenshinImpact.app/   (Frameworks/libPearRuntime.dylib güncellendi)
+  Applications/jp.co.bandainamcoent.BNEI0402.app
+  wine-apps/DELTARUNE/                     (DXVK prefix + backup)
   Engines/wine-staging-11-21/
-    Runtime/                 (Wine Staging 11.21 x86_64, SHA-256 doğrulandı)
-    Graphics/DXMT/           (kurulu; bu motorda çalışamaz — §2.3)
-    Graphics/DXVK/           (kurulu; pinli 1.10.3, x64)
-  wine-apps/DELTARUNE/Prefix/
-    dosdevices/{c: -> ../drive_c, g: -> ../../Payload/Program}
-    drive_c/windows/system32/{d3d11,d3d10core}.dll  (DXVK)
-    pear-dxvk.json  pear-dxvk-backup/               (geri alma kaydı)
+    Runtime/  Graphics/DXMT/  Graphics/DXVK/
+  Games/com.miHoYo.GenshinImpact/          (32 GB oyun verisi — DOKUNMA)
+  Logs/, Keymaps/, Keychain/, ODR/
 ```
 
-- DELTARUNE manifest: `graphicsBackend: "moltenvk"` (DXVK bu backend altında).
-- Oyun kendini yeniden başlatıyor (`-game data.win launcher switch_-1 returning_0`);
-  bu normaldir; ilk süreç kısa ömürlüdür.
-- Test oyunları için kullanıcının açık oyununu izinsiz kapatmayın;
-  `.build/*-start.sh` / `.build/*-stop.sh` çiftini kullanın.
+- DELTARUNE manifest: `graphicsBackend: "moltenvk"` (DXVK).
+- Genshin: iOS app, `ios-apps` altında; runtime kopyası güncellendi.
+- Wine motoru `wine-staging-11-21`; DXVK pinli 1.10.3 kurulu.
 
 ---
 
-## 6. Doğrulama durumu (bu oturum)
+## 6. Doğrulama durumu
 
 | Alan | Durum |
 | --- | --- |
 | `swift build` | temiz |
-| `swift test` | **279 XCTest** + **24 Swift Testing**, 0 hata, 13 opsiyonel skip |
-| Wine motoru | gerçek indirme + SHA-256 + kurulum + DELTARUNE ✓ |
-| wined3d GL | siyah (kullanıcı doğruladı) |
-| wined3d Vulkan renderer | siyah (kullanıcı doğruladı) |
-| DXMT (builtin kurulum) | yükleniyor, metal view'da abort (§2.3) |
-| DXMT backend guard | winemac sembolleri yoksa net hata (test: `testEngineWithoutExportedMetalViewAPICannotSelectDXMT`) |
-| DXVK 1.10.3 + MoltenVK | **görüntü var** (kullanıcı doğruladı) |
-| DXVK AppState E2E | logda DXVK + main loop, süreç ayakta ✓ |
-| DXVK prefix backup/restore | birim testleri ✓ |
+| `swift test` | **285 XCTest + 24 Swift Testing, 0 hata, 14 opsiyonel skip** |
+| Güncelleme kanalları | liste tabanlı seçim testleri ✓ |
+| Community GitHub | URL ayrıştırma + gerçek repo çözümleme testi ✓ |
+| Motor kaldırma | birim testi ✓ |
+| KosmicKrisp kaldırma | derleme + testler ✓ |
+| Controller kimlik/replay | Catalyst probe ile doğrulandı ✓ |
+| Controller/Genshin | runtime güncellendi; **oyun yeniden başlatılınca** doğrulanacak |
+| DXVK/DELTARUNE | önceki oturumda görsel olarak doğrulandı |
+| Disk temizliği | 14 GB → 37 GB boş alan |
 
 ---
 
@@ -215,10 +234,10 @@ Sonraki iyileştirmeler (acil değil):
 ## 8. Bilinen sınırlamalar
 
 - DXVK 1.10.3 (2023) macOS yaması; DXVK 2+/3+ MoltenVK'da geometry shader
-  olmadığı için çalışmaz. Yeni oyunlarda uyumluluk sınırlı olabilir.
-- DXVK yalnız x86_64 DLL'leri kurulur (uygulama x86_64 Wine kullanıyor).
-- DXMT otomatik motorlarda çalışmaz; UI'da bunu açıkça belirtmek gerekir.
+  olmadığı için çalışmaz.
+- DXMT, winemac Metal view API'sini export eden Wine derlemesi gerektirir;
+  otomatik Gcenx motorlarında reddedilir (siyah ekran yerine net hata).
 - Mac uygulamaları native çalışır; izolasyon yok.
 - Wine VM değildir; kernel anti-cheat çalışmaz; Rosetta 2 gerekir.
-- KosmicKrisp yalnız arm64; x86_64 motorlarda reddedilir.
 - Yedekler şifresiz; uygulama ad-hoc imzalı, noterize değil.
+- Controller köprüsü yalnız GameController kullanan uygulamalarda etkilidir.

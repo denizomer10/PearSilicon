@@ -18,8 +18,10 @@ struct SettingsView: View {
 
     // Community download form.
     @State private var downloadURL = ""
-    @State private var downloadSHA256 = ""
     @State private var downloadLicenseConfirmed = false
+
+    // Engine removal confirmation.
+    @State private var engineToRemove: WineEngine?
 
     var body: some View {
         TabView {
@@ -32,6 +34,22 @@ struct SettingsView: View {
         .frame(width: 700, height: 580)
         .padding()
         .sheet(isPresented: $showingEngineSheet) { engineSheet }
+        .alert(
+            "Remove Wine engine?",
+            isPresented: Binding(
+                get: { engineToRemove != nil },
+                set: { if !$0 { engineToRemove = nil } }
+            ),
+            presenting: engineToRemove
+        ) { engine in
+            Button("Remove", role: .destructive) {
+                engineToRemove = nil
+                Task { await state.removeWineEngine(engine) }
+            }
+            Button("Cancel", role: .cancel) { engineToRemove = nil }
+        } message: { engine in
+            Text("\(engine.name) \(engine.version) will be deleted. Game data and prefixes are not removed; games that used it must be relinked to another engine.")
+        }
     }
 
     // MARK: - General
@@ -158,7 +176,9 @@ struct SettingsView: View {
         Form {
             Section("Open-source Wine — automatic") {
                 Picker("Channel", selection: $wineChannel) {
-                    ForEach(WineReleaseChannel.allCases) { channel in
+                    // WineHQ Stable is intentionally not offered; the automatic
+                    // engines use the staging and development feeds.
+                    ForEach(WineReleaseChannel.allCases.filter { $0 != .stable }) { channel in
                         Text(channel.title).tag(channel)
                     }
                 }
@@ -197,12 +217,24 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(state.wineEngines) { engine in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(engine.name) \(engine.version)").font(.callout.weight(.medium))
-                            Text("\(engine.distribution.rawValue) • \(engine.executableURL.path)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(engine.name) \(engine.version)").font(.callout.weight(.medium))
+                                Text("\(engine.distribution.rawValue) • \(engine.executableURL.path)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                            Spacer(minLength: 8)
+                            Button(role: .destructive) {
+                                engineToRemove = engine
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.glass)
+                            .help("Remove this Wine engine (game prefixes are kept)")
+                            .disabled(state.isBusy)
                         }
                     }
                 }
@@ -217,18 +249,23 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Advanced: verified community archive") {
-                Text(WineEngineStore.communityDownloadNotice)
+            Section("Community engine from GitHub") {
+                Text(CommunityWineService.notice)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("HTTPS archive URL", text: $downloadURL)
-                TextField("SHA-256 (64 hex characters)", text: $downloadSHA256)
+                TextField("https://github.com/owner/repo", text: $downloadURL)
                 Toggle("I reviewed the engine license", isOn: $downloadLicenseConfirmed)
-                Button("Download and Verify") {
-                    guard let url = URL(string: downloadURL) else { return }
-                    Task { await state.downloadEngine(from: url, sha256: downloadSHA256, licenseConfirmed: downloadLicenseConfirmed) }
+                Button("Download Latest") {
+                    Task {
+                        await state.downloadCommunityEngine(
+                            from: downloadURL, licenseConfirmed: downloadLicenseConfirmed
+                        )
+                    }
                 }
                 .disabled(state.isBusy || !downloadLicenseConfirmed)
+                Text("The newest release archive is selected automatically. If the repository has no release, its source ZIP is downloaded and extracted. A hash is not requested; GitHub's published digest is checked when present.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Section("How games are stored") {
@@ -331,6 +368,7 @@ struct SettingsView: View {
                     Text("Stable release").tag(UpdateChannel.stable)
                 }
                 .pickerStyle(.segmented)
+                LabeledContent("Current version", value: "Development Beta")
                 Button("Check for Updates") {
                     Task { await state.checkForUpdates(channel: state.updateChannel) }
                 }

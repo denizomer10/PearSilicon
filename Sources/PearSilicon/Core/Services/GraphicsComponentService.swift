@@ -10,11 +10,8 @@ struct RemoteGraphicsAsset: Sendable {
 
 /// Downloads optional graphics translation components. MoltenVK is bundled with
 /// the Wine engine and needs no download. DXMT provides D3D10/11 → Metal.
-/// KosmicKrisp is an arm64 Vulkan ICD and therefore cannot load into an x86_64
-/// Wine process; installation is allowed, but launch refuses it on x86_64.
 actor GraphicsComponentService {
     static let dxmtRepository = "3Shain/dxmt"
-    static let kosmicRepository = "Anonymous137-sudo/Khronos_AppleICDs"
     /// DXVK 2.x/3.x requires a geometry-shader-capable Vulkan device; MoltenVK
     /// does not provide one, so the last macOS-patched 1.10 build is used. That
     /// 2023 release predates GitHub asset digests, so its archive and both
@@ -54,14 +51,6 @@ actor GraphicsComponentService {
             repository: Self.dxmtRepository,
             accepts: { $0.hasPrefix("dxmt-") && $0.hasSuffix("-builtin.tar.gz") },
             includePrereleases: false
-        )
-    }
-
-    func latestKosmicKrisp() async throws -> RemoteGraphicsAsset {
-        try await latest(
-            repository: Self.kosmicRepository,
-            accepts: { $0.hasSuffix(".pkg") && $0.contains("Preview") },
-            includePrereleases: true
         )
     }
 
@@ -214,43 +203,6 @@ actor GraphicsComponentService {
             try FileManager.default.createDirectory(at: binaries, withIntermediateDirectories: true)
             try FileManager.default.copyItem(at: d3d11, to: binaries.appendingPathComponent("d3d11.dll"))
             try FileManager.default.copyItem(at: d3d10core, to: binaries.appendingPathComponent("d3d10core.dll"))
-        }
-    }
-
-    /// Installs the arm64 KosmicKrisp ICD (driver + loader manifest). The game
-    /// will refuse this backend on an x86_64 Wine engine.
-    func installKosmicKrisp(_ asset: RemoteGraphicsAsset, engineRoot: URL) async throws -> URL {
-        let work = try makeWorkDirectory()
-        defer { try? FileManager.default.removeItem(at: work) }
-        let package = work.appendingPathComponent("kosmickrisp.pkg")
-        try await download(asset, to: package)
-        let expanded = work.appendingPathComponent("Expanded", isDirectory: true)
-        _ = try Shell.run("/usr/sbin/pkgutil", ["--expand-full", package.path, expanded.path])
-        guard let avk = Self.findDirectory(named: "avk143", under: expanded),
-              let icdDirectory = Self.findDirectory(named: "icd.d", under: expanded),
-              let icd = try? FileManager.default.contentsOfDirectory(at: icdDirectory, includingPropertiesForKeys: nil)
-                .first(where: { $0.pathExtension == "json" }),
-              FileManager.default.fileExists(atPath: avk.appendingPathComponent("libvulkan_kosmickrisp.dylib").path) else {
-            throw WineReleaseError.invalid("KosmicKrisp package does not contain the expected ICD payload")
-        }
-        let archs = (try? Shell.run("/usr/bin/lipo", ["-archs", avk.appendingPathComponent("libvulkan_kosmickrisp.dylib").path])) ?? ""
-        guard archs.split(whereSeparator: \.isWhitespace).contains("arm64") else {
-            throw WineReleaseError.invalid("KosmicKrisp driver is not an arm64 build")
-        }
-        let destination = engineRoot.appendingPathComponent("Graphics/KosmicKrisp", isDirectory: true)
-        return try Self.replace(destination) { staging in
-            try FileManager.default.createDirectory(
-                at: staging.appendingPathComponent("lib", isDirectory: true),
-                withIntermediateDirectories: true
-            )
-            try FileManager.default.createDirectory(
-                at: staging.appendingPathComponent("share/vulkan/icd.d", isDirectory: true),
-                withIntermediateDirectories: true
-            )
-            try FileManager.default.copyItem(at: avk, to: staging.appendingPathComponent("lib/avk143"))
-            try FileManager.default.copyItem(
-                at: icd, to: staging.appendingPathComponent("share/vulkan/icd.d/\(icd.lastPathComponent)")
-            )
         }
     }
 

@@ -130,7 +130,7 @@ final class AppUpdateTests: XCTestCase {
         XCTAssertEqual(check.commit, newCommit)
         XCTAssertEqual(check.reason, .changedCommit)
         XCTAssertEqual(http.paths, [
-            "/repos/denizomer10/PearSilicon/releases/tags/development-beta",
+            "/repos/denizomer10/PearSilicon/releases",
             "/repos/denizomer10/PearSilicon/git/ref/tags/development-beta",
             "/repos/denizomer10/PearSilicon/git/tags/" + tagObject
         ])
@@ -138,7 +138,13 @@ final class AppUpdateTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.stagingRoot.path), [])
     }
 
-    func testStableCheckUsesLatestEndpoint() async throws {
+    func testStableCheckUsesReleaseListAndIgnoresPrereleases() async throws {
+        // A newer prerelease must not win the stable channel.
+        let prerelease = UpdateTestFixture.release(tag: "v2.0.0", prerelease: true)
+        let stable = UpdateTestFixture.release(tag: "v1.5.0", prerelease: false)
+        XCTAssertEqual(AppUpdateService.selectRelease(in: [prerelease, stable], channel: .stable)?.tagName, "v1.5.0")
+        XCTAssertEqual(AppUpdateService.selectRelease(in: [prerelease, stable], channel: .developmentBeta)?.tagName, "v2.0.0")
+
         let fixture = try UpdateTestFixture()
         defer { fixture.remove() }
         let release = UpdateTestFixture.release(tag: "v1.0.0", prerelease: false)
@@ -146,7 +152,7 @@ final class AppUpdateTests: XCTestCase {
         let service = AppUpdateService(current: AppUpdateIdentity(version: "0.2.0"), stagingRoot: fixture.stagingRoot, transport: http.transport)
         let check = try await service.checkForUpdates(channel: .stable)
         XCTAssertEqual(check.reason, .newerVersion)
-        XCTAssertEqual(http.paths.first, "/repos/denizomer10/PearSilicon/releases/latest")
+        XCTAssertEqual(http.paths.first, "/repos/denizomer10/PearSilicon/releases")
     }
 
     func testStageHashMismatchCleansWorkspaceBeforeAnyExtraction() async throws {
@@ -634,6 +640,7 @@ private final class UpdateHTTPFixture: @unchecked Sendable {
         bodies = [
             prefix + "releases/tags/" + release.tagName: releaseData,
             prefix + "releases/latest": releaseData,
+            prefix + "releases": try JSONEncoder().encode([release]),
             prefix + "releases/\(release.id)": releaseData,
             prefix + "git/ref/tags/" + release.tagName: Data("{\"object\":{\"type\":\"\(type)\",\"sha\":\"\(object)\"}}".utf8),
             release.assets[0].browserDownloadURL.path: archive

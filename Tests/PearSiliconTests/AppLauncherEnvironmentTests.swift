@@ -77,6 +77,29 @@ final class AppLauncherEnvironmentTests: XCTestCase {
         XCTAssertNil(handedOff["PEAR_SPOOF_OS_VERSION"])
     }
 
+    func testControllerCompatibilityIsOnByDefaultAndCanBeOverridden() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let environment = fixture.launcher.buildEnvironment(
+            app: fixture.app, keymapURL: nil, extra: [:], nativeContainer: false, baseEnvironment: [:]
+        )
+        XCTAssertEqual(environment["PEAR_CONTROLLER_COMPAT"], "1")
+        XCTAssertEqual(environment["PEAR_CONTROLLER_REPLAY"], "1")
+
+        let native = fixture.launcher.buildEnvironment(
+            app: fixture.app, keymapURL: nil, extra: [:], nativeContainer: false,
+            baseEnvironment: ["PEAR_CONTROLLER_NATIVE": "1"]
+        )
+        XCTAssertNil(native["PEAR_CONTROLLER_COMPAT"])
+        XCTAssertNil(native["PEAR_CONTROLLER_REPLAY"])
+
+        let overridden = fixture.launcher.buildEnvironment(
+            app: fixture.app, keymapURL: nil, extra: ["PEAR_CONTROLLER_COMPAT": "0"],
+            nativeContainer: false, baseEnvironment: [:]
+        )
+        XCTAssertEqual(overridden["PEAR_CONTROLLER_COMPAT"], "0")
+    }
+
     @MainActor
     func testUnsupportedSandboxCombinationFailsBeforeAnyAppLaunch() async throws {
         let fixture = try Fixture()

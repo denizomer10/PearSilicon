@@ -202,15 +202,45 @@ actor AppUpdateService {
         self.transport = transport
     }
 
-    /// Call only for a user-initiated action. Stable uses GitHub's latest
-    /// non-prerelease; beta uses the mutable development-beta release.
+    /// Call only for a user-initiated action. Stable selects the newest numbered
+    /// non-prerelease from the release list; the development channel selects the
+    /// newest development release (a prerelease, or the mutable development-beta
+    /// release). The single-release endpoints remain as fallbacks for older
+    /// repositories that predate the list-based selection.
     func checkForUpdates(channel: UpdateChannel = .developmentBeta) async throws -> AppUpdateCheck {
         try validateLimits()
-        let path = channel == .developmentBeta ? "releases/tags/development-beta" : "releases/latest"
-        let release: UpdateRelease = try await api(path)
+        let release: UpdateRelease
+        if let listed = try? await api("releases") as [UpdateRelease],
+           let selected = Self.selectRelease(in: listed, channel: channel) {
+            release = selected
+        } else {
+            let path = channel == .developmentBeta ? "releases/tags/development-beta" : "releases/latest"
+            release = try await api(path)
+        }
         let asset = try Self.selectAsset(in: release, channel: channel, limits: limits)
         let commit = try await resolveTag(release.tagName)
         return try Self.evaluate(release: release, asset: asset, commit: commit, current: current, channel: channel)
+    }
+
+    /// Newest matching release in GitHub API order (newest first). Stable never
+    /// accepts a prerelease; development accepts prereleases and the legacy
+    /// mutable `development-beta` tag.
+    static func selectRelease(in releases: [UpdateRelease], channel: UpdateChannel) -> UpdateRelease? {
+        let candidates = releases.filter { !$0.draft && !$0.tagName.isEmpty }
+        switch channel {
+        case .stable:
+            return candidates
+                .filter { !$0.prerelease && UpdateVersion($0.tagName) != nil }
+                .max { lhs, rhs in
+                    (UpdateVersion(lhs.tagName) ?? UpdateVersion("0")!) < (UpdateVersion(rhs.tagName) ?? UpdateVersion("0")!)
+                }
+        case .developmentBeta:
+            return candidates.first {
+                $0.prerelease
+                    || $0.tagName.lowercased().contains("development")
+                    || $0.tagName.lowercased().contains("beta")
+            }
+        }
     }
 
     /// Downloads to a private directory, hashes before any extraction, admits
@@ -379,8 +409,9 @@ actor AppUpdateService {
             throw AppUpdateError.invalidMetadata("The release metadata is invalid or unpublished.")
         }
         if channel == .developmentBeta {
-            guard release.tagName == "development-beta" else {
-                throw AppUpdateError.invalidMetadata("Expected the development-beta release.")
+            let tag = release.tagName.lowercased()
+            guard release.prerelease || tag.contains("development") || tag.contains("beta") else {
+                throw AppUpdateError.invalidMetadata("The development channel requires a development or prerelease release.")
             }
         } else {
             guard !release.prerelease, UpdateVersion(release.tagName) != nil else {
@@ -451,6 +482,11 @@ actor AppUpdateService {
     }
 
     private func api<T: Decodable & Sendable>(_ path: String) async throws -> T {
+        let data = try await apiData(path)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func apiData(_ path: String) async throws -> Data {
         guard let url = URL(string: Self.apiBase + path) else { throw AppUpdateError.invalidMetadata("Invalid GitHub API path.") }
         try UpdateURLPolicy.validate(url, api: true)
         let directory = try makeWorkspace()
@@ -460,7 +496,7 @@ actor AppUpdateService {
         let response = try await transport.fetch(Self.request(url, api: true), file, maximum, min(limits.requestTimeout, 30))
         try Self.validateResponse(response, api: true)
         guard try Self.regularFileSize(file) <= maximum else { throw AppUpdateError.limitExceeded("GitHub metadata is too large.") }
-        return try JSONDecoder().decode(T.self, from: Data(contentsOf: file))
+        return try Data(contentsOf: file)
     }
 
     private struct GitObject: Decodable, Sendable {

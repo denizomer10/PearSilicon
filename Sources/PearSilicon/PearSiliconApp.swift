@@ -16,6 +16,15 @@ struct PearSiliconApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .appInfo) {
+                Button("About PearSilicon") {
+                    NSApplication.shared.orderFrontStandardAboutPanel(options: [
+                        .applicationName: "PearSilicon",
+                        .applicationVersion: "Development Beta",
+                        .version: ""
+                    ])
+                }
+            }
         }
 
         Settings {

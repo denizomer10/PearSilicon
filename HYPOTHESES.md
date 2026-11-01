@@ -10,3 +10,15 @@
 | H6 | wined3d is producing black content for this GameMaker/D3D11 workload | **Confirmed (behavioral)** | Both wined3d GL and wined3d Vulkan renderers present but display stays black (user-confirmed). |
 | H7 | A different D3D11 → Vulkan implementation (DXVK) renders correctly | **Confirmed** | DXVK-macOS 1.10.3 + MoltenVK: Metal swapchain created, `Entering main loop`, user saw the game. |
 | H8 | Upstream DXVK 3.1.1 works on MoltenVK | **Rejected** | Device rejected: `geometryShader` unsupported. |
+
+## Controller support (2026-11-01)
+
+| ID | Hypothesis | Status | Evidence |
+| --- | --- | --- | --- |
+| C1 | The runtime has no GameController controller bridge (only keyboard/mouse) | **Confirmed** | Only `GCKeyboard`/`GCMouse` code in `PearRuntime.mm`. |
+| C2 | macOS GameController exposes the Switch Pro to Catalyst apps | **Confirmed** | Catalyst probe received `connected Pro Controller` (~1 s after scene). |
+| C3 | Genshin never queries controllers | **Rejected** | Runtime swizzle logged `app queried controllers -> 1`. |
+| C4 | Genshin filters controllers by vendor/identity | **Confirmed (behavioral)** | It queried 1 controller but never logged `[MiHoYoGamepad]`; official iOS whitelist is Xbox/DualShock 4. |
+| C5 | Normalizing the controller to an Xbox identity makes it acceptable | **Confirmed in probe** | Runtime/probe report `Xbox Wireless Controller`; Genshin relaunch verification pending. |
+| C6 | Early checks miss the asynchronous connect notification | **Confirmed** | First `controllers` query returns 0, connect arrives ~1 s later. |
+| C7 | Replaying the connect notification helps late observers | **Confirmed in probe** | `replay tick: 1 controller(s)` and a second connect event. |

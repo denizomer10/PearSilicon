@@ -88,7 +88,7 @@ final class DXVKComponentTests: XCTestCase {
         let foreign = Data("replaced by the game or Wine".utf8)
         try foreign.write(to: system32.appendingPathComponent("d3d11.dll"))
         var other = entry
-        other.manifest.graphicsBackend = .kosmicKrisp
+        other.manifest.graphicsBackend = .dxmt
         try ManagedAppService.synchronizeDXVK(for: other, engine: engine)
         XCTAssertEqual(try Data(contentsOf: system32.appendingPathComponent("d3d11.dll")), foreign)
         XCTAssertEqual(

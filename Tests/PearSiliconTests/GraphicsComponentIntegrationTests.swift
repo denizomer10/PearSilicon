@@ -7,7 +7,7 @@ import XCTest
 /// game or modify the user's installed engines.
 final class GraphicsComponentIntegrationTests: XCTestCase {
 
-    func testInstallsDXMTAndKosmicKrispFromTheirReleaseFeeds() async throws {
+    func testInstallsDXMTAndDXVKFromTheirReleaseFeeds() async throws {
         guard ProcessInfo.processInfo.environment["PEAR_GRAPHICS_INTEGRATION"] == "1" else {
             throw XCTSkip("Set PEAR_GRAPHICS_INTEGRATION=1 to download the graphics components")
         }
@@ -27,17 +27,6 @@ final class GraphicsComponentIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: dxmtRoot.appendingPathComponent("x86_64-unix/winemetal.so").path
         ))
-
-        let kosmic = try await service.latestKosmicKrisp()
-        XCTAssertTrue(kosmic.name.hasSuffix(".pkg"))
-        let kosmicRoot = try await service.installKosmicKrisp(kosmic, engineRoot: root)
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: kosmicRoot.appendingPathComponent("lib/avk143/libvulkan_kosmickrisp.dylib").path
-        ))
-        let archs = try Shell.run(
-            "/usr/bin/lipo", ["-archs", kosmicRoot.appendingPathComponent("lib/avk143/libvulkan_kosmickrisp.dylib").path]
-        )
-        XCTAssertTrue(archs.contains("arm64"))
 
         let dxvk = try await service.latestDXVK()
         let dxvkRoot = try await service.installDXVK(dxvk, engineRoot: root)

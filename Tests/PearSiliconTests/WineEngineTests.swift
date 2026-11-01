@@ -240,6 +240,26 @@ final class WineEngineTests: XCTestCase {
         }
     }
 
+    func testRemovingAnEngineDeletesOnlyThatEngine() throws {
+        let fixture = try ManagedAppTestFixture()
+        defer { fixture.remove() }
+        let store = WineEngineStore(rootURL: fixture.enginesRoot)
+        let first = try store.registerLocalEngine(
+            from: fixture.engineFolder(name: "First"), id: "first", name: "First Wine",
+            version: "1", executablePath: "bin/wine64", licenseConfirmed: true
+        )
+        let second = try store.registerLocalEngine(
+            from: fixture.engineFolder(name: "Second"), id: "second", name: "Second Wine",
+            version: "2", executablePath: "bin/wine64", licenseConfirmed: true
+        )
+        try store.remove(id: first.id)
+        XCTAssertEqual(try store.engines().map(\.id), [second.id])
+        XCTAssertFalse(ManagedAppFiles.exists(first.rootURL))
+        XCTAssertTrue(ManagedAppFiles.exists(second.rootURL))
+        XCTAssertThrowsError(try store.remove(id: "../escape"))
+        XCTAssertThrowsError(try store.remove(id: "missing"))
+    }
+
     func testCommunityDownloadVerifiesHashWithoutExtractingExecutingOrRegistering() async throws {
         let fixture = try ManagedAppTestFixture()
         defer { fixture.remove() }

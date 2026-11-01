@@ -11,6 +11,8 @@ struct ContentView: View {
     @State private var showingImporter = false
     @State private var wineExecutablePicker: WineExecutablePicker?
     @State private var alert: AlertPayload?
+    @State private var platformSwitchOffset: CGSize = .zero
+    @GestureState private var platformSwitchDrag: CGSize = .zero
 
     var body: some View {
         ZStack {
@@ -110,11 +112,16 @@ struct ContentView: View {
     private var topBar: some View {
         HStack(spacing: 16) {
             HStack(spacing: 10) {
-                Image(systemName: "circle.hexagongrid.fill")
-                    .font(.title2)
-                    .foregroundStyle(
-                        LinearGradient(colors: [.mint, .cyan, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)
+                Image("PearLogo", bundle: .module)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 30, height: 30)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(.white.opacity(0.14), lineWidth: 1)
                     )
+                    .accessibilityLabel("PearSilicon")
                 Text("PearSilicon")
                     .font(.title3.weight(.semibold))
             }
@@ -179,7 +186,26 @@ struct ContentView: View {
             }
         }
         .padding(4)
-        .glassEffect(.regular, in: Capsule())
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .offset(
+            x: platformSwitchOffset.width + platformSwitchDrag.width,
+            y: platformSwitchOffset.height + platformSwitchDrag.height
+        )
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 6)
+                .updating($platformSwitchDrag) { value, state, _ in
+                    state = value.translation
+                }
+                .onEnded { value in
+                    platformSwitchOffset = CGSize(
+                        width: platformSwitchOffset.width + value.translation.width,
+                        height: platformSwitchOffset.height + value.translation.height
+                    )
+                }
+        )
+        .help("Click a platform or drag the glass switch to move it")
     }
 
     // MARK: - Sidebar
@@ -399,7 +425,7 @@ struct ContentView: View {
         guard let engine = state.wineEngines.first else {
             alert = AlertPayload(
                 title: "No Wine engine",
-                message: "Register an open-source Wine engine in Settings before adding a Windows game. PearSilicon can download the latest WineHQ Stable, Staging or Development build for you."
+                message: "Register an open-source Wine engine in Settings before adding a Windows game. PearSilicon can download the latest WineHQ Staging or Development build for you."
             )
             return
         }

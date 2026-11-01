@@ -64,13 +64,17 @@ The prefix marker records which files belong to us, so a foreign DLL is never
 deleted. DXMT is an optional per-engine overlay installed from `3Shain/dxmt`, but
 it also requires a Wine build that exports winemac's Metal view symbols; release
 Gcenx builds hide them, so the launch plan refuses DXMT instead of aborting in
-DXMT's swapchain. KosmicKrisp is an optional arm64 ICD installed from
-`Anonymous137-sudo/Khronos_AppleICDs`. The current macOS WineHQ engines are
-x86_64, so KosmicKrisp is rejected rather than silently degraded when selected.
+DXMT's swapchain. KosmicKrisp was removed: it is arm64-only and the automatic
+WineHQ engines are x86_64. Engines can be removed from the registered list;
+only the engine directory is deleted. Community engines are resolved from a
+GitHub repository URL (newest release archive, or the source ZIP when the
+repository has no release) with GitHub-hosted digests checked when available.
 
 ## Updates and runtime refresh
 
-Update checks are explicit user actions against `denizomer10/PearSilicon`. After
+Update checks are explicit user actions against `denizomer10/PearSilicon`.
+Stable reads the release list and accepts only numbered non-prerelease releases;
+Development Beta accepts prereleases and the mutable `development-beta` tag. After
 a GitHub SHA-256 and bundle-signature check, the app is staged privately. The
 relaunch helper waits for the exact parent process, validates the staged and
 installed bundles again, clones the staged app beside the destination, swaps them

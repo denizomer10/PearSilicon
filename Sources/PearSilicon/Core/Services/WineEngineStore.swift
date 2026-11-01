@@ -195,6 +195,26 @@ struct WineEngineStore: Sendable {
         return try engines().first { $0.id == id }
     }
 
+    /// Removes one registered engine. Only an engine-shaped directory inside
+    /// this store is deleted; the manifest is read first so a stray directory
+    /// with a matching name is never removed as if it were an engine.
+    func remove(id: String) throws {
+        try Self.validateID(id)
+        guard let engine = try engine(id: id) else {
+            throw PearError.invalidPackage("Wine engine \(id) is not registered")
+        }
+        let root = try ManagedAppFiles.canonicalRoot(rootURL)
+        let directory = root.appendingPathComponent(engine.id, isDirectory: true)
+        _ = try ManagedAppFiles.existingDirectory(directory)
+        _ = try ManagedAppFiles.regularFile(
+            directory.appendingPathComponent(WineEngine.manifestFilename), inside: directory
+        )
+        guard directory.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL else {
+            throw PearError.invalidPackage("Wine engine path escapes the engine store")
+        }
+        try FileManager.default.removeItem(at: directory)
+    }
+
     /// Downloads *only* an opaque artifact, never extracts or executes it. No
     /// credentials/cookies or redirects are followed by the default transport.
     /// Caller confirmation is required for each request; it is not inferred

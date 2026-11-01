@@ -60,3 +60,51 @@ an app component.
 `.build/dxmt-builtin-diag.sh`, `.build/dxmt-builtin-start.sh`,
 `.build/dxmt-builtin-stop.sh`, `.build/all-windows.swift`.
 Hashes pinned in STATUS.md §2.4.
+
+
+## 2026-11-01 — Controller support (Genshin / Catalyst)
+
+Environment: same M1 / macOS 27.2. Controllers: Bluetooth „Pro Controller"
+(Nintendo Switch Pro, VID 0x057E/PID 0x2009) and gamecontrollerd's synthetic
+``GamePad-1`` (Microsoft Xbox 360 logical device).
+
+### E8 — Catalyst GameController probe
+A scene-based Mac Catalyst app (`/tmp/CatProbe2.app`) logged:
+```
+[catprobe2] scene controllers=0
+[catprobe2] connected Pro Controller
+[catprobe2] t+1 controllers=1 vendor=Pro Controller extended=true
+```
+Conclusion: iOS-on-Mac apps receive controllers, but enumeration is asynchronous;
+an app that checks once at launch can see zero.
+
+### E9 — Genshin process (runtime diagnostics)
+With an instrumented runtime and `PEAR_DEBUG_GC=1`:
+```
+[PearRuntime][input] game controllers at bootstrap: 0
+[PearRuntime][input] game controller connected: Pro Controller extended=1 micro=1
+[PearRuntime][input] app queried controllers -> 1
+[PearRuntime][input] MHYGameController class=MHYGameController
+```
+Genshin does query controllers and sees the Pro Controller, but never logs
+`[MiHoYoGamepad] …`. Its official iOS whitelist is Xbox / Xbox Elite / DualShock
+4, so the Switch controller is filtered out by identity.
+
+### E10 — Identity normalization + replay (default-on)
+Swizzled `GCController.vendorName`/`productCategory` for non-Xbox/PlayStation
+controllers and replayed `GCControllerDidConnectNotification` once after 3 s.
+Probe via `open --env DYLD_INSERT_LIBRARIES=…`:
+```
+[PearRuntime][input] controller 'Pro Controller' reported as Xbox Wireless Controller
+[catprobe2] connected Xbox Wireless Controller
+[catprobe2] t+1 vendor=Xbox Wireless Controller
+[PearRuntime][input] replay tick: 1 controller(s)
+```
+Conclusion: the shim presents the Switch Pro as an Xbox controller and replays
+the connection. Genshin's runtime copy was updated; its running process keeps the
+old inode until relaunch.
+
+### Disk cleanup (same day)
+Removed `.build` (31 GB), `/tmp/pear-*` clones (~2.2 GB) and three regenerable
+caches (~680 MB). `/System/Volumes/Data` free space went 14 GB → 37 GB. The
+Genshin game-data directory (32 GB) and all app data were left untouched.

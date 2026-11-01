@@ -506,6 +506,145 @@ static void InstallHandlerChaining(void) {
     });
 }
 
+#pragma mark - GameController discovery and compatibility
+
+// GameController enumerates HID devices asynchronously. A game that asks for
+// `GCController.controllers` during launch can see an empty list even though a
+// controller is connected (the connect notification arrives a moment later).
+// Touch the framework at bootstrap so enumeration starts before application
+// code, keep the discovered controllers alive, and log the result. Replaying a
+// connect notification is opt-in because it can duplicate an event an app has
+// already handled.
+static NSMutableSet<GCController *> *gKnownControllers;
+static NSMutableDictionary<NSValue *, NSDate *> *gControllerConnectDates;
+
+// Some games only accept the controller families the vendor documents (for
+// example Xbox and DualShock on an iOS build). Normalize other controllers to
+// an Xbox identity on request so those games enable their controller path.
+// The input profile is unchanged; only the reported identity differs.
+static void InstallControllerCompatibility(void) {
+    if (NSProcessInfo.processInfo.environment[@"PEAR_CONTROLLER_NATIVE"].boolValue) return;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class cls = GCController.class;
+        Method vendor = class_getInstanceMethod(cls, @selector(vendorName));
+        if (vendor) {
+            IMP original = method_getImplementation(vendor);
+            method_setImplementation(vendor, imp_implementationWithBlock(^NSString *(GCController *self) {
+                NSString *name = ((NSString *(*)(id, SEL))original)(self, @selector(vendorName));
+                NSString *lower = name.lowercaseString ?: @"";
+                if ([lower containsString:@"xbox"] || [lower containsString:@"dualshock"]
+                    || [lower containsString:@"dualsense"] || [lower containsString:@"playstation"]
+                    || [lower containsString:@"sony"]) {
+                    return name;
+                }
+                PearLog(@"[PearRuntime][input] controller '%@' reported as Xbox Wireless Controller", name ?: @"?");
+                return @"Xbox Wireless Controller";
+            }));
+        }
+        Method category = class_getInstanceMethod(cls, @selector(productCategory));
+        if (category) {
+            IMP original = method_getImplementation(category);
+            method_setImplementation(category, imp_implementationWithBlock(^NSString *(GCController *self) {
+                NSString *name = ((NSString *(*)(id, SEL))original)(self, @selector(productCategory));
+                NSString *lower = name.lowercaseString ?: @"";
+                if ([lower containsString:@"xbox"] || [lower containsString:@"dualshock"]
+                    || [lower containsString:@"dualsense"] || [lower containsString:@"playstation"]
+                    || [lower containsString:@"sony"]) {
+                    return name;
+                }
+                return @"Xbox One";
+            }));
+        }
+    });
+}
+
+static void InstallGameControllerBridge(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gKnownControllers = [NSMutableSet new];
+        gControllerConnectDates = [NSMutableDictionary new];
+        NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+
+        [center addObserverForName:GCControllerDidConnectNotification object:nil
+                             queue:NSOperationQueue.mainQueue
+                        usingBlock:^(NSNotification *note) {
+            GCController *controller = (GCController *)note.object;
+            if (![controller isKindOfClass:GCController.class]) return;
+            @synchronized (gKnownControllers) {
+                [gKnownControllers addObject:controller];
+                gControllerConnectDates[[NSValue valueWithNonretainedObject:controller]] = [NSDate date];
+            }
+            PearLog(@"[PearRuntime][input] game controller connected: %@ extended=%d micro=%d",
+                    controller.vendorName ?: @"?", controller.extendedGamepad != nil,
+                    controller.microGamepad != nil);
+        }];
+
+        [center addObserverForName:GCControllerDidDisconnectNotification object:nil
+                             queue:NSOperationQueue.mainQueue
+                        usingBlock:^(NSNotification *note) {
+            GCController *controller = (GCController *)note.object;
+            if (![controller isKindOfClass:GCController.class]) return;
+            @synchronized (gKnownControllers) {
+                [gKnownControllers removeObject:controller];
+                [gControllerConnectDates removeObjectForKey:[NSValue valueWithNonretainedObject:controller]];
+            }
+            PearLog(@"[PearRuntime][input] game controller disconnected: %@", controller.vendorName ?: @"?");
+        }];
+
+        NSArray<GCController *> *existing = [GCController controllers];
+        @synchronized (gKnownControllers) {
+            for (GCController *controller in existing) {
+                [gKnownControllers addObject:controller];
+                gControllerConnectDates[[NSValue valueWithNonretainedObject:controller]] = [NSDate date];
+            }
+        }
+        PearLog(@"[PearRuntime][input] game controllers at bootstrap: %lu",
+                (unsigned long)existing.count);
+        InstallControllerCompatibility();
+        for (GCController *controller in existing) {
+            PearLog(@"[PearRuntime][input] controller present: %@ extended=%d micro=%d",
+                    controller.vendorName ?: @"?", controller.extendedGamepad != nil,
+                    controller.microGamepad != nil);
+        }
+
+        if (NSProcessInfo.processInfo.environment[@"PEAR_DEBUG_GC"]) {
+            Method queryMethod = class_getClassMethod(GCController.class, @selector(controllers));
+            if (queryMethod) {
+                IMP originalQuery = method_getImplementation(queryMethod);
+                __block int queries = 0;
+                method_setImplementation(queryMethod, imp_implementationWithBlock(^NSArray *(id cls, SEL cmd) {
+                    NSArray *result = ((NSArray *(*)(id, SEL))originalQuery)(cls, cmd);
+                    if (queries < 20) {
+                        queries++;
+                        PearLog(@"[PearRuntime][input] app queried controllers -> %lu",
+                                (unsigned long)result.count);
+                    }
+                    return result;
+                }));
+            }
+        }
+
+        NSString *controllerReplay = NSProcessInfo.processInfo.environment[@"PEAR_CONTROLLER_REPLAY"];
+        if (!controllerReplay || controllerReplay.boolValue) {
+            // One replay after the app's own observers are installed. Repeating
+            // it would make handlers that are not idempotent register twice.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                NSArray<GCController *> *controllers = [GCController controllers];
+                PearLog(@"[PearRuntime][input] replay tick: %lu controller(s)",
+                        (unsigned long)controllers.count);
+                for (GCController *controller in controllers) {
+                    PearLog(@"[PearRuntime][input] replaying controller connect: %@",
+                            controller.vendorName ?: @"?");
+                    [NSNotificationCenter.defaultCenter
+                        postNotificationName:GCControllerDidConnectNotification object:controller];
+                }
+            });
+        }
+    });
+}
+
 static void InstallKeyboard(void) {
     InstallHandlerChaining();
 
@@ -741,6 +880,10 @@ static void WatchKeymap(NSString *path) {
         PearLog(@"[PearRuntime] disabled via PEAR_DISABLE");
         return;
     }
+
+    // Controller discovery is independent of the keymapper: an app with its own
+    // GameController support must see controllers even when no keymap is set.
+    InstallGameControllerBridge();
 
     NSString *keymapPath = NSProcessInfo.processInfo.environment[@"PEAR_KEYMAP"];
     ApplyKeymap(keymapPath);

@@ -84,12 +84,22 @@ can be newer than the published ZIP.
   exposes only that game's `Payload/Program` so Windows runners can resolve their
   data files. Wine runs as a direct native process (no VM or nested sandbox) with
   HOME/TMPDIR redirected into the game entry.
-- Graphics API is selectable per game: **MoltenVK + DXVK** (default; D3D11 →
-  Vulkan → Metal), **DXMT** (D3D10/11 → Metal, requires a Wine build that exports
-  winemac's Metal view API) and **KosmicKrisp** (Mesa Vulkan → Metal). All three are
-  optional GitHub-downloaded components; DXVK and DXMT assets are pinned and
-  SHA-256-verified. KosmicKrisp is arm64-only and refuses to launch with the current
-  x86_64 Wine builds.
+- Game controllers work through a runtime compatibility bridge: macOS
+  GameController devices (Xbox, DualSense/DualShock, Switch Pro and other HID
+  pads) are discovered early, controllers that a game's vendor whitelist does not
+  recognize are reported as an Xbox controller, and a late-installed observer
+  receives a replayed connection. `PEAR_CONTROLLER_NATIVE=1` opts out per launch.
+- Graphics API is selectable per game: **MoltenVK + DXVK** (D3D11 → Vulkan →
+  Metal) and **DXMT** (D3D10/11 → Metal, requires a Wine build that exports
+  winemac's Metal view API). Both optional components are downloaded from GitHub;
+  DXVK and DXMT assets are pinned and SHA-256-verified.
+- Wine engines can be installed from the Staging/Development feeds, removed again
+  from Settings, or downloaded from any trusted GitHub repository: the newest
+  release archive is selected automatically and a repository source ZIP is used
+  when no release exists.
+- Updates are selected per channel: **Stable** uses the newest numbered,
+  non-prerelease GitHub release; **Development Beta** uses the newest
+  development/prerelease release (including the mutable `development-beta` tag).
 - Keymapper, opt-in per iOS app and off by default: tap, hold, joystick, mouse-look
   and swipe. Mac and Wine entries do not use the iOS keymapper.
 - Per-app Metal HUD and pointer-lock controls for iOS; Metal HUD for managed entries.
@@ -296,9 +306,14 @@ Each game gets its own prefix. Host root mappings (`z:`) and absolute drive link
 are removed; a relative `g:` drive exposes only that game's own `Payload/Program`
 as a Windows drive. Without it, GameMaker-style runners cannot turn their Unix
 program path into a Windows path and show a file dialog instead of loading
-`data.win`. **Settings → Wine** checks the public release feed for the latest
-open-source WineHQ build and installs it after SHA-256 verification and safe
-tar-path admission. Wine runs directly, because a nested sandbox breaks Rosetta
+`data.win`. **Settings → Wine** checks the public Staging/Development release feeds and
+installs an engine after SHA-256 verification and safe tar-path admission.
+Registered engines have a Remove action that deletes only that engine directory
+(game prefixes and saves are kept). A community engine can be fetched by pasting
+a GitHub repository URL: the newest release archive is resolved automatically,
+or the repository source ZIP is downloaded and extracted when there is no
+release. No user-supplied SHA-256 is required; GitHub's published digest is
+verified when present. Wine runs directly, because a nested sandbox breaks Rosetta
 and wineserver on current macOS; this is not a VM or a security sandbox.
 
 Importing a folder never runs anything from the source. PearSilicon scans it for
@@ -323,9 +338,6 @@ Graphics backends are selected per game:
   `macdrv_view_create_metal_view`/`get_win_data`). The automatic Gcenx Wine builds
   hide those symbols, so DXMT cannot present with them; the app reports that instead
   of silently showing a black window.
-- **KosmicKrisp** — Mesa Vulkan → Metal; arm64-only. The current macOS WineHQ
-  engines are x86_64, so selecting it with those engines is refused with an
-  explanation. It does not silently fall back.
 
 The macOS builds are currently `osx64`, so Apple silicon may need Rosetta 2.
 Wine is not a Windows VM; anti-cheat and kernel drivers are not supported. Local

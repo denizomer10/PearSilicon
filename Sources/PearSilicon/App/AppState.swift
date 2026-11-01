@@ -572,13 +572,6 @@ final class AppState: ObservableObject {
             return FileManager.default.fileExists(
                 atPath: engine.rootURL.appendingPathComponent("Graphics/DXMT/x86_64-windows/d3d11.dll").path
             )
-        case .kosmicKrisp:
-            let driver = engine.rootURL.appendingPathComponent("Graphics/KosmicKrisp")
-            let archs = (try? Shell.run("/usr/bin/lipo", ["-archs", engine.executableURL.path])) ?? ""
-            return archs.split(whereSeparator: \.isWhitespace).contains("arm64")
-                && FileManager.default.fileExists(
-                    atPath: driver.appendingPathComponent("share/vulkan/icd.d/avk143_kosmickrisp_icd.aarch64.json").path
-                )
         }
     }
 
@@ -1163,19 +1156,55 @@ final class AppState: ObservableObject {
         }
     }
 
-    func downloadEngine(from url: URL, sha256: String, licenseConfirmed: Bool) async {
+    /// Explicit removal of a registered engine. Games keep their own prefixes;
+    /// only the engine directory is deleted. Refuse while a game that uses it is
+    /// running so the user's session is never pulled out from under it.
+    func removeWineEngine(_ engine: WineEngine) async {
         guard !isBusy else { return }
+        guard !managedEntries.contains(where: {
+            $0.manifest.wineEngineID == engine.id && isRunning($0)
+        }) else {
+            statusMessage = L10n.error("Stop this engine's running games before removing it.")
+            return
+        }
         isBusy = true
         defer { finishBusyWork() }
         do {
-            statusMessage = "Downloading Wine engine…"
-            let store = wineApps.engines
-            let file = try await store.downloadCommunityArchive(
-                from: url, sha256: sha256, licenseConfirmed: licenseConfirmed
-            )
-            statusMessage = "Engine archive verified and saved: \(file.path). \(WineEngineStore.communityDownloadNotice)"
+            try wineApps.engines.remove(id: engine.id)
+            reloadEngines()
+            statusMessage = "Removed Wine engine \(engine.name) \(engine.version)"
         } catch {
-            statusMessage = L10n.error("Engine download failed: \(error.localizedDescription)")
+            statusMessage = L10n.error("Engine removal failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Resolves a pasted GitHub repository to its newest engine archive and
+    /// downloads it into Engines/Downloads. No hash input is required; GitHub's
+    /// digest is checked when published. A repository with no release yields its
+    /// source ZIP, which is also extracted for inspection. Registration stays an
+    /// explicit, separate action.
+    func downloadCommunityEngine(from input: String, licenseConfirmed: Bool) async {
+        guard !isBusy else { return }
+        guard licenseConfirmed else {
+            statusMessage = L10n.error("Review the engine license before downloading")
+            return
+        }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            statusMessage = "Looking up the newest GitHub release…"
+            let service = CommunityWineService()
+            let archive = try await service.resolve(input: input)
+            statusMessage = "Downloading \(archive.assetName)…"
+            let downloads = wineApps.engines.rootURL.appendingPathComponent("Downloads", isDirectory: true)
+            let result = try await service.download(archive, downloadsRoot: downloads)
+            if let extracted = result.extracted {
+                statusMessage = "Downloaded and extracted \(archive.repository) \(archive.tag) to \(extracted.path). Add the engine with Add Local Engine… if its layout is complete."
+            } else {
+                statusMessage = "Downloaded \(archive.assetName) (\(archive.repository) \(archive.tag)) to \(result.file.path). Extract it and use Add Local Engine… to register the runtime."
+            }
+        } catch {
+            statusMessage = L10n.error("Community engine download failed: \(error.localizedDescription)")
         }
     }
 
@@ -1231,11 +1260,6 @@ final class AppState: ObservableObject {
                 statusMessage = "Installing DXMT \(asset.tag)…"
                 _ = try await service.installDXMT(asset, engineRoot: engine.rootURL)
                 statusMessage = "Installed DXMT for \(engine.name)"
-            case .kosmicKrisp:
-                let asset = try await service.latestKosmicKrisp()
-                statusMessage = "Installing KosmicKrisp \(asset.tag)…"
-                _ = try await service.installKosmicKrisp(asset, engineRoot: engine.rootURL)
-                statusMessage = "Installed KosmicKrisp for \(engine.name)"
             }
         } catch {
             statusMessage = L10n.error("\(backend.title) install failed: \(error.localizedDescription)")
