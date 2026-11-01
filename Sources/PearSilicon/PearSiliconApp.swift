@@ -18,11 +18,7 @@ struct PearSiliconApp: App {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appInfo) {
                 Button("About PearSilicon") {
-                    NSApplication.shared.orderFrontStandardAboutPanel(options: [
-                        .applicationName: "PearSilicon",
-                        .applicationVersion: "Development Beta",
-                        .version: ""
-                    ])
+                    AppDelegate.showAboutPanel()
                 }
             }
         }

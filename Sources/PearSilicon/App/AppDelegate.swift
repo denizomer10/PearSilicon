@@ -6,6 +6,20 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    /// Custom About panel: a channel label followed by the real version code so
+    /// users can tell exactly which build they are running.
+    static func showAboutPanel() {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        let build = info?["CFBundleVersion"] as? String ?? "0"
+        let alert = NSAlert()
+        alert.messageText = "PearSilicon"
+        alert.informativeText = "Development Beta\nVersion \(version) (\(build))"
+        alert.icon = NSApplication.shared.applicationIconImage
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let state = AppState.shared
         let names = state.runningGameNames

@@ -333,6 +333,13 @@ struct SettingsView: View {
         .frame(width: 600, height: 520)
     }
 
+    private static var appVersionString: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info?["CFBundleVersion"] as? String ?? "—"
+        return "\(version) (\(build))"
+    }
+
     private func chooseEngineFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -361,6 +368,7 @@ struct SettingsView: View {
         Form {
             Section("Updates") {
                 LabeledContent("Current version", value: "Development Beta")
+                LabeledContent("Version", value: Self.appVersionString)
                 Button("Check for Updates") {
                     Task { await state.checkForUpdates() }
                 }
