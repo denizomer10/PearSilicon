@@ -1,8 +1,8 @@
 # PearSilicon — Çalışma Durumu
 
 Son güncelleme: 2026-11-01 10:30 · Dal: `feature/portable-multiplatform`
-Son commit: `7284687` (origin'a push edildi)
-Uygulama paketi: `build/PearSilicon.app` (release, ad-hoc imzalı, `7284687` gömülü)
+Son commit: `e9535dc` (origin'a push edildi)
+Uygulama paketi: `build/PearSilicon.app` (release, ad-hoc imzalı, `e9535dc` gömülü)
 
 Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam edebilir.
 
@@ -72,6 +72,12 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
 - `PearRuntime` içindeki değişiklik `./runtime/build.sh` ile derlenir; her iOS app
   kendi kopyasını taşıdığı için yeniden kurulum veya **Refresh iOS Runtimes**
   (veya elle kopyalama) gerekir.
+- **Info.plist:** `PackageInstaller.patchInfoPlist` artık uygulama kendi
+  bildirmediyse `GCSupportsControllerUserInteraction = true` ve
+  `GCSupportedGameControllers = [ExtendedGamepad, MicroGamepad]` ekler. Bu
+  anahtarlar olmadan iOS-on-Mac sistemi uygulamayı denetleyici destekli saymıyor;
+  kollar görünse de giriş yönlendirilmiyordu. Kurulu Genshin Info.plist'i
+  güncellendi ve yeniden imzalandı (çalışan süreç etkilenmez).
 
 ### 2.3 Doğrulama
 
@@ -163,9 +169,13 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
    seçildiğinde "no stable release" hatası beklenir.
 3. `swift build`, `swift test` (aşağıdaki sonuç) ve `./scripts/build-app.sh release`
    tekrar çalıştırılmalı; app paketi commit sonrası yeniden üretilebilir.
-4. ~~Değişiklikleri commit + push et~~ → `7284687` push edildi; uygulama paketi
-   `7284687` ile yeniden derlendi ve ad-hoc imzası doğrulandı.
-5. Kullanıcı `/Applications/PearSilicon.app` (eski, çalışıyor) yerine
+4. ~~Değişiklikleri commit + push et~~ → `7284687`, `fa98334` ve `e9535dc`
+   push edildi; uygulama paketi `e9535dc` ile yeniden derlendi ve imzası doğrulandı.
+5. Kullanıcı Genshin'i tamamen kapatıp yeniden açmalı (runtime + Info.plist
+   güncellemeleri bir sonraki açılışta etkin). Ardından logda
+   `controller 'Pro Controller' reported as Xbox…` ve oyunun
+   `[MiHoYoGamepad] Gamepad connected:` satırı kontrol edilmeli.
+6. Kullanıcı `/Applications/PearSilicon.app` (eski, çalışıyor) yerine
    `build/PearSilicon.app`'i açmalı; çalışan uygulama izinsiz kapatılmadı.
 
 ### Bilinen sınırlar / notlar

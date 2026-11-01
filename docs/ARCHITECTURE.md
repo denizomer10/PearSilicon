@@ -61,7 +61,9 @@ optional, pinned DXVK 1.10.3 x64 component (`Gcenx/DXVK-macOS`): the component
 lives under `<engine>/Graphics/DXVK`, is mirrored into that game's private prefix
 before launch, and Wine's originals are restored when another backend is chosen.
 The prefix marker records which files belong to us, so a foreign DLL is never
-deleted. DXMT is an optional per-engine overlay installed from `3Shain/dxmt`, but
+deleted. Preparation also adds Xcode's Game Controllers capability keys when an
+app does not declare controller support; the runtime supplies early discovery,
+identity normalization and a connect replay. DXMT is an optional per-engine overlay installed from `3Shain/dxmt`, but
 it also requires a Wine build that exports winemac's Metal view symbols; release
 Gcenx builds hide them, so the launch plan refuses DXMT instead of aborting in
 DXMT's swapchain. KosmicKrisp was removed: it is arm64-only and the automatic

@@ -88,7 +88,10 @@ can be newer than the published ZIP.
   GameController devices (Xbox, DualSense/DualShock, Switch Pro and other HID
   pads) are discovered early, controllers that a game's vendor whitelist does not
   recognize are reported as an Xbox controller, and a late-installed observer
-  receives a replayed connection. `PEAR_CONTROLLER_NATIVE=1` opts out per launch.
+  receives a replayed connection. Prepared bundles also receive the Game
+  Controllers capability keys (`GCSupportsControllerUserInteraction` and
+  `GCSupportedGameControllers`) when the app did not declare them.
+  `PEAR_CONTROLLER_NATIVE=1` opts out per launch.
 - Graphics API is selectable per game: **MoltenVK + DXVK** (D3D11 → Vulkan →
   Metal) and **DXMT** (D3D10/11 → Metal, requires a Wine build that exports
   winemac's Metal view API). Both optional components are downloaded from GitHub;
