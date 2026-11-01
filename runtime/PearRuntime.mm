@@ -559,6 +559,153 @@ static void InstallControllerCompatibility(void) {
     });
 }
 
+// Many iOS games disable features that only make sense on a real device when
+// they see NSProcessInfo.isiOSAppOnMac/isMacCatalystApp. Genshin's controller
+// settings are one example: it sees the pad through GameController but keeps
+// the Control Type on Touchscreen. The runtime already presents an iPad device;
+// report the process as a device app as well unless explicitly opted out.
+static void InstallIOSOnMacCompatibility(void) {
+    if (NSProcessInfo.processInfo.environment[@"PEAR_KEEP_IOS_ON_MAC"].boolValue) return;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class processInfo = NSClassFromString(@"NSProcessInfo");
+        if (!processInfo) return;
+        for (NSString *name in @[@"isiOSAppOnMac", @"isMacCatalystApp"]) {
+            Method method = class_getInstanceMethod(processInfo, NSSelectorFromString(name));
+            if (!method) continue;
+            method_setImplementation(method, imp_implementationWithBlock(^BOOL(id self) {
+                return NO;
+            }));
+        }
+        PearLog(@"[PearRuntime][platform] iOS-on-Mac flags reported as false");
+    });
+}
+
+// Controller fallback for touch-only games. Many iOS titles (Genshin included)
+// never initialize their GameController layer when running as an iOS app on
+// Mac, so their Control Type stays "Touchscreen". If a keymap exists, map the
+// standard pad to the same virtual joystick/taps the keyboard drives. The app's
+// own valueChangedHandler is preserved and gets priority: when it installs one,
+// translation stops, so native controller games are not double-driven.
+typedef void (^PearGamepadChangedBlock)(GCExtendedGamepad *gamepad, GCControllerElement *element);
+static IMP gOriginalSetGamepadChanged = NULL;
+static PearGamepadChangedBlock gGameGamepadChanged = nil;
+static PearGamepadChangedBlock gCombinedGamepadChanged = nil;
+static BOOL gGamepadKeymapEnabled = NO;
+static BOOL gPadW, gPadA, gPadS, gPadD, gPadAttack, gPadSkill, gPadInteract, gPadMenu, gPadSprint, gPadBurst;
+static NSString *const kPearControllerLookKey = @"f:controllerlook";
+static BOOL gControllerLookActive = NO;
+static CGPoint gControllerLookPoint = {0.75, 0.5};
+static NSUInteger gControllerLookGeneration = 0;
+
+static void ControllerLook(float dx, float dy) {
+    if (fabs(dx) < 0.0001 && fabs(dy) < 0.0001) return;
+    if (!gControllerLookActive) {
+        gControllerLookActive = YES;
+        gControllerLookPoint = CGPointMake(0.75, 0.5);
+        PearSynthesizeVirtualFinger(YES, kPearControllerLookKey,
+                                   gControllerLookPoint.x, gControllerLookPoint.y);
+    }
+    CGFloat nx = MIN(MAX(gControllerLookPoint.x + dx * 0.06, 0.55), 0.95);
+    CGFloat ny = MIN(MAX(gControllerLookPoint.y + dy * 0.06, 0.20), 0.80);
+    gControllerLookPoint = CGPointMake(nx, ny);
+    PearSynthesizeVirtualFinger(YES, kPearControllerLookKey, nx, ny);
+    gControllerLookGeneration++;
+    NSUInteger generation = gControllerLookGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation != gControllerLookGeneration || !gControllerLookActive) return;
+        gControllerLookActive = NO;
+        PearSynthesizeVirtualFinger(NO, kPearControllerLookKey,
+                                   gControllerLookPoint.x, gControllerLookPoint.y);
+    });
+}
+
+static void PadSetKey(GCKeyCode code, BOOL pressed, BOOL *state) {
+    if (*state == pressed) return;
+    *state = pressed;
+    HandleKeyPress(code, pressed);
+    if (getenv("PEAR_DEBUG_TOUCH")) {
+        PearLog(@"[PearRuntime][controller] key %ld %s", (long)code, pressed ? "down" : "up");
+    }
+}
+
+static void TranslateGamepad(GCExtendedGamepad *gamepad) {
+    if (!gGamepadKeymapEnabled || gGameGamepadChanged) return;
+    const float deadzone = 0.35f;
+    float x = gamepad.leftThumbstick.xAxis.value;
+    float y = gamepad.leftThumbstick.yAxis.value;
+    PadSetKey(GCKeyCodeKeyW, y > deadzone, &gPadW);
+    PadSetKey(GCKeyCodeKeyS, y < -deadzone, &gPadS);
+    PadSetKey(GCKeyCodeKeyA, x < -deadzone, &gPadA);
+    PadSetKey(GCKeyCodeKeyD, x > deadzone, &gPadD);
+    PadSetKey(GCKeyCodeSpacebar, gamepad.buttonA.isPressed, &gPadAttack);
+    PadSetKey(GCKeyCodeEscape, gamepad.buttonB.isPressed, &gPadMenu);
+    PadSetKey(GCKeyCodeKeyE, gamepad.buttonX.isPressed, &gPadSkill);
+    PadSetKey(GCKeyCodeKeyF, gamepad.buttonY.isPressed, &gPadInteract);
+    PadSetKey(GCKeyCodeLeftShift, gamepad.leftShoulder.isPressed, &gPadSprint);
+    PadSetKey(GCKeyCodeKeyQ, gamepad.rightShoulder.isPressed, &gPadBurst);
+    float rx = gamepad.rightThumbstick.xAxis.value;
+    float ry = gamepad.rightThumbstick.yAxis.value;
+    if (fabs(rx) > 0.15 || fabs(ry) > 0.15) {
+        ControllerLook(rx * 6.0, -ry * 6.0);
+    }
+}
+
+static void PearSetGamepadChanged(id self, SEL _cmd, PearGamepadChangedBlock handler) {
+    if (!gOriginalSetGamepadChanged) return;
+    if (handler == gCombinedGamepadChanged) {
+        ((void (*)(id, SEL, PearGamepadChangedBlock))gOriginalSetGamepadChanged)(self, _cmd, handler);
+        return;
+    }
+    gGameGamepadChanged = handler;
+    ((void (*)(id, SEL, PearGamepadChangedBlock))gOriginalSetGamepadChanged)(
+        self, _cmd, gCombinedGamepadChanged
+    );
+}
+
+static void PadAttach(GCController *controller) {
+    if (!gGamepadKeymapEnabled) return;
+    GCExtendedGamepad *gamepad = controller.extendedGamepad;
+    if (!gamepad) return;
+    if (gOriginalSetGamepadChanged) {
+        ((void (*)(id, SEL, PearGamepadChangedBlock))gOriginalSetGamepadChanged)(
+            gamepad, @selector(setValueChangedHandler:), gCombinedGamepadChanged
+        );
+    } else {
+        gamepad.valueChangedHandler = gCombinedGamepadChanged;
+    }
+}
+
+static void InstallGamepadKeymapper(void) {
+    NSString *setting = NSProcessInfo.processInfo.environment[@"PEAR_CONTROLLER_KEYMAP"];
+    gGamepadKeymapEnabled = gBindings.count > 0 && (!setting || setting.boolValue);
+    if (!gGamepadKeymapEnabled) {
+        PearLog(@"[PearRuntime][input] gamepad keymapper off (no bindings or opted out)");
+        return;
+    }
+    if (!gCombinedGamepadChanged) {
+        gCombinedGamepadChanged = ^(GCExtendedGamepad *gamepad, GCControllerElement *element) {
+            PearGamepadChangedBlock game = gGameGamepadChanged;
+            if (game) {
+                game(gamepad, element);
+                return;
+            }
+            TranslateGamepad(gamepad);
+        };
+    }
+    Class cls = NSClassFromString(@"GCExtendedGamepad");
+    Method setter = cls ? class_getInstanceMethod(cls, @selector(setValueChangedHandler:)) : NULL;
+    if (setter) {
+        gOriginalSetGamepadChanged = method_setImplementation(setter, (IMP)PearSetGamepadChanged);
+    }
+    for (GCController *controller in [GCController controllers]) {
+        PadAttach(controller);
+    }
+    PearLog(@"[PearRuntime][input] gamepad keymapper installed (controllers=%lu)",
+            (unsigned long)[GCController controllers].count);
+}
+
 static void InstallGameControllerBridge(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -578,6 +725,7 @@ static void InstallGameControllerBridge(void) {
             PearLog(@"[PearRuntime][input] game controller connected: %@ extended=%d micro=%d",
                     controller.vendorName ?: @"?", controller.extendedGamepad != nil,
                     controller.microGamepad != nil);
+            PadAttach(controller);
         }];
 
         [center addObserverForName:GCControllerDidDisconnectNotification object:nil
@@ -625,6 +773,59 @@ static void InstallGameControllerBridge(void) {
             }
         }
 
+        // GameController discovers pads asynchronously, often about a second
+        // after first access. A game that snapshots `controllers` during launch
+        // can conclude that no pad exists and never look again. The first empty
+        // query (after bootstrap started discovery) pumps the run loop for a
+        // bounded time so the result is stable. Apps without pads only pay this
+        // when they ask for controllers.
+        if (!NSProcessInfo.processInfo.environment[@"PEAR_CONTROLLER_NATIVE"].boolValue) {
+            Method queryMethod = class_getClassMethod(GCController.class, @selector(controllers));
+            if (queryMethod) {
+                IMP originalQuery = method_getImplementation(queryMethod);
+                __block BOOL waiting = NO;
+                method_setImplementation(queryMethod, imp_implementationWithBlock(^NSArray *(id cls, SEL cmd) {
+                    NSArray *result = ((NSArray *(*)(id, SEL))originalQuery)(cls, cmd);
+                    if (result.count > 0 || waiting) return result;
+                    waiting = YES;
+                    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1.2];
+                    while (result.count == 0 && deadline.timeIntervalSinceNow > 0) {
+                        [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode
+                                               beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+                        result = ((NSArray *(*)(id, SEL))originalQuery)(cls, cmd);
+                    }
+                    waiting = NO;
+                    PearLog(@"[PearRuntime][input] controller query waited -> %lu",
+                            (unsigned long)result.count);
+                    return result;
+                }));
+            }
+        }
+
+        // Temporary, opt-in diagnostics for apps with their own gamepad layer.
+        if (NSProcessInfo.processInfo.environment[@"PEAR_DEBUG_GC"]) {
+            Class gamepad = NSClassFromString(@"MHYGameController");
+            PearLog(@"[PearRuntime][input] MHYGameController class=%@", gamepad ?: @"nil");
+            if (gamepad) {
+                Method instance = class_getClassMethod(gamepad, @selector(instance));
+                if (instance) {
+                    IMP original = method_getImplementation(instance);
+                    method_setImplementation(instance, imp_implementationWithBlock(^id(id self, SEL cmd) {
+                        PearLog(@"[PearRuntime][input] MHYGameController instance requested");
+                        return ((id (*)(id, SEL))original)(self, cmd);
+                    }));
+                }
+                Method initialize = class_getInstanceMethod(gamepad, @selector(init));
+                if (initialize) {
+                    IMP original = method_getImplementation(initialize);
+                    method_setImplementation(initialize, imp_implementationWithBlock(^id(id self, SEL cmd) {
+                        PearLog(@"[PearRuntime][input] MHYGameController init called");
+                        return ((id (*)(id, SEL))original)(self, cmd);
+                    }));
+                }
+            }
+        }
+
         NSString *controllerReplay = NSProcessInfo.processInfo.environment[@"PEAR_CONTROLLER_REPLAY"];
         if (!controllerReplay || controllerReplay.boolValue) {
             // One replay after the app's own observers are installed. Repeating
@@ -642,6 +843,7 @@ static void InstallGameControllerBridge(void) {
                 }
             });
         }
+        InstallGamepadKeymapper();
     });
 }
 
@@ -881,13 +1083,16 @@ static void WatchKeymap(NSString *path) {
         return;
     }
 
-    // Controller discovery is independent of the keymapper: an app with its own
-    // GameController support must see controllers even when no keymap is set.
-    InstallGameControllerBridge();
+    InstallIOSOnMacCompatibility();
 
     NSString *keymapPath = NSProcessInfo.processInfo.environment[@"PEAR_KEYMAP"];
     ApplyKeymap(keymapPath);
     WatchKeymap(keymapPath);
+
+    // Controller discovery is independent of the keymapper: an app with its own
+    // GameController support must see controllers even when no keymap is set.
+    // It runs after ApplyKeymap so the optional touch fallback can see bindings.
+    InstallGameControllerBridge();
 
     // Input translation is opt-in: with no keymap (the app did not enable the
     // keymapper) this bootstrap installs no keymapper input handlers.

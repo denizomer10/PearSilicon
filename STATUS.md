@@ -226,7 +226,7 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
 | Motor kaldırma | birim testi ✓ |
 | KosmicKrisp kaldırma | derleme + testler ✓ |
 | Controller kimlik/replay | Catalyst probe ile doğrulandı ✓ |
-| Controller/Genshin | runtime güncellendi; **oyun yeniden başlatılınca** doğrulanacak |
+| Controller/Genshin | oyun kendi GameController katmanını Mac'te başlatmıyor; pad→keymapper köprüsü kurulu, kullanıcı testi bekliyor |
 | DXVK/DELTARUNE | önceki oturumda görsel olarak doğrulandı |
 | Disk temizliği | 14 GB → 37 GB boş alan |
 
