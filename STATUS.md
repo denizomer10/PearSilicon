@@ -1,9 +1,9 @@
 # PearSilicon — Çalışma Durumu
 
 Son güncelleme: 2026-11-01 10:30 · Dal: `feature/portable-multiplatform`
-Son commit: `1d80017` (origin'a push edildi; `development-beta` etiketi de bu commit'e taşındı)
-Uygulama paketi: `build/PearSilicon.app` **0.4.2 (14)**, `1d80017`; `development-beta` sürümüne yüklendi (SHA-256 `c70879e1…`)
-Web sitesi: `pearsilicon-web` `c39d33b` (tek Check for Updates akışı dahil)
+Son commit: `6cc4894` (origin'a push edildi; sürüm `v0.4.3` ayrı release olarak yayınlandı)
+Uygulama paketi: `build/PearSilicon.app` **0.4.3 (15)**, `6cc4894`; ayrı `v0.4.3` release'ine yüklendi (SHA-256 `14b5c8d6…`)
+Web sitesi: `pearsilicon-web` `6e25918` (release listesi indirme bağlantısı ve gerçek sürüm notları)
 
 Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam edebilir.
 
@@ -33,7 +33,7 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
      sürüklenebilir; Hakkında ve Settings'te sürüm "Development Beta" görünür.
   7. Settings → Wine'daki **WineHQ Stable** seçeneği kaldırıldı (Staging/Development
      kalır).
-  8. Güncelleme kontrolü 403 düzeltildi: GitHub API rate limitinde public release feed/HTML'e düşer; tag/commit/digest yine doğrulanır. Settings'te yalnız **Check for Updates** kaldı (`0.4.2`).
+  8. Güncelleme kontrolü 403 düzeltildi: GitHub API rate limitinde public release feed/HTML'e düşer; tag/commit/digest yine doğrulanır. Settings'te yalnız **Check for Updates** kaldı. Her build ayrı release (`v0.4.3`); About/Ayarlar gerçek sürümü gösterir.
   9. Disk temizliği: 31 GB `.build` test çöpü ve yeniden üretilebilir cache'ler
      silindi; sistem veri alanı 14 GB → 37 GB boş. Oyun verisi indirmesi/save'ler
      korundu.
@@ -222,9 +222,9 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
 | Alan | Durum |
 | --- | --- |
 | `swift build` | temiz |
-| `swift test` | **289 XCTest + 24 Swift Testing, 0 hata, 15 opsiyonel skip** (son koşu) |
-| Development release | `development-beta` → **0.4.2**, asset `PearSilicon.zip` (2.32 MB), SHA-256 `c70879e1…` |
-| Web sitesi | güncellendi ve `main`'e push edildi (`c39d33b`, Cloudflare Pages otomatik dağıtım) |
+| `swift test` | **289 XCTest + 24 Swift Testing, 0 hata, 15 opsiyonel skip** (0.4.3 UI derlemesi sonrası yeniden koşuldu) |
+| Development release | **`v0.4.3`** (ayrı release), asset `PearSilicon.zip` (2.32 MB), SHA-256 `14b5c8d6…`; eski `development-beta` 0.4.2 olarak korunuyor |
+| Web sitesi | güncellendi ve `main`'e push edildi (`6e25918`, Cloudflare Pages otomatik dağıtım) |
 | Güncelleme kanalları | liste tabanlı seçim testleri ✓ |
 | Community GitHub | URL ayrıştırma + gerçek repo çözümleme testi ✓ |
 | Motor kaldırma | birim testi ✓ |
