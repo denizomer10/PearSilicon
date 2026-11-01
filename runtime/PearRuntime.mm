@@ -1064,6 +1064,51 @@ static NSString *KeyNameForEvent(id event) {
     return nil;
 }
 
+// Legacy iPhone-only apps without a scene manifest can reach UINSWindow's
+// "should have proxy before assigning wc" assertion on current macOS. The
+// minimum-size pass is not available before the proxy exists; skip that one
+// pass and let UIKit attach the window normally.
+static void InstallLegacyWindowFix(void) {
+    BOOL enabled = NSProcessInfo.processInfo.environment[@"PEAR_LEGACY_WINDOW_FIX"].boolValue;
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    if (!enabled && !info[@"UIApplicationSceneManifest"]) {
+        NSString *sdk = info[@"DTSDKName"] ?: @"";
+        NSArray<NSString *> *parts = [sdk componentsSeparatedByString:@"."];
+        double major = parts.count > 1 ? [parts[1] doubleValue] : 0;
+        enabled = major > 0 && major < 15.0;
+    }
+    if (!enabled) return;
+    PearLog(@"[PearRuntime][window] legacy window fix requested");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        Class cls = NSClassFromString(@"UINSWindow");
+        SEL sel = NSSelectorFromString(@"_setContentMinSizeFromScene");
+        Method method = cls ? class_getInstanceMethod(cls, sel) : NULL;
+        if (!method) { PearLog(@"[PearRuntime][window] legacy fix unavailable"); return; }
+        method_setImplementation(method, imp_implementationWithBlock(^(id self) {
+            PearLog(@"[PearRuntime][window] skipped pre-proxy content min size");
+        }));
+        Class container = NSClassFromString(@"UINSSceneContainerView");
+        Method constraints = container
+            ? class_getInstanceMethod(container, NSSelectorFromString(@"updateConstraints")) : NULL;
+        if (constraints) {
+            method_setImplementation(constraints, imp_implementationWithBlock(^(id self) {
+                PearLog(@"[PearRuntime][window] skipped scene container constraints");
+            }));
+        }
+        Class nsView = NSClassFromString(@"NSView");
+        Method update = nsView ? class_getInstanceMethod(nsView,
+            NSSelectorFromString(@"updateConstraintsForSubtreeIfNeeded")) : NULL;
+        if (update) {
+            method_setImplementation(update, imp_implementationWithBlock(^(id self) {
+                PearLog(@"[PearRuntime][window] skipped subtree constraints");
+            }));
+        }
+        PearLog(@"[PearRuntime][window] legacy window fix installed (constraints=%d, subtree=%d)",
+                constraints != NULL, update != NULL);
+    });
+}
+
 static void InstallKeyEventSilencer(void) {
     if (gBindings.count == 0) return;
     Class eventClass = NSClassFromString(@"NSEvent");
@@ -1313,6 +1358,8 @@ static void WatchKeymap(NSString *path) {
         unsetenv("PEAR_HOST_TOKEN");
         unsetenv("PEAR_LAUNCHER_INJECTION");
     }
+
+    InstallLegacyWindowFix();
 
     // Skip this bootstrap for input debugging. Other shims have independent
     // initializers, so this is not a global no-hooks switch.
