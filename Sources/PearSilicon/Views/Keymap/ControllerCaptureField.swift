@@ -28,6 +28,13 @@ final class ControllerCaptureMonitor: ObservableObject {
                     self?.attach(GCController.controllers().first)
                 }
             }
+            // GameController enumerates asynchronously: the first query can be
+            // empty even with a pad connected, so retry once before giving up.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, self.isRecording, self.controller == nil else { return }
+                self.attach(GCController.controllers().first)
+            }
         }
     }
 
