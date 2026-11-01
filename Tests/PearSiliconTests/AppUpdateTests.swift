@@ -155,6 +155,62 @@ final class AppUpdateTests: XCTestCase {
         XCTAssertEqual(http.paths.first, "/repos/denizomer10/PearSilicon/releases")
     }
 
+    func testPublicReleaseHTMLFallbackParsesTagCommitAndDigest() throws {
+        let atom = """
+        <link rel="alternate" href="https://github.com/denizomer10/PearSilicon/releases/tag/development-beta"/>
+        <link rel="alternate" href="https://github.com/denizomer10/PearSilicon/releases/tag/v1.0.0"/>
+        """
+        XCTAssertEqual(
+            AppUpdateService.releaseTags(inAtom: atom),
+            ["development-beta", "v1.0.0"]
+        )
+        let assets = """
+        <a href="/denizomer10/PearSilicon/releases/download/development-beta/PearSilicon.zip">PearSilicon.zip</a>
+        <span>sha256:bcad1d90a022a015e5adb944bf3b53ea698be548010f773dfd333b5317c2eebc</span>
+        """
+        let asset = try XCTUnwrap(AppUpdateService.htmlAsset(in: assets, tag: "development-beta"))
+        XCTAssertEqual(asset.name, "PearSilicon.zip")
+        XCTAssertEqual(asset.sha256, "bcad1d90a022a015e5adb944bf3b53ea698be548010f773dfd333b5317c2eebc")
+        XCTAssertEqual(
+            asset.browserDownloadURL.absoluteString,
+            "https://github.com/denizomer10/PearSilicon/releases/download/development-beta/PearSilicon.zip"
+        )
+    }
+
+    /// Opt-in network test: force the API path to return 403 and verify the
+    /// public release feed fallback resolves the real development release.
+    func testHTMLFallbackWorksWhenGitHubAPIIsRateLimited() async throws {
+        guard ProcessInfo.processInfo.environment["PEAR_UPDATE_HTML_INTEGRATION"] == "1" else {
+            throw XCTSkip("Set PEAR_UPDATE_HTML_INTEGRATION=1 to query the public release pages")
+        }
+        let fixture = try UpdateTestFixture()
+        defer { fixture.remove() }
+        let live = AppUpdateService.Transport.live
+        let transport = AppUpdateService.Transport { request, destination, limit, timeout in
+            if request.url?.host == "api.github.com" {
+                return try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url), statusCode: 403,
+                    httpVersion: "HTTP/1.1", headerFields: ["Content-Length": "0"]
+                ))
+            }
+            return try await live.fetch(request, destination, limit, timeout)
+        }
+        let service = AppUpdateService(
+            current: AppUpdateIdentity(version: "0.3.0"),
+            stagingRoot: fixture.stagingRoot, transport: transport
+        )
+        let check = try await service.checkForUpdates(channel: .developmentBeta)
+        XCTAssertEqual(check.release.tagName, "development-beta")
+        XCTAssertEqual(check.release.htmlFallback, true)
+        XCTAssertEqual(check.asset.name, "PearSilicon.zip")
+        XCTAssertEqual(check.commit.count, 40)
+        XCTAssertEqual(check.asset.sha256?.count, 64)
+
+        let staged = try await service.stage(check)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged.bundleURL.path))
+        try? FileManager.default.removeItem(at: staged.directoryURL)
+    }
+
     func testStageHashMismatchCleansWorkspaceBeforeAnyExtraction() async throws {
         let fixture = try UpdateTestFixture()
         defer { fixture.remove() }

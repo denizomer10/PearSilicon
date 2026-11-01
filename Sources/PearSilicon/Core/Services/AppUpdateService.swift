@@ -37,6 +37,9 @@ struct UpdateRelease: Codable, Equatable, Sendable {
     let htmlURL: URL?
     let publishedAt: String?
     let assets: [UpdateAsset]
+    /// Set only when the release was reconstructed from GitHub's public HTML
+    /// because the API was rate-limited. Optional so API decoding is unchanged.
+    var htmlFallback: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, name, body, draft, prerelease, assets
@@ -209,17 +212,141 @@ actor AppUpdateService {
     /// repositories that predate the list-based selection.
     func checkForUpdates(channel: UpdateChannel = .developmentBeta) async throws -> AppUpdateCheck {
         try validateLimits()
-        let release: UpdateRelease
-        if let listed = try? await api("releases") as [UpdateRelease],
-           let selected = Self.selectRelease(in: listed, channel: channel) {
-            release = selected
-        } else {
-            let path = channel == .developmentBeta ? "releases/tags/development-beta" : "releases/latest"
-            release = try await api(path)
+        do {
+            let release: UpdateRelease
+            if let listed = try? await api("releases") as [UpdateRelease],
+               let selected = Self.selectRelease(in: listed, channel: channel) {
+                release = selected
+            } else {
+                let path = channel == .developmentBeta ? "releases/tags/development-beta" : "releases/latest"
+                release = try await api(path)
+            }
+            let asset = try Self.selectAsset(in: release, channel: channel, limits: limits)
+            let commit = try await resolveTag(release.tagName)
+            return try Self.evaluate(release: release, asset: asset, commit: commit, current: current, channel: channel)
+        } catch AppUpdateError.httpStatus(let status) where status == 403 || status == 429 {
+            // GitHub's unauthenticated API is limited to 60 requests/hour per
+            // address. The public release feed and pages are not API calls and
+            // still expose the tag, commit and asset SHA-256, so use them rather
+            // than failing the user's explicit update check.
+            return try await checkForUpdatesViaHTML(channel: channel)
         }
-        let asset = try Self.selectAsset(in: release, channel: channel, limits: limits)
-        let commit = try await resolveTag(release.tagName)
-        return try Self.evaluate(release: release, asset: asset, commit: commit, current: current, channel: channel)
+    }
+
+    // MARK: - No-token public release fallback
+
+    private func html(_ path: String) async throws -> String {
+        guard let url = URL(string: "https://github.com" + path) else {
+            throw AppUpdateError.invalidMetadata("Invalid GitHub release page path.")
+        }
+        try UpdateURLPolicy.validate(url, api: false)
+        let directory = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("page.html")
+        var request = URLRequest(url: url)
+        request.setValue("PearSilicon", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        let response = try await transport.fetch(
+            request, file, 4 * 1_024 * 1_024, min(limits.requestTimeout, 30)
+        )
+        try Self.validateResponse(response, api: false)
+        guard try Self.regularFileSize(file) <= 4 * 1_024 * 1_024 else {
+            throw AppUpdateError.limitExceeded("GitHub release page is too large.")
+        }
+        return String(decoding: try Data(contentsOf: file), as: UTF8.self)
+    }
+
+    private func checkForUpdatesViaHTML(channel: UpdateChannel) async throws -> AppUpdateCheck {
+        let atom = try await html("/denizomer10/PearSilicon/releases.atom")
+        let tags = Self.releaseTags(inAtom: atom)
+        guard !tags.isEmpty else {
+            throw AppUpdateError.invalidMetadata("The public release feed has no releases.")
+        }
+        var candidates = tags
+        if channel == .stable {
+            candidates = tags.filter { UpdateVersion($0) != nil }
+        }
+        for tag in candidates {
+            guard let encoded = Self.pathSafe(tag) else { continue }
+            guard let page = try? await html("/denizomer10/PearSilicon/releases/tag/\(encoded)") else { continue }
+            let prerelease = page.lowercased().contains("pre-release")
+                || page.lowercased().contains("prerelease")
+            let tagLower = tag.lowercased()
+            let developmentTag = tagLower.contains("development") || tagLower.contains("beta")
+                || tagLower.contains("preview") || tagLower.contains("rc")
+            if channel == .stable, prerelease { continue }
+            if channel == .developmentBeta, !(prerelease || developmentTag || tag == tags.first) { continue }
+            guard let commit = Self.firstMatch("/commit/([0-9a-f]{40})", in: page) else { continue }
+            guard let assetsPage = try? await html(
+                "/denizomer10/PearSilicon/releases/expanded_assets/\(encoded)"
+            ) else { continue }
+            guard let asset = Self.htmlAsset(in: assetsPage, tag: tag) else { continue }
+            let release = UpdateRelease(
+                id: 1_000_000, tagName: tag, name: nil, body: nil, draft: false,
+                prerelease: prerelease || developmentTag, targetCommitish: nil,
+                htmlURL: URL(string: "https://github.com/denizomer10/PearSilicon/releases/tag/\(encoded)"),
+                publishedAt: nil, assets: [asset], htmlFallback: true
+            )
+            return try Self.evaluate(
+                release: release, asset: asset, commit: commit,
+                current: current, channel: channel
+            )
+        }
+        throw AppUpdateError.invalidMetadata("No matching release was found in the public release feed.")
+    }
+
+    static func releaseTags(inAtom atom: String) -> [String] {
+        matches(#"/denizomer10/PearSilicon/releases/tag/([^"<]+)"#, in: atom)
+            .compactMap { $0.removingPercentEncoding }
+    }
+
+    static func htmlAsset(in html: String, tag: String) -> UpdateAsset? {
+        let preferred = ["pearsilicon-macos-arm64.zip", "pearsilicon-arm64.zip", "pearsilicon.zip"]
+        let escapedTag = NSRegularExpression.escapedPattern(for: tag)
+        let pattern = "/denizomer10/PearSilicon/releases/download/\(escapedTag)/([^\"]+)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let fullRange = NSRange(html.startIndex..<html.endIndex, in: html)
+        var candidates: [String: (name: String, lowerBound: String.Index)] = [:]
+        for match in regex.matches(in: html, range: fullRange) {
+            guard let nameRange = Range(match.range(at: 1), in: html),
+                  let start = Range(match.range, in: html)?.lowerBound else { continue }
+            let name = String(html[nameRange]).removingPercentEncoding ?? String(html[nameRange])
+            guard preferred.contains(name.lowercased()) else { continue }
+            candidates[name.lowercased()] = (name, start)
+        }
+        for expected in preferred {
+            guard let candidate = candidates[expected] else { continue }
+            let tail = String(html[candidate.lowerBound...].prefix(4_096))
+            guard let digest = firstMatch("sha256:([0-9a-fA-F]{64})", in: tail),
+                  let url = URL(string: "https://github.com/denizomer10/PearSilicon/releases/download/\(tag)/\(candidate.name)") else {
+                continue
+            }
+            return UpdateAsset(
+                id: 1, name: candidate.name, size: 0, browserDownloadURL: url,
+                digest: "sha256:" + digest.lowercased(), state: "uploaded"
+            )
+        }
+        return nil
+    }
+
+    private static func firstMatch(_ pattern: String, in text: String) -> String? {
+        matches(pattern, in: text).first
+    }
+
+    private static func matches(_ pattern: String, in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: text) else { return nil }
+            return String(text[range])
+        }
+    }
+
+    private static func pathSafe(_ value: String) -> String? {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#%")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed)
     }
 
     /// Newest matching release in GitHub API order (newest first). Stable never
@@ -248,7 +375,12 @@ actor AppUpdateService {
     /// The source and any installed .app are never modified by staging.
     func stage(_ update: AppUpdateCheck) async throws -> StagedAppUpdate {
         try validateLimits()
-        let selected = try Self.selectAsset(in: update.release, channel: update.channel, limits: limits)
+        let selected: UpdateAsset
+        if update.release.htmlFallback == true {
+            selected = update.asset
+        } else {
+            selected = try Self.selectAsset(in: update.release, channel: update.channel, limits: limits)
+        }
         guard selected == update.asset, AppUpdateIdentity.isHex(update.commit, length: 40) else {
             throw AppUpdateError.invalidMetadata("Invalid update selection.")
         }
@@ -257,9 +389,10 @@ actor AppUpdateService {
         var keep = false
         defer { if !keep { try? FileManager.default.removeItem(at: directory) } }
         let archive = directory.appendingPathComponent("release.zip")
+        let maximumBytes = update.asset.size > 0 ? update.asset.size : limits.maximumDownloadBytes
         let response = try await transport.fetch(
             Self.request(update.asset.browserDownloadURL, api: false), archive,
-            update.asset.size, limits.requestTimeout
+            maximumBytes, limits.requestTimeout
         )
         try Self.validateResponse(response, api: false)
         try Self.quarantine(archive)
@@ -525,6 +658,20 @@ actor AppUpdateService {
     }
 
     private func requireUnchanged(_ update: AppUpdateCheck) async throws {
+        if update.release.htmlFallback == true {
+            guard let encoded = Self.pathSafe(update.release.tagName) else { throw AppUpdateError.staleRelease }
+            guard let page = try? await html("/denizomer10/PearSilicon/releases/tag/\(encoded)"),
+                  Self.firstMatch("/commit/([0-9a-f]{40})", in: page) == update.commit,
+                  let assetsPage = try? await html(
+                    "/denizomer10/PearSilicon/releases/expanded_assets/\(encoded)"
+                  ),
+                  let asset = Self.htmlAsset(in: assetsPage, tag: update.release.tagName),
+                  asset.sha256 == update.asset.sha256,
+                  asset.browserDownloadURL == update.asset.browserDownloadURL else {
+                throw AppUpdateError.staleRelease
+            }
+            return
+        }
         let release: UpdateRelease = try await api("releases/\(update.release.id)")
         let asset = try Self.selectAsset(in: release, channel: update.channel, limits: limits)
         guard release.id == update.release.id, release.tagName == update.release.tagName,
@@ -543,7 +690,8 @@ actor AppUpdateService {
     }
 
     private func verifyArchiveDigest(_ archive: URL, asset: UpdateAsset) throws {
-        guard try Self.regularFileSize(archive) == asset.size, asset.size <= limits.maximumDownloadBytes else {
+        let actualSize = try Self.regularFileSize(archive)
+        guard asset.size == 0 || actualSize == asset.size, actualSize <= limits.maximumDownloadBytes else {
             throw AppUpdateError.integrity("The downloaded ZIP size does not match GitHub's asset metadata.")
         }
         guard let expected = asset.sha256, try RuntimeRevision.sha256(of: archive) == expected else {
@@ -759,8 +907,15 @@ enum UpdateURLPolicy {
                 throw AppUpdateError.unsafeURL("Only the PearSilicon GitHub API is allowed.")
             }
         } else if host == "github.com" {
-            guard url.path.hasPrefix("/denizomer10/PearSilicon/releases/download/"), parts.query == nil else {
-                throw AppUpdateError.unsafeURL("Only PearSilicon release download URLs are allowed.")
+            // Release downloads plus the public release feed/pages used as a
+            // no-token fallback when api.github.com is rate-limited.
+            let path = url.path
+            let allowed = path.hasPrefix("/denizomer10/PearSilicon/releases/download/")
+                || path == "/denizomer10/PearSilicon/releases.atom"
+                || path.hasPrefix("/denizomer10/PearSilicon/releases/tag/")
+                || path.hasPrefix("/denizomer10/PearSilicon/releases/expanded_assets/")
+            guard allowed, parts.query == nil else {
+                throw AppUpdateError.unsafeURL("Only PearSilicon release download and public release pages are allowed.")
             }
         } else {
             guard !initialAsset,
