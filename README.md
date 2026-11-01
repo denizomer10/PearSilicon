@@ -218,7 +218,7 @@ python3 scripts/runtime-client-smoke.py build/PearSilicon.app/Contents/MacOS/Pea
 `swift test` covers installer atomicity, archive admission, storage migration,
 GUI import routing, portable-library scanning, backup/restore, native Mac launch,
 Wine launch planning and update parsing. Optional graphics and external-disk
-tests are documented in `docs/TESTING.md`.
+tests are documented in [docs/TESTING.md](docs/TESTING.md).
 
 A successful launch is not a gameplay-compatibility result. No controlled
 benchmark establishes a performance advantage over PlayCover.
