@@ -1,8 +1,8 @@
 # PearSilicon — Çalışma Durumu
 
 Son güncelleme: 2026-11-01 10:30 · Dal: `feature/portable-multiplatform`
-Son commit: bu oturumun commit'i (push sonrası `git log -1` ile doğrula)
-Uygulama paketi: `build/PearSilicon.app` (release, ad-hoc imzalı)
+Son commit: `7284687` (origin'a push edildi)
+Uygulama paketi: `build/PearSilicon.app` (release, ad-hoc imzalı, `7284687` gömülü)
 
 Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam edebilir.
 
@@ -163,7 +163,10 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
    seçildiğinde "no stable release" hatası beklenir.
 3. `swift build`, `swift test` (aşağıdaki sonuç) ve `./scripts/build-app.sh release`
    tekrar çalıştırılmalı; app paketi commit sonrası yeniden üretilebilir.
-4. Değişiklikleri commit + push et (`feature/portable-multiplatform`).
+4. ~~Değişiklikleri commit + push et~~ → `7284687` push edildi; uygulama paketi
+   `7284687` ile yeniden derlendi ve ad-hoc imzası doğrulandı.
+5. Kullanıcı `/Applications/PearSilicon.app` (eski, çalışıyor) yerine
+   `build/PearSilicon.app`'i açmalı; çalışan uygulama izinsiz kapatılmadı.
 
 ### Bilinen sınırlar / notlar
 
@@ -207,7 +210,7 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
 | Alan | Durum |
 | --- | --- |
 | `swift build` | temiz |
-| `swift test` | **285 XCTest + 24 Swift Testing, 0 hata, 14 opsiyonel skip** |
+| `swift test` | **285 XCTest + 24 Swift Testing, 0 hata, 14 opsiyonel skip** (son koşu) |
 | Güncelleme kanalları | liste tabanlı seçim testleri ✓ |
 | Community GitHub | URL ayrıştırma + gerçek repo çözümleme testi ✓ |
 | Motor kaldırma | birim testi ✓ |
