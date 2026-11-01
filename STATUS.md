@@ -1,8 +1,8 @@
 # PearSilicon — Çalışma Durumu
 
 Son güncelleme: 2026-11-01 10:30 · Dal: `feature/portable-multiplatform`
-Son commit: `5b92ae6` (origin'a push edildi; `development-beta` etiketi de bu commit'e taşındı)
-Uygulama paketi: `build/PearSilicon.app` **0.4.0 (12)**, `5b92ae6`; `development-beta` sürümüne yüklendi (SHA-256 `bcad1d90…`)
+Son commit: `278fd4a` (origin'a push edildi; `development-beta` etiketi de bu commit'e taşındı)
+Uygulama paketi: `build/PearSilicon.app` **0.4.1 (13)**, `278fd4a`; `development-beta` sürümüne yüklendi (SHA-256 `f5ba6973…`)
 Web sitesi: `pearsilicon-web` `7c9ff49` (Wine/DXVK/denetleyici/kanal güncellemesi)
 
 Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam edebilir.
@@ -33,7 +33,8 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
      sürüklenebilir; Hakkında ve Settings'te sürüm "Development Beta" görünür.
   7. Settings → Wine'daki **WineHQ Stable** seçeneği kaldırıldı (Staging/Development
      kalır).
-  8. Disk temizliği: 31 GB `.build` test çöpü ve yeniden üretilebilir cache'ler
+  8. Güncelleme kontrolü 403 düzeltildi: GitHub API rate limitinde public release feed/HTML'e düşer; tag/commit/digest yine doğrulanır (`0.4.1`).
+  9. Disk temizliği: 31 GB `.build` test çöpü ve yeniden üretilebilir cache'ler
      silindi; sistem veri alanı 14 GB → 37 GB boş. Oyun verisi indirmesi/save'ler
      korundu.
 
@@ -221,8 +222,8 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
 | Alan | Durum |
 | --- | --- |
 | `swift build` | temiz |
-| `swift test` | **287 XCTest + 24 Swift Testing, 0 hata, 14 opsiyonel skip** (son koşu) |
-| Development release | `development-beta` → **0.4.0**, asset `PearSilicon.zip` (2.31 MB), SHA-256 `bcad1d90…` |
+| `swift test` | **289 XCTest + 24 Swift Testing, 0 hata, 15 opsiyonel skip** (son koşu) |
+| Development release | `development-beta` → **0.4.1**, asset `PearSilicon.zip` (2.32 MB), SHA-256 `f5ba6973…` |
 | Web sitesi | güncellendi ve `main`'e push edildi (Cloudflare Pages otomatik dağıtım) |
 | Güncelleme kanalları | liste tabanlı seçim testleri ✓ |
 | Community GitHub | URL ayrıştırma + gerçek repo çözümleme testi ✓ |
