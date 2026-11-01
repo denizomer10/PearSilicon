@@ -75,8 +75,10 @@ repository has no release) with GitHub-hosted digests checked when available.
 ## Updates and runtime refresh
 
 Update checks are explicit user actions against `denizomer10/PearSilicon`.
-Stable reads the release list and accepts only numbered non-prerelease releases;
-Development Beta accepts prereleases and the mutable `development-beta` tag. After
+The GUI offers only the development channel and a single Check for Updates
+button; Development Beta accepts prereleases and the mutable `development-beta`
+tag. If the unauthenticated API is rate-limited, the updater reconstructs the
+tag, commit and digest from GitHub's public release feed and pages. After
 a GitHub SHA-256 and bundle-signature check, the app is staged privately. The
 relaunch helper waits for the exact parent process, validates the staged and
 installed bundles again, clones the staged app beside the destination, swaps them

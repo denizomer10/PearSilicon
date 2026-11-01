@@ -108,9 +108,10 @@ can be newer than the published ZIP.
   from Settings, or downloaded from any trusted GitHub repository: the newest
   release archive is selected automatically and a repository source ZIP is used
   when no release exists.
-- Updates are selected per channel: **Stable** uses the newest numbered,
-  non-prerelease GitHub release; **Development Beta** uses the newest
-  development/prerelease release (including the mutable `development-beta` tag).
+- Updates follow the **development** release channel; the GUI exposes only
+  **Check for Updates**. The updater falls back to GitHub's public release feed
+  when the unauthenticated API is rate-limited, while still verifying the asset
+  digest and the release commit.
 - Keymapper, opt-in per iOS app and off by default: tap, hold, joystick, mouse-look
   and swipe. Mac and Wine entries do not use the iOS keymapper.
 - Per-app Metal HUD and pointer-lock controls for iOS; Metal HUD for managed entries.

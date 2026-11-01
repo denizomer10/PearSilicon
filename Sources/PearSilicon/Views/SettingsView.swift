@@ -359,20 +359,15 @@ struct SettingsView: View {
 
     private var updates: some View {
         Form {
-            Section("Release channel") {
-                Picker("Channel", selection: Binding(
-                    get: { state.updateChannel },
-                    set: { state.updateChannel = $0 }
-                )) {
-                    Text("Development beta").tag(UpdateChannel.developmentBeta)
-                    Text("Stable release").tag(UpdateChannel.stable)
-                }
-                .pickerStyle(.segmented)
+            Section("Updates") {
                 LabeledContent("Current version", value: "Development Beta")
                 Button("Check for Updates") {
-                    Task { await state.checkForUpdates(channel: state.updateChannel) }
+                    Task { await state.checkForUpdates() }
                 }
                 .disabled(state.isBusy)
+                Text("PearSilicon follows the development release channel. A Stable channel is not offered.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if let update = state.availableUpdate {

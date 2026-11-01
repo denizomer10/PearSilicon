@@ -1268,20 +1268,14 @@ final class AppState: ObservableObject {
 
     // MARK: - Updates
 
-    @Published var updateChannel: UpdateChannel = {
-        UpdateChannel(rawValue: AppSettings.defaults.string(forKey: "update.channel") ?? "")
-            ?? .developmentBeta
-    }() {
-        didSet { AppSettings.defaults.set(updateChannel.rawValue, forKey: "update.channel") }
-    }
-
     /// Explicit user action only. Never runs on launch or on a timer.
+    /// Only the development release channel is offered in the GUI; the
+    /// parameter remains for tests and non-GUI callers.
     func checkForUpdates(channel: UpdateChannel? = nil) async {
         guard !isBusy else { return }
         isBusy = true
         defer { finishBusyWork() }
-        let selected = channel ?? updateChannel
-        updateChannel = selected
+        let selected = channel ?? .developmentBeta
         do {
             statusMessage = "Checking GitHub releases…"
             let update = try await updater.checkForUpdates(channel: selected)
