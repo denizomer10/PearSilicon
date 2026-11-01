@@ -19,6 +19,50 @@ final class AppState: ObservableObject {
     @Published var statusMessage: String = L10n.ready
     @Published var isBusy: Bool = false
 
+    /// The platform shown by the top switch.
+    @Published var platform: LibraryPlatform = .iOS
+
+    /// Self-contained macOS and Wine entries.
+    @Published private(set) var managedEntries: [LibraryEntry] = []
+    @Published var selectedManagedEntryID: LibraryEntry.ID?
+    @Published private(set) var wineEngines: [WineEngine] = []
+    @Published private(set) var libraryWarnings: [String] = []
+    @Published private(set) var quarantinedMacEntryIDs: Set<String> = []
+    /// Set after an import when the managed copy still carries a download
+    /// quarantine flag. The window asks once and can clear it or open macOS
+    /// Privacy & Security.
+    @Published private(set) var pendingQuarantineEntry: LibraryEntry?
+
+    /// Off by default. The user can opt in to clearing the quarantine flag on
+    /// every imported Mac app after reading the warning in Settings.
+    @Published var autoApproveImportedMacApps: Bool = AppSettings.defaults.bool(
+        forKey: "macApp.autoApproveQuarantine"
+    ) {
+        didSet {
+            AppSettings.defaults.set(autoApproveImportedMacApps, forKey: "macApp.autoApproveQuarantine")
+        }
+    }
+
+    /// Explicit, user-triggered updater state. No timer or telemetry.
+    @Published private(set) var availableUpdate: AppUpdateCheck?
+    @Published private(set) var stagedUpdate: StagedAppUpdate?
+
+    /// Launchable per-platform items.
+    var platformApps: [InstalledApp] {
+        platform == .iOS ? installedApps : []
+    }
+    var platformEntries: [LibraryEntry] {
+        switch platform {
+        case .iOS: []
+        case .macOS: managedEntries.filter { $0.platform == .macOS }
+        case .wine: managedEntries.filter { $0.platform == .wine }
+        }
+    }
+    var selectedManagedEntry: LibraryEntry? {
+        guard let selectedManagedEntryID else { return nil }
+        return managedEntries.first { $0.id == selectedManagedEntryID }
+    }
+
     /// Keymap of the currently selected app, if any.
     @Published var currentKeymap: Keymap?
 
@@ -56,6 +100,32 @@ final class AppState: ObservableObject {
     var packageInstaller: PackageInstaller
     var launcher: AppLauncher
     var keymapStore: KeymapStore
+    private var packageImports: PackageImportOperations
+    private let observesWorkspace: Bool
+    private var iosApps: IOSAppService
+    private let macApps = MacAppService()
+    private let portableLibrary: PortableLibrary
+    private let wineApps: WineAppService
+    private lazy var updater = AppUpdateService()
+
+    @Published private(set) var wineReleaseCheck: WineReleaseCheck?
+
+    /// Managed launches are tracked by entry directory, never by a caller-supplied
+    /// PID. Detached Wine helpers can outlive the direct child.
+    private var managedRunning: [LibraryEntry.ID: ManagedAppProcess] = [:]
+
+    /// Package imports run one at a time, in submission order. A plain `isBusy`
+    /// flag is not enough: `install` suspends at its first await, so a second
+    /// drop can start while the first is still running and later clear the flag
+    /// for both of them.
+    private struct PendingPackageImport {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private var importQueue: [PendingPackageImport] = []
+    private var importRunnerActive = false
+    private var cancelledImportRequests: Set<UUID> = []
 
     /// Keymapper overlays for running games, keyed by bundle id. PearSilicon owns
     /// these windows; no UI code is added to the game.
@@ -74,30 +144,44 @@ final class AppState: ObservableObject {
 
     // MARK: - Lifecycle
 
-    init() {
-        AppPaths.migrateLegacySupportDirectoryIfNeeded()
-        let base = AppPaths.supportRoot
-        let library = base.appendingPathComponent("Applications", isDirectory: true)
+    init(
+        storageRootURL explicitRoot: URL? = nil,
+        packageImports: PackageImportOperations? = nil,
+        observesWorkspace: Bool = true
+    ) {
+        if explicitRoot == nil { AppPaths.migrateLegacySupportDirectoryIfNeeded() }
+        let base = explicitRoot ?? AppPaths.supportRoot
+        let library = base.appendingPathComponent(PortableLibrary.iOSFolder, isDirectory: true)
         let keymaps = base.appendingPathComponent("Keymaps", isDirectory: true)
 
         self.libraryURL = library
         self.storageRootURL = base
-        self.previousStorageRootURL = StorageLocationStore.shared.previousRootURL
-        self.packageInstaller = PackageInstaller(libraryURL: library)
+        self.portableLibrary = PortableLibrary(rootURL: base)
+        let engines = WineEngineStore(rootURL: base.appendingPathComponent("Engines", isDirectory: true))
+        self.wineApps = WineAppService(engines: engines)
+        self.previousStorageRootURL = explicitRoot == nil ? StorageLocationStore.shared.previousRootURL : nil
+        let installer = PackageInstaller(libraryURL: library)
+        self.packageInstaller = installer
+        self.packageImports = packageImports ?? .live(installer: installer)
+        self.observesWorkspace = observesWorkspace
         self.launcher = AppLauncher(libraryURL: library)
+        self.iosApps = IOSAppService(launcher: self.launcher, installer: installer)
         self.keymapStore = KeymapStore(baseURL: keymaps)
 
-        observeWorkspace()
+        if observesWorkspace { observeWorkspace() }
     }
 
-    /// Rebuilds the path-bound services after storage moved.
+    /// Rebuilds the path-bound services after storage moved or another library
+    /// was attached.
     private func reloadStorage() {
         let base = AppPaths.supportRoot
         storageRootURL = base
         previousStorageRootURL = StorageLocationStore.shared.previousRootURL
-        libraryURL = base.appendingPathComponent("Applications", isDirectory: true)
+        libraryURL = base.appendingPathComponent(PortableLibrary.iOSFolder, isDirectory: true)
         packageInstaller = PackageInstaller(libraryURL: libraryURL)
+        packageImports = .live(installer: packageInstaller)
         launcher = AppLauncher(libraryURL: libraryURL)
+        iosApps = IOSAppService(launcher: launcher, installer: packageInstaller)
         keymapStore = KeymapStore(baseURL: base.appendingPathComponent("Keymaps", isDirectory: true))
         currentKeymap = selectedApp.flatMap { try? keymapStore.load(for: $0.id) }
     }
@@ -128,6 +212,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshRunningApps() {
+        guard observesWorkspace else { return }
         let ids = Set(installedApps.map(\.id))
         var map: [String: NSRunningApplication] = [:]
         for running in NSWorkspace.shared.runningApplications {
@@ -150,6 +235,8 @@ final class AppState: ObservableObject {
             stoppingApps.subtract(finished)
             if statusMessage.hasPrefix("Stopping ") { statusMessage = L10n.ready }
         }
+
+        managedRunning = managedRunning.filter { $0.value.isRunning }
     }
 
     func isRunning(_ app: InstalledApp) -> Bool {
@@ -189,14 +276,22 @@ final class AppState: ObservableObject {
         installedApps.filter { isRunning($0) }
     }
 
+    var runningManagedEntries: [LibraryEntry] {
+        managedEntries.filter { isRunning($0) }
+    }
+
+    var runningGameNames: [String] {
+        runningGames.map(\.displayName) + runningManagedEntries.map(\.displayName)
+    }
+
     /// Stops every running game (used when quitting the app).
     func stopAllRunningGames() {
         for app in runningGames { stop(app) }
+        for entry in runningManagedEntries { stop(entry) }
     }
 
     func bootstrap() async {
         do {
-            try FileManager.default.createDirectory(at: libraryURL, withIntermediateDirectories: true)
             try await refreshLibrary()
         } catch {
             statusMessage = L10n.error("Could not initialize library: \(error.localizedDescription)")
@@ -204,12 +299,25 @@ final class AppState: ObservableObject {
     }
 
     func refreshLibrary() async throws {
-        let apps = try packageInstaller.scanLibrary()
-        self.installedApps = apps.sorted {
-            $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
-        }
+        let snapshot = portableLibrary.scan()
+        self.installedApps = snapshot.iosApps
+        self.managedEntries = snapshot.macEntries + snapshot.wineEntries
+        self.libraryWarnings = snapshot.warnings
+        self.quarantinedMacEntryIDs = Set(managedEntries.filter {
+            $0.platform == .macOS && Quarantine.isQuarantined($0.payloadURL)
+        }.map(\.id))
         loadKeymapperSettings()
+        reloadEngines()
         refreshRunningApps()
+    }
+
+    func reloadEngines() {
+        do {
+            wineEngines = try wineApps.engines.engines()
+        } catch {
+            wineEngines = []
+            libraryWarnings.append("Wine engines: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Keymapper toggle (default OFF)
@@ -286,7 +394,380 @@ final class AppState: ObservableObject {
 
     func select(_ app: InstalledApp?) {
         selection = app?.id
+        selectedManagedEntryID = nil
         currentKeymap = app.flatMap { try? keymapStore.load(for: $0.id) }
+    }
+
+    func select(_ entry: LibraryEntry?) {
+        selectedManagedEntryID = entry?.id
+        selection = nil
+        currentKeymap = nil
+    }
+
+    // MARK: - Managed Mac / Wine apps
+
+    func isRunning(_ entry: LibraryEntry) -> Bool {
+        managedRunning[entry.id]?.isRunning == true
+    }
+
+    func launch(_ entry: LibraryEntry) async {
+        guard !isBusy else { return }
+        guard !isRunning(entry) else {
+            statusMessage = L10n.error("\(entry.displayName) is already running")
+            return
+        }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            var target = entry
+            let engine: WineEngine?
+            switch entry.platform {
+            case .wine:
+                let resolved = try resolveWineEngine(for: entry)
+                target = resolved.entry
+                engine = resolved.engine
+            case .macOS:
+                engine = nil
+            case .iOS:
+                throw PearError.launchFailed("Use the iOS launcher for this entry")
+            }
+            statusMessage = "Launching \(target.displayName)…"
+            let process: ManagedAppProcess
+            if target.platform == .macOS {
+                process = try await macApps.launch(
+                    target, metalHUDEnabled: target.manifest.metalHUDEnabled
+                )
+            } else {
+                guard let engine else {
+                    throw PearError.launchFailed("Select the Wine engine recorded in this game's manifest")
+                }
+                process = try await wineApps.launch(
+                    target, engine: engine, metalHUDEnabled: target.manifest.metalHUDEnabled
+                )
+            }
+            managedRunning[target.id] = process
+            platform = target.platform
+            selectedManagedEntryID = target.id
+            statusMessage = L10n.launching(target.displayName)
+        } catch {
+            statusMessage = L10n.error("Launch failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Repairs a stale manifest before launch. A single installed engine is
+    /// linked automatically; with several engines the user must choose one, so
+    /// the launcher never guesses silently across versions.
+    private func resolveWineEngine(for entry: LibraryEntry) throws -> (entry: LibraryEntry, engine: WineEngine) {
+        if let id = entry.manifest.wineEngineID, let found = try wineApps.engines.engine(id: id) {
+            return (entry, found)
+        }
+        let installed = try wineApps.engines.engines()
+        guard !installed.isEmpty else {
+            throw PearError.launchFailed(
+                "No Wine engine is installed. Open Settings → Wine and download an open-source build first."
+            )
+        }
+        guard installed.count == 1 else {
+            throw PearError.launchFailed(
+                "\(entry.displayName) has no matching Wine engine. Choose one in the game's detail pane."
+            )
+        }
+        let engine = installed[0]
+        updateManifest(entry) { $0.wineEngineID = engine.id }
+        reloadEngines()
+        let refreshed = managedEntries.first { $0.directoryURL == entry.directoryURL } ?? entry
+        statusMessage = "Linked \(entry.displayName) to \(engine.name) \(engine.version)"
+        return (refreshed, engine)
+    }
+
+    func stop(_ entry: LibraryEntry) {
+        guard let process = managedRunning[entry.id] else { return }
+        process.stop()
+        managedRunning[entry.id] = nil
+        statusMessage = "Stopping \(entry.displayName)…"
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.statusMessage = L10n.ready
+        }
+    }
+
+    func uninstall(_ entry: LibraryEntry) {
+        guard !isBusy else { return }
+        guard !isRunning(entry) else {
+            statusMessage = L10n.error("Stop \(entry.displayName) before removing it")
+            return
+        }
+        do {
+            try FileManager.default.removeItem(at: entry.directoryURL)
+            managedEntries.removeAll { $0.id == entry.id }
+            if selectedManagedEntryID == entry.id { selectedManagedEntryID = nil }
+            statusMessage = "Removed \(entry.displayName)"
+        } catch {
+            statusMessage = L10n.error("Uninstall failed: \(error.localizedDescription)")
+        }
+    }
+
+    func setMetalHUDEnabled(_ enabled: Bool, for entry: LibraryEntry) {
+        updateManifest(entry) { $0.metalHUDEnabled = enabled }
+    }
+
+    func setWineEngine(_ engineID: String, for entry: LibraryEntry) {
+        guard wineEngines.contains(where: { $0.id == engineID }) else {
+            statusMessage = L10n.error("That Wine engine is not installed")
+            return
+        }
+        updateManifest(entry) { $0.wineEngineID = engineID }
+        statusMessage = "Wine engine set to \(engineID)"
+    }
+
+    /// Executables already inside this entry's Payload/Program folder. Used to
+    /// repair an entry without re-importing (and re-downloading) the game.
+    func wineExecutables(for entry: LibraryEntry) -> [WineExecutableCandidate] {
+        guard entry.platform == .wine else { return [] }
+        let program = entry.directoryURL.appendingPathComponent("Payload/Program", isDirectory: true)
+        return WineExecutableDiscovery.candidates(in: program)
+    }
+
+    /// Finds an already-imported Wine entry by its library id (the folder name).
+    func wineEntry(withID id: String) -> LibraryEntry? {
+        managedEntries.first { $0.platform == .wine && $0.manifest.id == id }
+    }
+
+    /// Points an existing Wine entry at a different program inside its imported
+    /// folder. The path is always relative to Payload/Program and is validated as
+    /// a real PE file before the manifest is written.
+    func setWineExecutable(_ relativePath: String, for entry: LibraryEntry) {
+        guard entry.platform == .wine else { return }
+        do {
+            try LibraryPath.validateRelative(relativePath)
+            let program = entry.directoryURL.appendingPathComponent("Payload/Program", isDirectory: true)
+            let candidate = program.appendingPathComponent(relativePath).standardizedFileURL
+            guard LibraryPath.isInside(candidate, root: program) else {
+                throw PearError.invalidPackage("The executable must be inside this game's Payload/Program folder")
+            }
+            try ManagedExecutable.validatePE(candidate)
+            updateManifest(entry) { $0.payloadPath = "Payload/Program/\(relativePath)" }
+            statusMessage = "Executable set to \(relativePath)"
+        } catch {
+            statusMessage = L10n.error("Could not change executable: \(error.localizedDescription)")
+        }
+    }
+
+    func setGraphicsBackend(_ backend: LibraryManifest.GraphicsBackend, for entry: LibraryEntry) {
+        updateManifest(entry) { $0.graphicsBackend = backend }
+    }
+
+    func graphicsBackend(for entry: LibraryEntry) -> LibraryManifest.GraphicsBackend {
+        entry.manifest.graphicsBackend ?? .moltenVK
+    }
+
+    func isGraphicsComponentInstalled(
+        _ backend: LibraryManifest.GraphicsBackend, for entry: LibraryEntry
+    ) -> Bool {
+        guard let engine = engine(id: entry.manifest.wineEngineID) else { return false }
+        switch backend {
+        case .moltenVK:
+            return GraphicsComponentService.isDXVKInstalled(in: engine.rootURL)
+        case .dxmt:
+            return FileManager.default.fileExists(
+                atPath: engine.rootURL.appendingPathComponent("Graphics/DXMT/x86_64-windows/d3d11.dll").path
+            )
+        }
+    }
+
+    func isQuarantined(_ entry: LibraryEntry) -> Bool {
+        quarantinedMacEntryIDs.contains(entry.id)
+    }
+
+    /// Explicit user decision for this managed copy only. This does not change
+    /// the original download and does not claim the app is notarized.
+    func allowQuarantinedApp(_ entry: LibraryEntry) {
+        guard entry.platform == .macOS, !isBusy, !isRunning(entry) else { return }
+        do {
+            try Quarantine.remove(from: entry.payloadURL)
+            quarantinedMacEntryIDs.remove(entry.id)
+            if pendingQuarantineEntry?.id == entry.id { pendingQuarantineEntry = nil }
+            statusMessage = "Gatekeeper quarantine removed for \(entry.displayName) (this managed copy only)"
+        } catch {
+            statusMessage = L10n.error("Could not clear quarantine: \(error.localizedDescription)")
+        }
+    }
+
+    func allowAndLaunch(_ entry: LibraryEntry) async {
+        allowQuarantinedApp(entry)
+        guard !isQuarantined(entry) else { return }
+        await launch(entry)
+    }
+
+    func clearPendingQuarantine() {
+        pendingQuarantineEntry = nil
+    }
+
+    /// Opens the exact Privacy & Security pane. It deliberately does not script
+    /// clicks or enter credentials; the user remains in control of Gatekeeper.
+    func openPrivacySecuritySettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
+            "x-apple.systempreferences:com.apple.preference.security?General",
+            "x-apple.systempreferences:com.apple.preference.security",
+        ]
+        for candidate in candidates {
+            if let url = URL(string: candidate), NSWorkspace.shared.open(url) { return }
+        }
+        statusMessage = L10n.error("Could not open Privacy & Security settings")
+    }
+
+    private func updateManifest(_ entry: LibraryEntry, change: (inout LibraryManifest) -> Void) {
+        do {
+            var manifest = entry.manifest
+            change(&manifest)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(manifest).write(to: entry.manifestURL, options: .atomic)
+            if let index = managedEntries.firstIndex(where: { $0.id == entry.id }) {
+                managedEntries[index] = LibraryEntry(manifest: manifest, directoryURL: entry.directoryURL)
+            }
+        } catch {
+            statusMessage = L10n.error("Could not update \(entry.displayName): \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Backup / restore
+
+    func backup(_ entry: LibraryEntry, to destination: URL) async {
+        guard !isBusy else { return }
+        guard !isRunning(entry) else {
+            statusMessage = L10n.error("Stop \(entry.displayName) before backing it up")
+            return
+        }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            statusMessage = "Backing up \(entry.displayName)…"
+            let output = try await LibraryBackupService().backup(entry: entry, to: destination)
+            statusMessage = "Backup saved: \(output.lastPathComponent). \(LibraryBackupService.privacyWarning)"
+        } catch {
+            statusMessage = L10n.error("Backup failed: \(error.localizedDescription)")
+        }
+    }
+
+    func backup(_ app: InstalledApp, to destination: URL) async {
+        guard !isBusy else { return }
+        guard !isRunning(app) else {
+            statusMessage = L10n.error("Stop \(app.displayName) before backing it up")
+            return
+        }
+        isBusy = true
+        defer { finishBusyWork() }
+        let workRoot = storageRootURL.appendingPathComponent("Work/Backups", isDirectory: true)
+        var snapshot: URL?
+        defer { if let snapshot { try? FileManager.default.removeItem(at: snapshot) } }
+        do {
+            statusMessage = "Preparing backup for \(app.displayName)…"
+            try FileManager.default.createDirectory(at: workRoot, withIntermediateDirectories: true)
+            let directory = try portableLibrary.makeIOSSnapshot(for: app, in: workRoot)
+            snapshot = directory
+            let manifest = try JSONDecoder().decode(
+                LibraryManifest.self,
+                from: Data(contentsOf: directory.appendingPathComponent(LibraryManifest.filename))
+            )
+            let entry = LibraryEntry(manifest: manifest, directoryURL: directory)
+            let identifier = app.id
+            let service = LibraryBackupService(requireStopped: { _ in
+                let running = await MainActor.run {
+                    NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+                        .contains { !$0.isTerminated }
+                }
+                if running { throw PearError.commandFailed(tool: "backup", status: 1, output: "\(identifier) is still running") }
+            })
+            let output = try await service.backup(entry: entry, to: destination)
+            statusMessage = "Backup saved: \(output.lastPathComponent). \(LibraryBackupService.privacyWarning)"
+        } catch {
+            statusMessage = L10n.error("Backup failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Restores into a private staging library first, then activates the entry.
+    /// An existing app is moved to Work/RestoreRollback rather than overwritten.
+    func restoreBackup(from archive: URL, replacing: Bool) async {
+        guard !isBusy else { return }
+        guard runningGames.isEmpty, runningManagedEntries.isEmpty else {
+            statusMessage = L10n.error("Stop every running app before restoring a backup")
+            return
+        }
+        isBusy = true
+        defer { finishBusyWork() }
+        let work = storageRootURL.appendingPathComponent("Work/Restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+        do {
+            statusMessage = "Restoring \(archive.lastPathComponent)…"
+            try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+            let tempRoot = work.appendingPathComponent("Library", isDirectory: true)
+            try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+            // The temporary root is not the live app, so a path-based running
+            // guard cannot see the real process; all games were stopped above.
+            let service = LibraryBackupService(requireStopped: { _ in })
+            let restored = try await service.restore(from: archive, to: tempRoot)
+
+            if restored.platform == .iOS {
+                let app = try portableLibrary.installRestoredIOSEntry(
+                    restored, replacing: replacing,
+                    rollbackRoot: storageRootURL.appendingPathComponent("Work/RestoreRollback", isDirectory: true)
+                )
+                statusMessage = "Restored \(app.displayName)"
+            } else {
+                let destination = storageRootURL
+                    .appendingPathComponent(restored.platform.rawValue, isDirectory: true)
+                    .appendingPathComponent(restored.manifest.id, isDirectory: true)
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    guard replacing else {
+                        throw PearError.invalidPackage("\(restored.displayName) is already installed; enable replace to overwrite it")
+                    }
+                    let rollback = storageRootURL.appendingPathComponent("Work/RestoreRollback", isDirectory: true)
+                    try FileManager.default.createDirectory(at: rollback, withIntermediateDirectories: true)
+                    try FileManager.default.moveItem(
+                        at: destination,
+                        to: rollback.appendingPathComponent("\(restored.manifest.id)-\(UUID().uuidString)")
+                    )
+                }
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                try FileManager.default.moveItem(at: restored.directoryURL, to: destination)
+                statusMessage = "Restored \(restored.displayName)"
+            }
+            try await refreshLibrary()
+        } catch {
+            statusMessage = L10n.error("Restore failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Library selection
+
+    /// Attaches an existing PearSilicon library (for example on an external
+    /// disk) without copying it. The folder is read-only until it is validated
+    /// as one of our roots.
+    func useExistingLibrary(at folder: URL) async {
+        guard !isBusy else { return }
+        guard runningGames.isEmpty, runningManagedEntries.isEmpty else {
+            statusMessage = L10n.error("Stop every running app before switching libraries")
+            return
+        }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        let candidate = StorageLocationStore.destinationRoot(in: folder)
+        guard StorageLocationStore.hasMarker(at: candidate) else {
+            statusMessage = L10n.error("\(candidate.path) is not a PearSilicon library")
+            return
+        }
+        do {
+            try StorageLocationStore.shared.commit(rootURL: candidate, previousRootURL: nil)
+            reloadStorage()
+            try await refreshLibrary()
+            statusMessage = "Using library at \(candidate.path)"
+        } catch {
+            statusMessage = L10n.error("Could not use that library: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Storage
@@ -297,7 +778,7 @@ final class AppState: ObservableObject {
     func changeStorageLocation(to folderURL: URL) async {
         guard !isBusy else { return }
         isBusy = true
-        defer { isBusy = false }
+        defer { finishBusyWork() }
         do {
             let result = try await StorageMigration().move(to: folderURL) { message in
                 Task { @MainActor in self.statusMessage = message }
@@ -313,7 +794,7 @@ final class AppState: ObservableObject {
     func removePreviousStorageCopy() async {
         guard !isBusy else { return }
         isBusy = true
-        defer { isBusy = false }
+        defer { finishBusyWork() }
         do {
             try await StorageMigration().removePreviousCopy()
             previousStorageRootURL = StorageLocationStore.shared.previousRootURL
@@ -323,16 +804,95 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// After the app itself was updated, push the new runtime into every
+    /// installed iOS app whose fingerprint differs. Only changed components are
+    /// copied; each bundle is prepared and signed in a staged copy first.
+    func refreshInstalledRuntimes() async {
+        guard !isBusy else { return }
+        guard runningGames.isEmpty, runningManagedEntries.isEmpty else {
+            statusMessage = L10n.error("Stop every running app before refreshing runtimes")
+            return
+        }
+        guard let source = AppLauncher.runtimeLibraryURL()?.deletingLastPathComponent() else {
+            statusMessage = L10n.error("No runtime was found next to PearSilicon")
+            return
+        }
+        isBusy = true
+        defer { finishBusyWork() }
+        var changed = 0
+        var skipped = 0
+        var failures: [String] = []
+        for app in installedApps {
+            await Task.yield()
+            statusMessage = "Checking runtime: \(app.displayName)…"
+            do {
+                if try packageInstaller.refreshRuntimeIfNeeded(
+                    for: app, sourceRuntimeDirectory: source
+                ) {
+                    changed += 1
+                } else {
+                    skipped += 1
+                }
+            } catch {
+                failures.append("\(app.displayName): \(error.localizedDescription)")
+            }
+        }
+        if failures.isEmpty {
+            statusMessage = "Runtime refresh complete: \(changed) updated, \(skipped) already current"
+        } else {
+            statusMessage = L10n.error(
+                "Runtime refresh: \(changed) updated, \(skipped) current, \(failures.count) failed. "
+                + failures.prefix(2).joined(separator: " | ")
+            )
+        }
+    }
+
     // MARK: - Install
 
     func install(packageURLs: [URL]) async {
-        isBusy = true
-        defer { isBusy = false }
+        guard !packageURLs.isEmpty else { return }
+        guard await acquireImportSlot() else { return }
+        defer { releaseImportSlot() }
 
         for url in packageURLs {
+            // Cancellation applies to this request only, and stops the remaining
+            // packages in its batch. It never cancels the active predecessor.
+            if Task.isCancelled { break }
             do {
                 statusMessage = L10n.installing(url.lastPathComponent)
-                let app = try await packageInstaller.install(packageAt: url)
+
+                // A native macOS .app dropped on either tab is routed to the
+                // copy-only Mac library. Nonexistent test fixtures keep the
+                // historical iOS-bundle path.
+                if url.pathExtension.lowercased() == "app",
+                   FileManager.default.fileExists(atPath: url.path),
+                   ((try? PortableLibrary.classify(url)) == .macOS
+                    || FileManager.default.fileExists(
+                        atPath: url.appendingPathComponent("Contents/Info.plist").path
+                    )) {
+                    let entry = try await importMacApp(entry: url)
+                    if Quarantine.isQuarantined(entry.payloadURL) {
+                        quarantinedMacEntryIDs.insert(entry.id)
+                        if autoApproveImportedMacApps {
+                            do {
+                                try Quarantine.remove(from: entry.payloadURL)
+                                quarantinedMacEntryIDs.remove(entry.id)
+                                statusMessage = "Installed and allowed Mac app: \(entry.displayName)"
+                            } catch {
+                                pendingQuarantineEntry = entry
+                                statusMessage = L10n.error("Imported, but quarantine could not be cleared: \(error.localizedDescription)")
+                            }
+                        } else {
+                            pendingQuarantineEntry = entry
+                            statusMessage = "Installed Mac app: \(entry.displayName) — macOS needs one approval before launch"
+                        }
+                    } else {
+                        statusMessage = "Installed Mac app: \(entry.displayName)"
+                    }
+                    continue
+                }
+
+                let app = try await packageImports.install(at: url)
 
                 // Auto-generate a starting keymap if the app has none yet.
                 if try keymapStore.load(for: app.id) == nil {
@@ -348,34 +908,133 @@ final class AppState: ObservableObject {
         try? await refreshLibrary()
     }
 
+    /// Runs the copy-only Mac importer off the main thread; a large bundle copy
+    /// must not freeze the window.
+    private func importMacApp(entry url: URL) async throws -> LibraryEntry {
+        let root = storageRootURL
+        let service = macApps
+        return try await Task.detached(priority: .userInitiated) {
+            try service.importApp(from: url, libraryRoot: root)
+        }.value
+    }
+
+    func importWindowsFolder(at url: URL, executablePath: String, engineID: String) async {
+        guard await acquireImportSlot() else { return }
+        defer { releaseImportSlot() }
+        do {
+            statusMessage = "Importing Windows game: \(url.lastPathComponent)"
+            let root = storageRootURL
+            let service = wineApps
+            let entry = try await Task.detached(priority: .userInitiated) {
+                try service.importFolder(
+                    from: url, executablePath: executablePath, libraryRoot: root,
+                    engineID: engineID, displayName: nil
+                )
+            }.value
+            try await refreshLibrary()
+            platform = .wine
+            selectedManagedEntryID = entry.id
+            statusMessage = "Installed Windows game: \(entry.displayName)"
+        } catch {
+            statusMessage = L10n.error("\(url.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
+
+    func importWindowsExecutable(at url: URL, engineID: String) async {
+        guard await acquireImportSlot() else { return }
+        defer { releaseImportSlot() }
+        do {
+            statusMessage = "Importing Windows program: \(url.lastPathComponent)"
+            let root = storageRootURL
+            let service = wineApps
+            let entry = try await Task.detached(priority: .userInitiated) {
+                try service.importExecutable(
+                    from: url, libraryRoot: root, engineID: engineID, displayName: nil
+                )
+            }.value
+            try await refreshLibrary()
+            platform = .wine
+            selectedManagedEntryID = entry.id
+            statusMessage = "Installed Windows program: \(entry.displayName) — \(ManagedAppService.windowsExecutableOnlyImportHint)"
+        } catch {
+            statusMessage = L10n.error("\(url.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
+
+    /// Waits for the previous import to finish. Returns false when this request
+    /// was cancelled while queued, so it must not touch the library.
+    private func acquireImportSlot() async -> Bool {
+        // Storage changes use the same busy flag. Never overlap them with an
+        // import; the user can drop the package again once the move finishes.
+        if importRunnerActive || isBusy {
+            let id = UUID()
+            let acquired = await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    if Task.isCancelled || cancelledImportRequests.remove(id) != nil {
+                        continuation.resume(returning: false)
+                    } else {
+                        importQueue.append(PendingPackageImport(id: id, continuation: continuation))
+                    }
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in self?.cancelQueuedImport(id) }
+            }
+            guard acquired else { return false }
+        } else {
+            importRunnerActive = true
+        }
+        isBusy = true
+        return true
+    }
+
+    private func cancelQueuedImport(_ id: UUID) {
+        if let index = importQueue.firstIndex(where: { $0.id == id }) {
+            importQueue.remove(at: index).continuation.resume(returning: false)
+        } else {
+            // The cancellation handler can run before the continuation body
+            // enqueues the request; remember it so it never waits forever.
+            cancelledImportRequests.insert(id)
+        }
+    }
+
+    private func releaseImportSlot() {
+        importRunnerActive = false
+        finishBusyWork()
+    }
+
+    /// Ends one exclusive operation and immediately hands the busy state to the
+    /// next queued import, if any. Used by both imports and storage migrations,
+    /// because an import may arrive while a storage move still owns the flag.
+    private func finishBusyWork() {
+        guard !importRunnerActive else { return }
+        guard !importQueue.isEmpty else {
+            isBusy = false
+            return
+        }
+        // Keep the busy flag set; the resumed request owns it now.
+        importRunnerActive = true
+        importQueue.removeFirst().continuation.resume(returning: true)
+    }
+
     // MARK: - Launch / uninstall
 
     func launch(_ app: InstalledApp) async {
+        // An import or storage move may be replacing files in the library. Do
+        // not read a half-written bundle or race a preparation swap.
+        guard !isBusy else { return }
+
         // Input translation is opted in per game and default OFF. When disabled,
         // no keymap is passed, so the runtime installs no input handlers.
         let enabled = isKeymapperEnabled(for: app)
         let keymapURL = enabled ? keymapStore.fileURL(for: app.id) : nil
-        var extra: [String: String] = [:]
-        if isMetalHUDEnabled(for: app) {
-            extra["MTL_HUD_ENABLED"] = "1"
-        }
-        if isPointerLockAllowed(for: app) {
-            extra["PEAR_ALLOW_POINTER_LOCK"] = "1"
-        }
-        // The iOS-like filesystem view is part of the base environment.
-        extra["PEAR_IOS_SANDBOX"] = "1"
 
-        let nativeContainer = false
         do {
-            let launchLease = try AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
-            defer { launchLease.release() }
-            try AppLauncher.requireStopped(app)
-            let mode: PreparationMode = packageInstaller.currentPreparationMode(for: app) == .compatibilityEnvironment
-                ? .compatibilityEnvironment : .compatibility
-            try packageInstaller.setPreparationMode(mode, for: app, launchLease: launchLease)
-            let running = try await launcher.launch(
-                app, keymapURL: keymapURL, extraEnvironment: extra,
-                nativeContainer: nativeContainer, launchLease: launchLease
+            let running = try await iosApps.launch(
+                app,
+                libraryURL: libraryURL,
+                keymapURL: keymapURL,
+                metalHUDEnabled: isMetalHUDEnabled(for: app),
+                pointerLockAllowed: isPointerLockAllowed(for: app)
             )
             statusMessage = L10n.launching(app.displayName)
             launchingAppID = app.id
@@ -410,10 +1069,11 @@ final class AppState: ObservableObject {
     }
 
     func uninstall(_ app: InstalledApp) {
+        guard !isBusy else { return }
         do {
             overlays[app.id]?.detach()
             overlays[app.id] = nil
-            try packageInstaller.uninstall(app)
+            try iosApps.uninstall(app)
             try? keymapStore.delete(for: app.id)
             installedApps.removeAll { $0.id == app.id }
             if selection == app.id {
@@ -463,5 +1123,221 @@ final class AppState: ObservableObject {
         overlay.attach(pid: running.processIdentifier)
         overlays[app.id] = overlay
         statusMessage = "Keymapper overlay: \(app.displayName)"
+    }
+
+    // MARK: - Wine engines
+
+    func engine(id: String?) -> WineEngine? {
+        guard let id else { return nil }
+        return wineEngines.first { $0.id == id }
+    }
+
+    func registerEngine(
+        from url: URL, id: String, name: String, version: String,
+        executablePath: String, distribution: WineEngine.Distribution,
+        licenseConfirmed: Bool
+    ) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            let store = wineApps.engines
+            let engine = try await Task.detached(priority: .userInitiated) {
+                try store.registerLocalEngine(
+                    from: url, id: id, name: name, version: version,
+                    executablePath: executablePath, distribution: distribution,
+                    licenseConfirmed: licenseConfirmed
+                )
+            }.value
+            reloadEngines()
+            statusMessage = "Registered Wine engine \(engine.name)"
+        } catch {
+            statusMessage = L10n.error("Engine registration failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Explicit removal of a registered engine. Games keep their own prefixes;
+    /// only the engine directory is deleted. Refuse while a game that uses it is
+    /// running so the user's session is never pulled out from under it.
+    func removeWineEngine(_ engine: WineEngine) async {
+        guard !isBusy else { return }
+        guard !managedEntries.contains(where: {
+            $0.manifest.wineEngineID == engine.id && isRunning($0)
+        }) else {
+            statusMessage = L10n.error("Stop this engine's running games before removing it.")
+            return
+        }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            try wineApps.engines.remove(id: engine.id)
+            reloadEngines()
+            statusMessage = "Removed Wine engine \(engine.name) \(engine.version)"
+        } catch {
+            statusMessage = L10n.error("Engine removal failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Resolves a pasted GitHub repository to its newest engine archive and
+    /// downloads it into Engines/Downloads. No hash input is required; GitHub's
+    /// digest is checked when published. A repository with no release yields its
+    /// source ZIP, which is also extracted for inspection. Registration stays an
+    /// explicit, separate action.
+    func downloadCommunityEngine(from input: String, licenseConfirmed: Bool) async {
+        guard !isBusy else { return }
+        guard licenseConfirmed else {
+            statusMessage = L10n.error("Review the engine license before downloading")
+            return
+        }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            statusMessage = "Looking up the newest GitHub release…"
+            let service = CommunityWineService()
+            let archive = try await service.resolve(input: input)
+            statusMessage = "Downloading \(archive.assetName)…"
+            let downloads = wineApps.engines.rootURL.appendingPathComponent("Downloads", isDirectory: true)
+            let result = try await service.download(archive, downloadsRoot: downloads)
+            if let extracted = result.extracted {
+                statusMessage = "Downloaded and extracted \(archive.repository) \(archive.tag) to \(extracted.path). Add the engine with Add Local Engine… if its layout is complete."
+            } else {
+                statusMessage = "Downloaded \(archive.assetName) (\(archive.repository) \(archive.tag)) to \(result.file.path). Extract it and use Add Local Engine… to register the runtime."
+            }
+        } catch {
+            statusMessage = L10n.error("Community engine download failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Explicit check of the open-source WineHQ release feed. No timer or
+    /// automatic background download.
+    func checkWineRelease(channel: WineReleaseChannel) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            statusMessage = "Checking open-source Wine releases…"
+            let check = try await wineApps.releases.latest(channel: channel)
+            wineReleaseCheck = check
+            statusMessage = "Wine \(check.tag) is available (\(check.assetName))"
+        } catch {
+            wineReleaseCheck = nil
+            statusMessage = L10n.error("Wine release check failed: \(error.localizedDescription)")
+        }
+    }
+
+    func installWineRelease() async {
+        guard !isBusy, let check = wineReleaseCheck else { return }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            let engine = try await wineApps.releases.install(check, store: wineApps.engines) { [weak self] message in
+                Task { @MainActor in self?.statusMessage = message }
+            }
+            reloadEngines()
+            statusMessage = "Installed \(engine.name) \(engine.version)"
+        } catch {
+            statusMessage = L10n.error("Wine install failed: \(error.localizedDescription)")
+        }
+    }
+
+    func installGraphicsComponent(
+        _ backend: LibraryManifest.GraphicsBackend, for entry: LibraryEntry
+    ) async {
+        guard !isBusy, let engine = engine(id: entry.manifest.wineEngineID) else { return }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            statusMessage = "Fetching \(backend.title)…"
+            let service = wineApps.graphics
+            switch backend {
+            case .moltenVK:
+                let asset = try await service.latestDXVK()
+                statusMessage = "Installing DXVK \(asset.tag)…"
+                _ = try await service.installDXVK(asset, engineRoot: engine.rootURL)
+                statusMessage = "Installed DXVK \(asset.tag) for \(engine.name)"
+            case .dxmt:
+                let asset = try await service.latestDXMT()
+                statusMessage = "Installing DXMT \(asset.tag)…"
+                _ = try await service.installDXMT(asset, engineRoot: engine.rootURL)
+                statusMessage = "Installed DXMT for \(engine.name)"
+            }
+        } catch {
+            statusMessage = L10n.error("\(backend.title) install failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Updates
+
+    /// Explicit user action only. Never runs on launch or on a timer.
+    /// Only the development release channel is offered in the GUI; the
+    /// parameter remains for tests and non-GUI callers.
+    func checkForUpdates(channel: UpdateChannel? = nil) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { finishBusyWork() }
+        let selected = channel ?? .developmentBeta
+        do {
+            statusMessage = "Checking GitHub releases…"
+            let update = try await updater.checkForUpdates(channel: selected)
+            availableUpdate = update
+            if update.isUpdateAvailable {
+                statusMessage = "Update available: \(update.release.tagName)"
+            } else {
+                statusMessage = "PearSilicon is up to date"
+            }
+        } catch {
+            availableUpdate = nil
+            statusMessage = L10n.error("Update check failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Downloads and verifies the release, but never replaces a running app.
+    /// The staged bundle is revealed for an explicit relaunch/replacement.
+    func stageAvailableUpdate() async {
+        guard !isBusy, let update = availableUpdate, update.isUpdateAvailable else { return }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            statusMessage = "Downloading and verifying update…"
+            let staged = try await updater.stage(update)
+            stagedUpdate = staged
+            statusMessage = "Update verified and staged. Quit PearSilicon before replacing the app."
+            NSWorkspace.shared.activateFileViewerSelecting([staged.bundleURL])
+        } catch {
+            statusMessage = L10n.error("Update download failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Hands the verified staged app to a relaunch helper, then quits. The
+    /// helper waits for this exact process, re-verifies both bundles, swaps
+    /// atomically and keeps the previous app as a rollback copy.
+    func installStagedUpdateAndRelaunch() async {
+        guard let staged = stagedUpdate else { return }
+        guard runningGames.isEmpty, runningManagedEntries.isEmpty else {
+            statusMessage = L10n.error("Stop every running app before installing an update")
+            return
+        }
+        guard let executable = Bundle.main.executableURL else {
+            statusMessage = L10n.error("This build has no executable path for the relaunch helper")
+            return
+        }
+        do {
+            let process = Process()
+            process.executableURL = executable
+            process.arguments = [
+                "apply-update",
+                "--source", staged.bundleURL.path,
+                "--parent-pid", String(getpid()),
+            ]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            statusMessage = "Installing update and relaunching…"
+            try await Task.sleep(for: .milliseconds(600))
+            NSApplication.shared.terminate(nil)
+        } catch {
+            statusMessage = L10n.error("Could not start the update helper: \(error.localizedDescription)")
+        }
     }
 }

@@ -5,8 +5,8 @@
 <h1 align="center">PearSilicon</h1>
 
 <p align="center">
-  <strong>Run compatible iOS apps on Apple silicon Macs.</strong><br>
-  Mac Catalyst-based app preparation, runtime shims and input mapping.
+  <strong>One portable library for iOS apps, Mac apps and Wine games.</strong><br>
+  Mac Catalyst-based iOS preparation, native Mac app launches, private Wine prefixes and single-file backups.
 </p>
 
 <p align="center">
@@ -37,14 +37,23 @@ PearSilicon prepares compatible arm64 iOS applications to run on macOS using
 Apple's Mac Catalyst and `/System/iOSSupport` frameworks. Its in-process runtime
 adds compatibility shims and optional keyboard/mouse mapping on top of that
 Apple-provided environment. It is not a standalone reimplementation of iOS or
-UIKit. Use it only with applications you are authorized to run.
+UIKit. The same app also manages native Mac apps and Windows games through Wine.
+Use it only with applications you are authorized to run.
+
+> **Feature branch status:** the three-platform library, single-file backups,
+external-library support, updater and Wine/Mac app management described here are
+currently in a separate feature branch. They are **not** part of the published
+`development-beta` or stable releases until they have been reviewed and tested
+further. Published artifacts keep their own release notes and tested commit.
 
 | | |
 | :--- | :--- |
-| **Install** | Drop an `.ipa` onto the window; use the CLI for iOS device `.app` bundles |
-| **Input** | Opt-in keymapper, multi-touch synthesis, Metal HUD and pointer-lock controls |
-| **Organise** | Managed app/data folder with experimental storage relocation |
-| **Compatibility** | Runtime shims for keychain, graphics setup, local cloud surfaces, device identity and more |
+| **iOS Apps** | `.ipa` / iOS `.app` preparation, opt-in keymapper, Metal HUD, pointer lock |
+| **Mac Apps** | Copy-only `.app` import, private data directory, direct native launch |
+| **Wine Games** | Per-game prefix, private data, automatic open-source WineHQ engines |
+| **Library** | `ios-apps`, `mac-apps`, `wine-apps`; attach or move a whole library to an external disk |
+| **Backups** | One `.pearbackup` file per app or game, including saves, keychain data, ODR and prefixes |
+| **Updates** | Explicit GitHub release check, verified staging and atomic relaunch helper |
 
 ## Release channels
 
@@ -58,21 +67,60 @@ a prerelease updated in place. Its notes identify the artifact's last tested
 commit and the exact scope of those checks. This is not a stable-release promise
 or a verified catalog of playable games.
 
-IPA drop handling, host/environment injection and storage relocation are
-current development features. Consult the beta's artifact notes: source changes
+IPA/`.app` package drop handling, host/environment injection and storage
+relocation are current development features. Consult the beta's artifact notes: source changes
 can be newer than the published ZIP.
 
 ## Features
 
-- Install IPA archives in the GUI or CLI; install iOS device `.app` directories
-  through the CLI.
-- Keymapper, opt-in per app and off by default: tap, hold, joystick, mouse-look
-  and swipe.
-- Multi-touch event synthesis through the platform's touch machinery.
-- Per-app Metal HUD and pointer-lock controls.
+- Three library tabs with a Liquid Glass switch: **iOS Apps**, **Mac Apps** and **Wine Games**.
+- Install IPA archives and iOS device `.app` bundles through the GUI or CLI.
+- Native Mac `.app` import without patching or re-signing. Apps launch **directly
+  and natively** from the managed copy with HOME, CFFIXED_USER_HOME and TMPDIR
+  redirected into the entry's `Data` folder. There is no VM or emulation layer;
+  absolute host paths remain reachable by the app.
+- Windows games run in per-game Wine prefixes with isolated data. Host root
+  mappings (`z:`) and absolute drive links are removed; a per-game `g:` drive
+  exposes only that game's `Payload/Program` so Windows runners can resolve their
+  data files. Wine runs as a direct native process (no VM or nested sandbox) with
+  HOME/TMPDIR redirected into the game entry.
+- Game controllers work through a runtime compatibility bridge: macOS
+  GameController devices (Xbox, DualSense/DualShock, Switch Pro and other HID
+  pads) are discovered early, controllers that a game's vendor whitelist does not
+  recognize are reported as an Xbox controller, and a late-installed observer
+  receives a replayed connection. Prepared bundles also receive the Game
+  Controllers capability keys (`GCSupportsControllerUserInteraction` and
+  `GCSupportedGameControllers`) when the app did not declare them.
+  `PEAR_CONTROLLER_NATIVE=1` opts out per launch. When a keymap exists and the
+  game does not install its own pad handler, the runtime also maps the pad to
+  the keymapper, so touch-only games remain playable. The Keymap editor has a
+  Keyboard/Controller switch: controller bindings can be captured by pressing
+  A/B/X/Y, shoulders, triggers, D-pad, MENU/OPTIONS and L/R stick, or chosen
+  from a menu. L STICK drives a joystick binding and R STICK drives an analog
+  camera binding (60 Hz, deadzone and sensitivity); unbound controllers keep the
+  legacy A/B/X/Y to space/escape/e/f fallback. `PEAR_CONTROLLER_KEYMAP=0`
+  disables the fallback.
+- Graphics API is selectable per game: **MoltenVK + DXVK** (D3D11 → Vulkan →
+  Metal) and **DXMT** (D3D10/11 → Metal, requires a Wine build that exports
+  winemac's Metal view API). Both optional components are downloaded from GitHub;
+  DXVK and DXMT assets are pinned and SHA-256-verified.
+- Wine engines can be installed from the Staging/Development feeds, removed again
+  from Settings, or downloaded from any trusted GitHub repository: the newest
+  release archive is selected automatically and a repository source ZIP is used
+  when no release exists.
+- Updates follow the **development** release channel; the GUI exposes only
+  **Check for Updates**. The updater falls back to GitHub's public release feed
+  when the unauthenticated API is rate-limited, while still verifying the asset
+  digest and the release commit.
+- Keymapper, opt-in per iOS app and off by default: tap, hold, joystick, mouse-look
+  and swipe. Mac and Wine entries do not use the iOS keymapper.
+- Per-app Metal HUD and pointer-lock controls for iOS; Metal HUD for managed entries.
 - Mandatory repeat-rate protection in the keymapper.
 - Local compatibility shims for keychain, screen, Metal, OpenGL, cloud, device,
   paths, on-demand resources, consent and networking.
+- Single-file `.pearbackup` backups for every platform. Backups are uncompressed,
+  integrity-checked and **not encrypted**; they can contain credentials.
+- Verified update staging with an atomic relaunch helper and rollback copy.
 - MIT-licensed.
 
 ## Requirements
@@ -93,15 +141,57 @@ notarized, so downloaded copies may require explicit Gatekeeper approval.
 `pearsilicon doctor` reports build-tool availability, runtime location and
 library status; it does not certify game compatibility.
 
+## Gatekeeper, signing and notarization
+
+An ad-hoc build is not a malware verdict, but macOS cannot verify its publisher.
+This project does **not** silently bypass that protection.
+
+- **Local builds:** `scripts/build-app.sh` removes stale quarantine flags from
+  the build output. A locally built app normally opens without a download prompt.
+- **Downloaded PearSilicon:** approve it once in **System Settings → Privacy &
+  Security → Open Anyway**, or right-click the app and choose **Open**. For a
+  local test copy only, `xattr -dr com.apple.quarantine /Applications/PearSilicon.app`
+  removes the flag.
+- **Imported Mac apps:** if the original download is quarantined, the managed
+  copy keeps that flag. PearSilicon asks once after import: **Allow This App**
+  clears the flag on that copy, **Open Privacy & Security** shows the system
+  pane, and **Later** leaves it untouched. The same copy is not asked again after
+  an in-app approval. You may opt in to automatic approval in **Settings →
+  Downloaded Mac apps**, with the same warning; it is off by default and does not
+  notarize the app.
+- **No-warning distribution:** requires an Apple Developer Program membership, a
+  **Developer ID Application** certificate, hardened-runtime signing and Apple
+  notarization. Prepare credentials once with `xcrun notarytool store-credentials`,
+  then run:
+
+  ```sh
+  PEAR_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" \
+  PEAR_NOTARY_PROFILE="pearsilicon-notary" \
+  ./scripts/notarize.sh build/PearSilicon.app
+  ```
+
+  The script signs nested dylibs/frameworks, submits with `notarytool --wait`,
+  staples the ticket and runs a Gatekeeper assessment. It cannot create a
+  certificate or enroll an account for you. Notarization covers PearSilicon; we
+  cannot notarize a third-party app such as FH2 Port on its publisher's behalf.
+
 ## Install and run
 
 1. Download the [development beta](https://github.com/denizomer10/PearSilicon/releases/tag/development-beta),
    or build the app yourself. The beta is updated in place; its
    notes identify the last tested commit and the scope of those checks.
 2. Unzip the download, move `PearSilicon.app` to `/Applications` and open it.
-3. Use the **Install** button to select a prepared `.ipa`, wait for installation,
-   and launch it. Development builds also accept IPA drops onto the window.
-   Use `pearsilicon install <path-to-app>` for an iOS device `.app` directory.
+3. Use the top switch to choose a platform. Click **+** or drop a package:
+   - **iOS Apps:** `.ipa` or iOS device `.app`
+   - **Mac Apps:** native macOS `.app`
+   - **Wine Games:** a program folder or `.exe`, after registering a Wine engine
+     in **Settings → Wine**. Installers and redistributables are hidden from the
+     executable chooser, and the likely game program is preselected. If the
+     chosen folder is an empty original download and the game is already in the
+     library, PearSilicon selects the existing entry instead of asking again.
+4. Select an item to launch, stop, back up, reveal its data, or remove it.
+5. Use **Backup** to write one `.pearbackup` file and **Restore** (or **Restore and
+   Replace Existing**) to bring it back.
 
 The same installer and launcher are available from a terminal:
 
@@ -130,6 +220,46 @@ For read-only checks use `pearsilicon validate <App.app|Mach-O>`; see
 Genshin/Telemetry SIGILL investigation. Previously prepared copies whose
 `cryptid` was cleared need a fresh verified input; they cannot be repaired by
 merely updating the launcher.
+
+## Validation
+
+PearSilicon is tested in layers rather than by a single "game works" claim:
+
+```sh
+swift test
+python3 scripts/filesystem-smoke.py
+python3 scripts/keychain-smoke.py --active-interpose
+python3 scripts/runtime-client-smoke.py <path-to-PearSilicon-executable>
+python3 scripts/e2e-games.py --cli <path-to-PearSilicon-executable> --stress
+```
+
+`swift test` covers installer atomicity, archive admission, stopped-app leases,
+storage migration, GUI import routing/FIFO/cancellation, portable library
+scanning, backup/restore round trips, native Mac launches, the fake-Wine
+prefix/launch path and update parsing. The runtime suites use temporary data and
+exercise permissions, keychain generation, IPC deadlines and cloud-identity
+compatibility. External-volume migration has an opt-in real-disk test:
+
+```sh
+PEAR_EXTERNAL_TEST_DIR=/Volumes/YourDisk swift test --filter ExternalDiskStorageTests
+```
+
+The background app check launches only apps it started, skips already-running
+apps, and verifies process liveness, clean shutdown, duplicate-launch rejection
+and the absence of runtime signal/exception markers. It does not verify gameplay,
+input coordinates, downloads or account flows. See
+[Testing and validation](docs/TESTING.md) for the exact scope and manual checklist.
+
+The DXVK path has opt-in real-download and real-engine checks. The second one
+launches the installed game through the same `AppState` path as the GUI and
+requires DXVK plus the game's main loop in its log; it does not prove that pixels
+are visible (that was verified visually and cannot be asserted without a screenshot):
+
+```sh
+PEAR_GRAPHICS_INTEGRATION=1 swift test --filter GraphicsComponentIntegrationTests
+PEAR_REAL_SUPPORT_ROOT="$HOME/Library/Application Support/PearSilicon" \
+  PEAR_DXVK_E2E=1 swift test --filter testLaunchesInstalledDeltaruneWithDXVK
+```
 
 ## Build
 
@@ -172,6 +302,92 @@ Wine/Proton analogy and the scope of comparisons with PlayCover. No controlled
 benchmarks currently establish lower memory/CPU use, higher FPS or lower latency
 than PlayCover. A successful launch check is not a gameplay compatibility result.
 
+### Mac apps
+
+A native `.app` is copied into `mac-apps/<bundle-id>/Payload` without patching or
+re-signing. Its `HOME`, `CFFIXED_USER_HOME`, `TMPDIR`, caches and preferences are
+redirected into the entry, then the app is launched directly as a native macOS
+process. There is no virtual machine, Wine layer or `sandbox-exec` wrapper. This
+means the app can still reach absolute host paths; the feature is for central
+organization, portable data and one-click backups, not security isolation.
+
+### Wine games
+
+Windows entries live in `wine-apps/<id>/` with `Payload`, `Data` and `Prefix`.
+Each game gets its own prefix. Host root mappings (`z:`) and absolute drive links
+are removed; a relative `g:` drive exposes only that game's own `Payload/Program`
+as a Windows drive. Without it, GameMaker-style runners cannot turn their Unix
+program path into a Windows path and show a file dialog instead of loading
+`data.win`. **Settings → Wine** checks the public Staging/Development release feeds and
+installs an engine after SHA-256 verification and safe tar-path admission.
+Registered engines have a Remove action that deletes only that engine directory
+(game prefixes and saves are kept). A community engine can be fetched by pasting
+a GitHub repository URL: the newest release archive is resolved automatically,
+or the repository source ZIP is downloaded and extracted when there is no
+release. No user-supplied SHA-256 is required; GitHub's published digest is
+verified when present. Wine runs directly, because a nested sandbox breaks Rosetta
+and wineserver on current macOS; this is not a VM or a security sandbox.
+
+Importing a folder never runs anything from the source. PearSilicon scans it for
+`.exe` files, hides installers/redistributables when a game program is present,
+and preselects the likely main executable. A game already in the library can be
+repaired without re-importing: **Change Executable…** in the detail pane picks a
+different program inside that entry's own `Payload/Program`. If a manifest's
+engine was removed, launching with exactly one installed engine relinks the
+entry automatically; with several engines, the app asks instead of guessing.
+
+Graphics backends are selected per game:
+
+- **MoltenVK + DXVK** — default. Install **DXVK** from the game's detail pane;
+  PearSilicon mirrors the engine-level `Graphics/DXVK` component into that game's
+  private prefix, selects native `d3d11`/`d3d10core` only while this backend is
+  active, and restores Wine's files when another backend is chosen. DXVK is pinned
+  to 1.10.3 (Gcenx macOS build) because newer releases require Vulkan geometry
+  shaders that MoltenVK does not provide. Without DXVK, Direct3D 11 falls back to
+  Wine's OpenGL renderer, which can present a black window on current engines.
+- **DXMT** — D3D10/11 → Metal; installed as a per-engine `Graphics/DXMT` overlay.
+  DXMT also needs a Wine build that exports winemac's Metal view symbols (winemac's
+  `macdrv_view_create_metal_view`/`get_win_data`). The automatic Gcenx Wine builds
+  hide those symbols, so DXMT cannot present with them; the app reports that instead
+  of silently showing a black window.
+
+The macOS builds are currently `osx64`, so Apple silicon may need Rosetta 2.
+Wine is not a Windows VM; anti-cheat and kernel drivers are not supported. Local
+open-source runtimes can still be registered manually.
+
+### Platform service boundaries
+
+`AppState` is the SwiftUI-facing coordinator. Platform policy lives in separate
+services, so changing one platform cannot alter another's launch rules:
+
+| Service | Owns |
+| --- | --- |
+| `IOSAppService` | Catalyst preparation, runtime environment, keymapper/HUD flags, iOS uninstall |
+| `MacAppService` | Copy-only native Mac import and native launch |
+| `WineAppService` | Wine import, engine resolution, launch, release checks, graphics components |
+
+`ManagedAppService` remains the shared low-level copy/launch primitive used by
+the Mac and Wine services; it is never called directly from the UI. Tests cover
+each boundary plus opt-in end-to-end launches against a real installed engine.
+
+### Portable library
+
+```
+~/Library/Application Support/PearSilicon/
+  ios-apps/<bundle-id>.app
+  mac-apps/<bundle-id>/
+  wine-apps/<id>/
+  Engines/
+  Keymaps/  Logs/  ODR/  Keychain/  Work/
+```
+
+Only the folder for a platform with at least one item is created. Existing apps
+in the legacy `Applications/` folder are still listed and used. A folder with the
+`.pear-storage-root` marker can be opened in place (**Settings → Library → Open
+Existing Library…**) or the whole root can be moved to another disk. Moving
+copies and verifies the tree, rewrites iOS load paths, and keeps the previous copy
+for rollback.
+
 ### Compatibility shims
 
 | Shim | Purpose |
@@ -210,12 +426,11 @@ The launcher supplies `PEAR_HOME_DIR` for the app's data directory and
 paths. It may reuse an existing macOS container when that contains the app's
 previous data. `PEAR_HOME_DIR` alone does not move the library or all other stores.
 
-Experimental relocation is available in **Settings → Storage location** and
+Storage relocation is available in **Settings → General → Move Storage…** and
 `pearsilicon storage move <folder>`. Launch moved games through PearSilicon:
-direct Finder launches do not infer the selected storage root. Back up saves,
-keep the previous copy and test the destination before removing it. External-disk
-migration has not been validated end to end; see
-[storage location](docs/CLI.md#storage-location) for checks and limitations.
+direct Finder launches do not infer the selected storage root. The previous copy
+is kept until removed. The move path has an opt-in real external APFS test; see
+[storage location](docs/CLI.md#storage-location).
 
 Some apps keep content in On-Demand Resources that their package does not
 carry. Put those bundles in the per-app ODR folder:
@@ -285,6 +500,21 @@ your app, or generate a starter map with `pearsilicon keymap <id> --generate`:
 - `PEAR_DISABLE=1` skips the main runtime bootstrap, including the keymapper;
   separate shim initializers can still run. It is not a global no-hooks mode.
 - `pearsilicon doctor` reports build tools, runtime location and library status.
+
+## Scope and limitations
+
+- iOS apps still depend on Apple's Mac Catalyst/`/System/iOSSupport` stack. No
+  kernel-level iOS emulation or full UIKit reimplementation is provided.
+- Mac apps run natively; `HOME` and temp data are redirected, but absolute host
+  paths remain reachable and no filesystem sandbox is claimed. Wine is not a
+  Windows VM and cannot run kernel anti-cheat.
+- Backups are unencrypted. The keychain and app data included in a backup may be
+  sensitive; store the file accordingly.
+- GitHub release digests verify downloaded bytes against GitHub metadata. They
+  are not a publisher signature. Builds are ad-hoc signed and not notarized.
+- Update replacement is refused while any game is running. The previous app is
+  left as a visible rollback copy beside the installed bundle.
+- No controlled benchmark establishes a performance advantage over PlayCover.
 
 ## Scope and licensing
 

@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import PearSilicon
 
+@MainActor
 final class PreparationModeTests: XCTestCase {
     func testEnvironmentRepairsMixedMarkerAndLoadCommandEvenWhenAlreadySelected() throws {
         let fixture = try PreparationFixture()
@@ -423,6 +424,7 @@ private final class PreparationFixture {
     func tools() -> PackageInstaller.PreparationTools {
         var tools = PackageInstaller.PreparationTools()
         tools.runtimeLibraryURL = { [runtimeURL] in runtimeURL }
+        tools.requireStopped = { _ in }
         tools.run = { tool, arguments in
             if tool == "/usr/bin/codesign" { return "" }
             return try Shell.run(tool, arguments)
@@ -463,6 +465,12 @@ private final class PreparationFixture {
             from: Data(contentsOf: bundleURL.appendingPathComponent("Info.plist")), format: nil
         ) as? [String: Any]
         XCTAssertEqual(info?["UserCustomKey"] as? String, "preserved", file: file, line: line)
+        XCTAssertEqual(info?["GCSupportsControllerUserInteraction"] as? Bool, true, file: file, line: line)
+        let profiles = info?["GCSupportedGameControllers"] as? [[String: Any]]
+        XCTAssertEqual(
+            profiles?.compactMap { $0["ProfileName"] as? String },
+            ["ExtendedGamepad", "MicroGamepad"], file: file, line: line
+        )
     }
 
     func assertFinalPaths(runtimeLoad: Bool, file: StaticString = #filePath, line: UInt = #line) throws {

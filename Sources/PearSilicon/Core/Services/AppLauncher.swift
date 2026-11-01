@@ -256,6 +256,15 @@ final class AppLauncher: @unchecked Sendable {
         if let keymapURL, fileManager.fileExists(atPath: keymapURL.path) {
             env["PEAR_KEYMAP"] = keymapURL.path
         }
+        // Controller compatibility defaults: many iOS games whitelist only the
+        // controller families the vendor documents and miss a connection that
+        // happens before their observer is installed. The runtime normalizes
+        // other controllers and replays the connection; PEAR_CONTROLLER_NATIVE=1
+        // opts out (extra environment is applied below and wins).
+        if env["PEAR_CONTROLLER_NATIVE"] != "1" {
+            env["PEAR_CONTROLLER_COMPAT"] = env["PEAR_CONTROLLER_COMPAT"] ?? "1"
+            env["PEAR_CONTROLLER_REPLAY"] = env["PEAR_CONTROLLER_REPLAY"] ?? "1"
+        }
         // Only the verified host handoff may add managed profile metadata.
         for (key, value) in extra where !managedProfileKeys.contains(key) { env[key] = value }
         return env

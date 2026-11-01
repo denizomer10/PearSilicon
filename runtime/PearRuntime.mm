@@ -9,6 +9,7 @@
 #import <GameController/GameController.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <sys/stat.h>
 #import <os/log.h>
 #import <pwd.h>
@@ -77,8 +78,14 @@ typedef NS_ENUM(NSInteger, PearActionKind) {
     PearActionKindSwipe,
 };
 
+typedef NS_ENUM(NSInteger, PearInputSource) {
+    PearInputSourceKeyboard = 0,
+    PearInputSourceController = 1,
+};
+
 @interface PearBinding : NSObject
 @property (nonatomic, copy) NSString *key;
+@property (nonatomic) PearInputSource source;
 @property (nonatomic) PearActionKind kind;
 @property (nonatomic) CGPoint point;      // normalized, for tap/hold/joystick
 @property (nonatomic) CGRect region;      // normalized, for mouseLook
@@ -96,9 +103,9 @@ static NSArray<PearBinding *> *gBindings = nil;
 
 static NSString *KeyNameForCode(GCKeyCode code);
 
-static PearBinding *BindingForKey(NSString *key) {
+static PearBinding *BindingForKeySource(NSString *key, PearInputSource source) {
     for (PearBinding *b in gBindings) {
-        if ([b.key caseInsensitiveCompare:key] == NSOrderedSame) return b;
+        if (b.source == source && [b.key caseInsensitiveCompare:key] == NSOrderedSame) return b;
     }
     return nil;
 }
@@ -130,6 +137,8 @@ static NSArray<PearBinding *> *LoadKeymap(NSString *path) {
 
         PearBinding *binding = [PearBinding new];
         binding.key = raw[@"key"] ?: @"";
+        binding.source = [raw[@"source"] isEqualToString:@"controller"]
+            ? PearInputSourceController : PearInputSourceKeyboard;
 
         NSDictionary *action = raw[@"action"];
         if ([action isKindOfClass:NSDictionary.class]) {
@@ -235,24 +244,23 @@ static void SynthesizeTouch(PearBinding *binding, BOOL down, CGPoint point) {
 // W/A/S/D drive a single virtual joystick. A joystick binding's `key` is
 // "wasd"; while any of the four keys is held the touch sits at
 // `center + direction * radius`, and moving between keys drags the finger.
-static PearBinding *gJoystickBinding = nil;
+static PearBinding *gJoystickBinding = nil;       // keyboard joystick (wasd)
+static PearBinding *gControllerJoystick = nil;    // controller left stick
 static BOOL gJoyUp = NO, gJoyDown = NO, gJoyLeft = NO, gJoyRight = NO;
 static BOOL gJoystickActive = NO;
 static CGPoint gJoystickTouch = {0, 0};
 static CGPoint gJoystickTarget = {0, 0};
 static uint64_t gJoystickGeneration = 0;
 
-static void UpdateJoystick(void) {
-    if (!gJoystickBinding) return;
+static void UpdateJoystickWithBinding(PearBinding *binding, CGFloat dx, CGFloat dy) {
+    if (!binding) return;
 
-    CGFloat dx = (gJoyRight ? 1.0 : 0.0) - (gJoyLeft ? 1.0 : 0.0);
-    CGFloat dy = (gJoyDown ? 1.0 : 0.0) - (gJoyUp ? 1.0 : 0.0);
     CGFloat len = sqrt(dx * dx + dy * dy);
-    BOOL want = len > 0;
+    BOOL want = len > 0.15; // analog dead zone; keyboard values are 0/1
+    if (len > 1.0) { dx /= len; dy /= len; }
 
-    CGPoint center = gJoystickBinding.point;
-    CGFloat radius = gJoystickBinding.radius;
-    if (len > 0) { dx /= len; dy /= len; }
+    CGPoint center = binding.point;
+    CGFloat radius = binding.radius;
     CGPoint target = CGPointMake(center.x + dx * radius, center.y + dy * radius);
 
     NSString *key = @"f:joystick";
@@ -284,6 +292,12 @@ static void UpdateJoystick(void) {
         gJoystickGeneration++;
         PearSynthesizeVirtualFinger(NO, key, gJoystickTouch.x, gJoystickTouch.y);
     }
+}
+
+static void UpdateJoystick(void) {
+    CGFloat dx = (gJoyRight ? 1.0 : 0.0) - (gJoyLeft ? 1.0 : 0.0);
+    CGFloat dy = (gJoyDown ? 1.0 : 0.0) - (gJoyUp ? 1.0 : 0.0);
+    UpdateJoystickWithBinding(gJoystickBinding, dx, dy);
 }
 
 #pragma mark - Mouse look
@@ -435,7 +449,7 @@ static void HandleKeyPress(GCKeyCode keyCode, BOOL pressed) {
         if ([key isEqualToString:@"d"]) { gJoyRight = pressed; UpdateJoystick(); return; }
     }
 
-    PearBinding *binding = BindingForKey(key);
+    PearBinding *binding = BindingForKeySource(key, PearInputSourceKeyboard);
     if (!binding) return;
     if (getenv("PEAR_DEBUG_TOUCH")) {
         PearLog(@"[PearRuntime][key] %@ %s", key, pressed ? "down" : "up");
@@ -504,6 +518,570 @@ static void InstallHandlerChaining(void) {
         PearLog(@"[PearRuntime][input] handler chaining installed (mouse=%d keyboard=%d)",
                 gOriginalSetMouseMoved != NULL, gOriginalSetKeyChanged != NULL);
     });
+}
+
+#pragma mark - GameController discovery and compatibility
+
+// GameController enumerates HID devices asynchronously. A game that asks for
+// `GCController.controllers` during launch can see an empty list even though a
+// controller is connected (the connect notification arrives a moment later).
+// Touch the framework at bootstrap so enumeration starts before application
+// code, keep the discovered controllers alive, and log the result. Replaying a
+// connect notification is opt-in because it can duplicate an event an app has
+// already handled.
+static NSMutableSet<GCController *> *gKnownControllers;
+static NSMutableDictionary<NSValue *, NSDate *> *gControllerConnectDates;
+
+// Some games only accept the controller families the vendor documents (for
+// example Xbox and DualShock on an iOS build). Normalize other controllers to
+// an Xbox identity on request so those games enable their controller path.
+// The input profile is unchanged; only the reported identity differs.
+static void InstallControllerCompatibility(void) {
+    if (NSProcessInfo.processInfo.environment[@"PEAR_CONTROLLER_NATIVE"].boolValue) return;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class cls = GCController.class;
+        Method vendor = class_getInstanceMethod(cls, @selector(vendorName));
+        if (vendor) {
+            IMP original = method_getImplementation(vendor);
+            method_setImplementation(vendor, imp_implementationWithBlock(^NSString *(GCController *self) {
+                NSString *name = ((NSString *(*)(id, SEL))original)(self, @selector(vendorName));
+                NSString *lower = name.lowercaseString ?: @"";
+                if ([lower containsString:@"xbox"] || [lower containsString:@"dualshock"]
+                    || [lower containsString:@"dualsense"] || [lower containsString:@"playstation"]
+                    || [lower containsString:@"sony"]) {
+                    return name;
+                }
+                PearLog(@"[PearRuntime][input] controller '%@' reported as Xbox Wireless Controller", name ?: @"?");
+                return @"Xbox Wireless Controller";
+            }));
+        }
+        Method category = class_getInstanceMethod(cls, @selector(productCategory));
+        if (category) {
+            IMP original = method_getImplementation(category);
+            method_setImplementation(category, imp_implementationWithBlock(^NSString *(GCController *self) {
+                NSString *name = ((NSString *(*)(id, SEL))original)(self, @selector(productCategory));
+                NSString *lower = name.lowercaseString ?: @"";
+                if ([lower containsString:@"xbox"] || [lower containsString:@"dualshock"]
+                    || [lower containsString:@"dualsense"] || [lower containsString:@"playstation"]
+                    || [lower containsString:@"sony"]) {
+                    return name;
+                }
+                return @"Xbox One";
+            }));
+        }
+    });
+}
+
+// Many iOS games disable features that only make sense on a real device when
+// they see NSProcessInfo.isiOSAppOnMac/isMacCatalystApp. Genshin's controller
+// settings are one example: it sees the pad through GameController but keeps
+// the Control Type on Touchscreen. The runtime already presents an iPad device;
+// report the process as a device app as well unless explicitly opted out.
+static void InstallIOSOnMacCompatibility(void) {
+    if (NSProcessInfo.processInfo.environment[@"PEAR_KEEP_IOS_ON_MAC"].boolValue) return;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class processInfo = NSClassFromString(@"NSProcessInfo");
+        if (!processInfo) return;
+        for (NSString *name in @[@"isiOSAppOnMac", @"isMacCatalystApp"]) {
+            Method method = class_getInstanceMethod(processInfo, NSSelectorFromString(name));
+            if (!method) continue;
+            method_setImplementation(method, imp_implementationWithBlock(^BOOL(id self) {
+                return NO;
+            }));
+        }
+        PearLog(@"[PearRuntime][platform] iOS-on-Mac flags reported as false");
+    });
+}
+
+// Controller fallback for touch-only games. Many iOS titles (Genshin included)
+// never initialize their GameController layer when running as an iOS app on
+// Mac, so their Control Type stays "Touchscreen". If a keymap exists, map the
+// standard pad to the same virtual joystick/taps the keyboard drives. The app's
+// own valueChangedHandler is preserved and gets priority: when it installs one,
+// translation stops, so native controller games are not double-driven.
+typedef void (^PearGamepadChangedBlock)(GCExtendedGamepad *gamepad, GCControllerElement *element);
+static IMP gOriginalSetGamepadChanged = NULL;
+static PearGamepadChangedBlock gGameGamepadChanged = nil;
+static PearGamepadChangedBlock gCombinedGamepadChanged = nil;
+static BOOL gGamepadKeymapEnabled = NO;
+static BOOL gHasControllerBindings = NO;
+static GCController *gCurrentController = nil;
+static PearBinding *gControllerLookBinding = nil;
+static BOOL gPadW, gPadA, gPadS, gPadD, gPadAttack, gPadSkill, gPadInteract, gPadMenu, gPadSprint, gPadBurst;
+static NSString *const kPearControllerLookKey = @"f:controllerlook";
+static BOOL gControllerLookActive = NO;
+static CGPoint gControllerLookPoint = {0.75, 0.5};
+static NSUInteger gControllerLookGeneration = 0;
+static dispatch_source_t gControllerLookTimer = nil;
+static NSMutableSet<NSString *> *gControllerPressedKeys = nil;
+
+static CGFloat ControllerLookSensitivity(void) {
+    if (gControllerLookBinding && gControllerLookBinding.sensitivity > 0) {
+        return gControllerLookBinding.sensitivity;
+    }
+    return 1.0;
+}
+
+static CGRect ControllerLookRegion(void) {
+    if (gControllerLookBinding) return gControllerLookBinding.region;
+    return CGRectMake(0.55, 0.18, 0.40, 0.64);
+}
+
+static void ControllerLookStep(CGFloat dx, CGFloat dy) {
+    if (fabs(dx) < 0.00001 && fabs(dy) < 0.00001) return;
+    CGRect region = ControllerLookRegion();
+    if (!gControllerLookActive) {
+        gControllerLookActive = YES;
+        gControllerLookPoint = CGPointMake(CGRectGetMidX(region), CGRectGetMidY(region));
+        PearSynthesizeVirtualFinger(YES, kPearControllerLookKey,
+                                   gControllerLookPoint.x, gControllerLookPoint.y);
+    }
+    CGFloat nx = gControllerLookPoint.x + dx * ControllerLookSensitivity();
+    CGFloat ny = gControllerLookPoint.y + dy * ControllerLookSensitivity();
+    if (nx < CGRectGetMinX(region) || nx > CGRectGetMaxX(region) ||
+        ny < CGRectGetMinY(region) || ny > CGRectGetMaxY(region)) {
+        PearSynthesizeVirtualFinger(NO, kPearControllerLookKey,
+                                   gControllerLookPoint.x, gControllerLookPoint.y);
+        gControllerLookPoint = CGPointMake(CGRectGetMidX(region), CGRectGetMidY(region));
+        PearSynthesizeVirtualFinger(YES, kPearControllerLookKey,
+                                   gControllerLookPoint.x, gControllerLookPoint.y);
+        nx = MIN(MAX(gControllerLookPoint.x + dx * ControllerLookSensitivity(), CGRectGetMinX(region)), CGRectGetMaxX(region));
+        ny = MIN(MAX(gControllerLookPoint.y + dy * ControllerLookSensitivity(), CGRectGetMinY(region)), CGRectGetMaxY(region));
+    }
+    gControllerLookPoint = CGPointMake(nx, ny);
+    PearSynthesizeVirtualFinger(YES, kPearControllerLookKey, nx, ny);
+    gControllerLookGeneration++;
+    NSUInteger generation = gControllerLookGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation != gControllerLookGeneration || !gControllerLookActive) return;
+        gControllerLookActive = NO;
+        PearSynthesizeVirtualFinger(NO, kPearControllerLookKey,
+                                   gControllerLookPoint.x, gControllerLookPoint.y);
+    });
+}
+
+static void StartControllerLookTimer(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gControllerLookTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                      dispatch_get_main_queue());
+        uint64_t interval = NSEC_PER_SEC / 60;
+        dispatch_source_set_timer(gControllerLookTimer,
+                                  dispatch_time(DISPATCH_TIME_NOW, interval),
+                                  interval, interval / 4);
+        dispatch_source_set_event_handler(gControllerLookTimer, ^{
+            if (!gGamepadKeymapEnabled || gGameGamepadChanged) return;
+            GCExtendedGamepad *pad = gCurrentController.extendedGamepad;
+            if (!pad) return;
+            // An explicit right-stick binding customizes the region and
+            // sensitivity; without one, use the default right-hand region so
+            // adding a single button binding does not disable the camera.
+            if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+            float x = pad.rightThumbstick.xAxis.value;
+            float y = pad.rightThumbstick.yAxis.value;
+            float magnitude = sqrtf(x * x + y * y);
+            const float deadzone = 0.12f;
+            if (magnitude <= deadzone) return;
+            float scaled = (magnitude - deadzone) / (1.0f - deadzone);
+            scaled = powf(scaled, 1.35f);
+            // Per-frame normalized drag. 1.5 at full deflection gives a
+            // gamepad-like rotation speed; the sensitivity slider scales it.
+            float speed = 1.5f / 60.0f;
+            ControllerLookStep((x / magnitude) * scaled * speed,
+                               -(y / magnitude) * scaled * speed);
+        });
+        dispatch_resume(gControllerLookTimer);
+    });
+}
+
+static BOOL ControllerButtonState(GCExtendedGamepad *pad, NSString *key) {
+    if ([key isEqualToString:@"buttonA"]) return pad.buttonA.isPressed;
+    if ([key isEqualToString:@"buttonB"]) return pad.buttonB.isPressed;
+    if ([key isEqualToString:@"buttonX"]) return pad.buttonX.isPressed;
+    if ([key isEqualToString:@"buttonY"]) return pad.buttonY.isPressed;
+    if ([key isEqualToString:@"leftShoulder"]) return pad.leftShoulder.isPressed;
+    if ([key isEqualToString:@"rightShoulder"]) return pad.rightShoulder.isPressed;
+    if ([key isEqualToString:@"leftTrigger"]) return pad.leftTrigger.value > 0.5f;
+    if ([key isEqualToString:@"rightTrigger"]) return pad.rightTrigger.value > 0.5f;
+    if ([key isEqualToString:@"dpadUp"]) return pad.dpad.up.isPressed;
+    if ([key isEqualToString:@"dpadDown"]) return pad.dpad.down.isPressed;
+    if ([key isEqualToString:@"dpadLeft"]) return pad.dpad.left.isPressed;
+    if ([key isEqualToString:@"dpadRight"]) return pad.dpad.right.isPressed;
+    if ([key isEqualToString:@"menu"]) return pad.buttonMenu.isPressed;
+    if ([key isEqualToString:@"options"]) {
+        if (@available(macOS 11.0, *)) return pad.buttonOptions.isPressed;
+        return NO;
+    }
+    return NO;
+}
+
+static void ControllerKeyChanged(NSString *key, BOOL pressed) {
+    if (!gControllerPressedKeys) gControllerPressedKeys = [NSMutableSet set];
+    if ([gControllerPressedKeys containsObject:key] == pressed) return;
+    if (pressed) [gControllerPressedKeys addObject:key];
+    else [gControllerPressedKeys removeObject:key];
+    PearBinding *binding = BindingForKeySource(key, PearInputSourceController);
+    if (!binding) return;
+    if (binding.kind == PearActionKindJoystick || binding.kind == PearActionKindMouseLook) return;
+    SynthesizeTouch(binding, pressed, binding.point);
+    if (getenv("PEAR_DEBUG_TOUCH")) {
+        PearLog(@"[PearRuntime][controller] %@ %s", key, pressed ? "down" : "up");
+    }
+}
+
+static void TranslateControllerBindings(GCExtendedGamepad *gamepad) {
+    static NSString *const buttons[] = {
+        @"buttonA", @"buttonB", @"buttonX", @"buttonY",
+        @"leftShoulder", @"rightShoulder", @"leftTrigger", @"rightTrigger",
+        @"dpadUp", @"dpadDown", @"dpadLeft", @"dpadRight", @"menu", @"options",
+    };
+    for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
+        ControllerKeyChanged(buttons[i], ControllerButtonState(gamepad, buttons[i]));
+    }
+    PearBinding *joystick = gControllerJoystick ?: gJoystickBinding;
+    if (joystick) {
+        float x = gamepad.leftThumbstick.xAxis.value;
+        float y = gamepad.leftThumbstick.yAxis.value;
+        if (fabsf(x) < 0.12f && fabsf(y) < 0.12f) { x = 0; y = 0; }
+        UpdateJoystickWithBinding(joystick, x, -y);
+    }
+}
+
+static void PadSetKey(GCKeyCode code, BOOL pressed, BOOL *state) {
+    if (*state == pressed) return;
+    *state = pressed;
+    HandleKeyPress(code, pressed);
+    if (getenv("PEAR_DEBUG_TOUCH")) {
+        PearLog(@"[PearRuntime][controller] key %ld %s", (long)code, pressed ? "down" : "up");
+    }
+}
+
+static void TranslateGamepad(GCExtendedGamepad *gamepad) {
+    if (!gGamepadKeymapEnabled || gGameGamepadChanged) return;
+    if (gHasControllerBindings) {
+        TranslateControllerBindings(gamepad);
+        return;
+    }
+    // Backward-compatible fallback for apps whose keymaps predate controller
+    // bindings: the standard pad drives the keyboard bindings.
+    const float deadzone = 0.35f;
+    float x = gamepad.leftThumbstick.xAxis.value;
+    float y = gamepad.leftThumbstick.yAxis.value;
+    PadSetKey(GCKeyCodeKeyW, y > deadzone, &gPadW);
+    PadSetKey(GCKeyCodeKeyS, y < -deadzone, &gPadS);
+    PadSetKey(GCKeyCodeKeyA, x < -deadzone, &gPadA);
+    PadSetKey(GCKeyCodeKeyD, x > deadzone, &gPadD);
+    PadSetKey(GCKeyCodeSpacebar, gamepad.buttonA.isPressed, &gPadAttack);
+    PadSetKey(GCKeyCodeEscape, gamepad.buttonB.isPressed, &gPadMenu);
+    PadSetKey(GCKeyCodeKeyE, gamepad.buttonX.isPressed, &gPadSkill);
+    PadSetKey(GCKeyCodeKeyF, gamepad.buttonY.isPressed, &gPadInteract);
+    PadSetKey(GCKeyCodeLeftShift, gamepad.leftShoulder.isPressed, &gPadSprint);
+    PadSetKey(GCKeyCodeKeyQ, gamepad.rightShoulder.isPressed, &gPadBurst);
+}
+
+static void PearSetGamepadChanged(id self, SEL _cmd, PearGamepadChangedBlock handler) {
+    if (!gOriginalSetGamepadChanged) return;
+    if (handler == gCombinedGamepadChanged) {
+        ((void (*)(id, SEL, PearGamepadChangedBlock))gOriginalSetGamepadChanged)(self, _cmd, handler);
+        return;
+    }
+    gGameGamepadChanged = handler;
+    ((void (*)(id, SEL, PearGamepadChangedBlock))gOriginalSetGamepadChanged)(
+        self, _cmd, gCombinedGamepadChanged
+    );
+}
+
+static void PadAttach(GCController *controller) {
+    if (!gGamepadKeymapEnabled) return;
+    GCExtendedGamepad *gamepad = controller.extendedGamepad;
+    if (!gamepad) return;
+    gCurrentController = controller;
+    if (gOriginalSetGamepadChanged) {
+        ((void (*)(id, SEL, PearGamepadChangedBlock))gOriginalSetGamepadChanged)(
+            gamepad, @selector(setValueChangedHandler:), gCombinedGamepadChanged
+        );
+    } else {
+        gamepad.valueChangedHandler = gCombinedGamepadChanged;
+    }
+}
+
+static void InstallGamepadKeymapper(void) {
+    NSString *setting = NSProcessInfo.processInfo.environment[@"PEAR_CONTROLLER_KEYMAP"];
+    gGamepadKeymapEnabled = gBindings.count > 0 && (!setting || setting.boolValue);
+    gHasControllerBindings = NO;
+    gControllerJoystick = nil;
+    gControllerLookBinding = nil;
+    for (PearBinding *binding in gBindings) {
+        if (binding.source != PearInputSourceController) continue;
+        gHasControllerBindings = YES;
+        if (binding.kind == PearActionKindJoystick
+            && [binding.key isEqualToString:@"leftStick"] && !gControllerJoystick) {
+            gControllerJoystick = binding;
+        }
+        if (binding.kind == PearActionKindMouseLook
+            && [binding.key isEqualToString:@"rightStick"] && !gControllerLookBinding) {
+            gControllerLookBinding = binding;
+        }
+    }
+    if (!gGamepadKeymapEnabled) {
+        PearLog(@"[PearRuntime][input] gamepad keymapper off (no bindings or opted out)");
+        return;
+    }
+    if (!gCombinedGamepadChanged) {
+        gCombinedGamepadChanged = ^(GCExtendedGamepad *gamepad, GCControllerElement *element) {
+            PearGamepadChangedBlock game = gGameGamepadChanged;
+            if (game) {
+                game(gamepad, element);
+                return;
+            }
+            TranslateGamepad(gamepad);
+        };
+    }
+    Class cls = NSClassFromString(@"GCExtendedGamepad");
+    Method setter = cls ? class_getInstanceMethod(cls, @selector(setValueChangedHandler:)) : NULL;
+    if (setter) {
+        gOriginalSetGamepadChanged = method_setImplementation(setter, (IMP)PearSetGamepadChanged);
+    }
+    StartControllerLookTimer();
+    for (GCController *controller in [GCController controllers]) {
+        PadAttach(controller);
+    }
+    PearLog(@"[PearRuntime][input] gamepad keymapper installed (controllers=%lu, custom=%d, look=%d)",
+            (unsigned long)[GCController controllers].count, gHasControllerBindings,
+            gControllerLookBinding != nil);
+}
+
+static void InstallGameControllerBridge(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gKnownControllers = [NSMutableSet new];
+        gControllerConnectDates = [NSMutableDictionary new];
+        NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+
+        [center addObserverForName:GCControllerDidConnectNotification object:nil
+                             queue:NSOperationQueue.mainQueue
+                        usingBlock:^(NSNotification *note) {
+            GCController *controller = (GCController *)note.object;
+            if (![controller isKindOfClass:GCController.class]) return;
+            @synchronized (gKnownControllers) {
+                [gKnownControllers addObject:controller];
+                gControllerConnectDates[[NSValue valueWithNonretainedObject:controller]] = [NSDate date];
+            }
+            PearLog(@"[PearRuntime][input] game controller connected: %@ extended=%d micro=%d",
+                    controller.vendorName ?: @"?", controller.extendedGamepad != nil,
+                    controller.microGamepad != nil);
+            PadAttach(controller);
+        }];
+
+        [center addObserverForName:GCControllerDidDisconnectNotification object:nil
+                             queue:NSOperationQueue.mainQueue
+                        usingBlock:^(NSNotification *note) {
+            GCController *controller = (GCController *)note.object;
+            if (![controller isKindOfClass:GCController.class]) return;
+            @synchronized (gKnownControllers) {
+                [gKnownControllers removeObject:controller];
+                [gControllerConnectDates removeObjectForKey:[NSValue valueWithNonretainedObject:controller]];
+            }
+            PearLog(@"[PearRuntime][input] game controller disconnected: %@", controller.vendorName ?: @"?");
+            if (gCurrentController == controller) gCurrentController = nil;
+        }];
+
+        NSArray<GCController *> *existing = [GCController controllers];
+        @synchronized (gKnownControllers) {
+            for (GCController *controller in existing) {
+                [gKnownControllers addObject:controller];
+                gControllerConnectDates[[NSValue valueWithNonretainedObject:controller]] = [NSDate date];
+            }
+        }
+        PearLog(@"[PearRuntime][input] game controllers at bootstrap: %lu",
+                (unsigned long)existing.count);
+        InstallControllerCompatibility();
+        for (GCController *controller in existing) {
+            PearLog(@"[PearRuntime][input] controller present: %@ extended=%d micro=%d",
+                    controller.vendorName ?: @"?", controller.extendedGamepad != nil,
+                    controller.microGamepad != nil);
+        }
+
+        if (NSProcessInfo.processInfo.environment[@"PEAR_DEBUG_GC"]) {
+            Method queryMethod = class_getClassMethod(GCController.class, @selector(controllers));
+            if (queryMethod) {
+                IMP originalQuery = method_getImplementation(queryMethod);
+                __block int queries = 0;
+                method_setImplementation(queryMethod, imp_implementationWithBlock(^NSArray *(id cls, SEL cmd) {
+                    NSArray *result = ((NSArray *(*)(id, SEL))originalQuery)(cls, cmd);
+                    if (queries < 20) {
+                        queries++;
+                        PearLog(@"[PearRuntime][input] app queried controllers -> %lu",
+                                (unsigned long)result.count);
+                    }
+                    return result;
+                }));
+            }
+        }
+
+        // GameController discovers pads asynchronously, often about a second
+        // after first access. A game that snapshots `controllers` during launch
+        // can conclude that no pad exists and never look again. The first empty
+        // query (after bootstrap started discovery) pumps the run loop for a
+        // bounded time so the result is stable. Apps without pads only pay this
+        // when they ask for controllers.
+        if (!NSProcessInfo.processInfo.environment[@"PEAR_CONTROLLER_NATIVE"].boolValue) {
+            Method queryMethod = class_getClassMethod(GCController.class, @selector(controllers));
+            if (queryMethod) {
+                IMP originalQuery = method_getImplementation(queryMethod);
+                __block BOOL waiting = NO;
+                method_setImplementation(queryMethod, imp_implementationWithBlock(^NSArray *(id cls, SEL cmd) {
+                    NSArray *result = ((NSArray *(*)(id, SEL))originalQuery)(cls, cmd);
+                    if (result.count > 0 || waiting) return result;
+                    waiting = YES;
+                    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1.2];
+                    while (result.count == 0 && deadline.timeIntervalSinceNow > 0) {
+                        [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode
+                                               beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+                        result = ((NSArray *(*)(id, SEL))originalQuery)(cls, cmd);
+                    }
+                    waiting = NO;
+                    PearLog(@"[PearRuntime][input] controller query waited -> %lu",
+                            (unsigned long)result.count);
+                    return result;
+                }));
+            }
+        }
+
+        // Temporary, opt-in diagnostics for apps with their own gamepad layer.
+        if (NSProcessInfo.processInfo.environment[@"PEAR_DEBUG_GC"]) {
+            Class gamepad = NSClassFromString(@"MHYGameController");
+            PearLog(@"[PearRuntime][input] MHYGameController class=%@", gamepad ?: @"nil");
+            if (gamepad) {
+                Method instance = class_getClassMethod(gamepad, @selector(instance));
+                if (instance) {
+                    IMP original = method_getImplementation(instance);
+                    method_setImplementation(instance, imp_implementationWithBlock(^id(id self, SEL cmd) {
+                        PearLog(@"[PearRuntime][input] MHYGameController instance requested");
+                        return ((id (*)(id, SEL))original)(self, cmd);
+                    }));
+                }
+                Method initialize = class_getInstanceMethod(gamepad, @selector(init));
+                if (initialize) {
+                    IMP original = method_getImplementation(initialize);
+                    method_setImplementation(initialize, imp_implementationWithBlock(^id(id self, SEL cmd) {
+                        PearLog(@"[PearRuntime][input] MHYGameController init called");
+                        return ((id (*)(id, SEL))original)(self, cmd);
+                    }));
+                }
+            }
+        }
+
+        NSString *controllerReplay = NSProcessInfo.processInfo.environment[@"PEAR_CONTROLLER_REPLAY"];
+        if (!controllerReplay || controllerReplay.boolValue) {
+            // One replay after the app's own observers are installed. Repeating
+            // it would make handlers that are not idempotent register twice.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                NSArray<GCController *> *controllers = [GCController controllers];
+                PearLog(@"[PearRuntime][input] replay tick: %lu controller(s)",
+                        (unsigned long)controllers.count);
+                for (GCController *controller in controllers) {
+                    PearLog(@"[PearRuntime][input] replaying controller connect: %@",
+                            controller.vendorName ?: @"?");
+                    [NSNotificationCenter.defaultCenter
+                        postNotificationName:GCControllerDidConnectNotification object:controller];
+                }
+            });
+        }
+        InstallGamepadKeymapper();
+    });
+}
+
+// Catalyst/UIKit beeps when a key press is not handled by a responder. The
+// keymapper already turns mapped keys into touches, but the original NSEvent
+// still reaches UIKit, producing the system beep. Consume only the events that
+// a keyboard binding (or the WASD joystick) already owns.
+static id gKeyEventMonitor = nil;
+
+static NSString *KeyNameForEvent(id event) {
+    unsigned short code = ((unsigned short (*)(id, SEL))objc_msgSend)(event, @selector(keyCode));
+    switch (code) {
+        case 123: return @"left";
+        case 124: return @"right";
+        case 125: return @"down";
+        case 126: return @"up";
+        case 115: return @"home";
+        case 119: return @"end";
+        case 116: return @"pageup";
+        case 121: return @"pagedown";
+        case 51: return @"backspace";
+        case 117: return @"delete";
+        case 48: return @"tab";
+        case 36: case 76: return @"enter";
+        case 53: return @"escape";
+        case 122: return @"f1";
+        case 120: return @"f2";
+        case 99: return @"f3";
+        case 118: return @"f4";
+        case 96: return @"f5";
+        case 97: return @"f6";
+        case 98: return @"f7";
+        case 100: return @"f8";
+        case 101: return @"f9";
+        case 109: return @"f10";
+        case 103: return @"f11";
+        case 111: return @"f12";
+        default: break;
+    }
+    NSString *characters = ((id (*)(id, SEL))objc_msgSend)(event, @selector(charactersIgnoringModifiers));
+    if (![characters isKindOfClass:NSString.class] || characters.length == 0) return nil;
+    unichar c = [characters characterAtIndex:0];
+    if (c == ' ') return @"space";
+    if (c == '\t') return @"tab";
+    if (c == '\r' || c == '\n') return @"enter";
+    if (c == 0x1b) return @"escape";
+    if (c == 0x7f) return @"backspace";
+    switch (c) {
+        case '-': return @"minus";
+        case '=': return @"equal";
+        case '[': return @"openbracket";
+        case ']': return @"closebracket";
+        case '\\': return @"backslash";
+        case ';': return @"semicolon";
+        case '\'': return @"quote";
+        case '`': return @"grave";
+        case ',': return @"comma";
+        case '.': return @"period";
+        case '/': return @"slash";
+        default: break;
+    }
+    NSString *lower = characters.lowercaseString;
+    if (lower.length == 1) {
+        unichar lowerChar = [lower characterAtIndex:0];
+        if ((lowerChar >= 'a' && lowerChar <= 'z') || (lowerChar >= '0' && lowerChar <= '9')) {
+            return lower;
+        }
+    }
+    return nil;
+}
+
+static void InstallKeyEventSilencer(void) {
+    if (gBindings.count == 0) return;
+    Class eventClass = NSClassFromString(@"NSEvent");
+    SEL add = NSSelectorFromString(@"addLocalMonitorForEventsMatchingMask:handler:");
+    if (!eventClass || ![eventClass respondsToSelector:add]) return;
+    NSUInteger mask = (1u << 10) | (1u << 11); // keyDown | keyUp
+    id (^handler)(id) = ^id(id event) {
+        NSString *name = KeyNameForEvent(event);
+        if (!name) return event;
+        BOOL mapped = BindingForKeySource(name, PearInputSourceKeyboard) != nil;
+        if (!mapped && gJoystickBinding) {
+            mapped = [@[@"w", @"a", @"s", @"d"] containsObject:name];
+        }
+        return mapped ? nil : event;
+    };
+    gKeyEventMonitor = ((id (*)(id, SEL, NSUInteger, id))objc_msgSend)(eventClass, add, mask, handler);
+    PearLog(@"[PearRuntime][input] system key sound suppression %@",
+            gKeyEventMonitor ? @"installed" : @"unavailable");
 }
 
 static void InstallKeyboard(void) {
@@ -688,6 +1266,7 @@ static void ApplyKeymap(NSString *path) {
     gJoystickBinding = nil;
     gLookBinding = nil;
     for (PearBinding *binding in gBindings) {
+        if (binding.source != PearInputSourceKeyboard) continue;
         if (binding.kind == PearActionKindJoystick && !gJoystickBinding) gJoystickBinding = binding;
         if (binding.kind == PearActionKindMouseLook && !gLookBinding) gLookBinding = binding;
     }
@@ -742,9 +1321,18 @@ static void WatchKeymap(NSString *path) {
         return;
     }
 
+    InstallIOSOnMacCompatibility();
+
     NSString *keymapPath = NSProcessInfo.processInfo.environment[@"PEAR_KEYMAP"];
     ApplyKeymap(keymapPath);
     WatchKeymap(keymapPath);
+
+    InstallKeyEventSilencer();
+
+    // Controller discovery is independent of the keymapper: an app with its own
+    // GameController support must see controllers even when no keymap is set.
+    // It runs after ApplyKeymap so the optional touch fallback can see bindings.
+    InstallGameControllerBridge();
 
     // Input translation is opt-in: with no keymap (the app did not enable the
     // keymapper) this bootstrap installs no keymapper input handlers.

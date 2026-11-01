@@ -116,22 +116,119 @@ enum KeymapAction: Codable, Hashable, Sendable {
     }
 }
 
-/// One key -> action binding.
+/// Where a binding's input comes from.
+enum KeymapInputSource: String, Codable, CaseIterable, Identifiable, Sendable {
+    case keyboard
+    case controller
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .keyboard: return "Keyboard"
+        case .controller: return "Controller"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .keyboard: return "keyboard"
+        case .controller: return "gamecontroller"
+        }
+    }
+}
+
+/// Canonical controller inputs. Stored as the binding key for controller-source
+/// bindings; the runtime maps GameController elements to these names.
+enum ControllerKey: String, CaseIterable, Identifiable, Sendable {
+    case buttonA = "buttonA"
+    case buttonB = "buttonB"
+    case buttonX = "buttonX"
+    case buttonY = "buttonY"
+    case leftShoulder = "leftShoulder"
+    case rightShoulder = "rightShoulder"
+    case leftTrigger = "leftTrigger"
+    case rightTrigger = "rightTrigger"
+    case dpadUp = "dpadUp"
+    case dpadDown = "dpadDown"
+    case dpadLeft = "dpadLeft"
+    case dpadRight = "dpadRight"
+    case menu = "menu"
+    case options = "options"
+    case leftStick = "leftStick"
+    case rightStick = "rightStick"
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .buttonA: return "A"
+        case .buttonB: return "B"
+        case .buttonX: return "X"
+        case .buttonY: return "Y"
+        case .leftShoulder: return "LB"
+        case .rightShoulder: return "RB"
+        case .leftTrigger: return "LT"
+        case .rightTrigger: return "RT"
+        case .dpadUp: return "D-Pad ↑"
+        case .dpadDown: return "D-Pad ↓"
+        case .dpadLeft: return "D-Pad ←"
+        case .dpadRight: return "D-Pad →"
+        case .menu: return "MENU"
+        case .options: return "OPTIONS"
+        case .leftStick: return "L STICK"
+        case .rightStick: return "R STICK"
+        }
+    }
+    var isStick: Bool { self == .leftStick || self == .rightStick }
+    var isButton: Bool { !isStick && self != .leftTrigger && self != .rightTrigger }
+}
+
+/// One key/pad input -> action binding.
 struct KeymapBinding: Codable, Identifiable, Hashable, Sendable {
     var id: UUID = UUID()
-    /// Key identifier, e.g. "w", "space", "shift", "mouse". The joystick uses "wasd".
+    /// Key identifier, e.g. "w", "space", "shift", "mouse", "buttonA", "leftStick".
     var key: String
+    /// Keyboard bindings and controller bindings are independent sets; the
+    /// editor's input switch selects which set is being edited.
+    var source: KeymapInputSource = .keyboard
     var action: KeymapAction
 
-    var displayKey: String { KeyNames.display(key) }
+    enum CodingKeys: String, CodingKey { case id, key, source, action }
+
+    init(id: UUID = UUID(), key: String, source: KeymapInputSource = .keyboard, action: KeymapAction) {
+        self.id = id
+        self.key = key
+        self.source = source
+        self.action = action
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        key = try container.decode(String.self, forKey: .key)
+        source = try container.decodeIfPresent(KeymapInputSource.self, forKey: .source) ?? .keyboard
+        action = try container.decode(KeymapAction.self, forKey: .action)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(key, forKey: .key)
+        try container.encode(source, forKey: .source)
+        try container.encode(action, forKey: .action)
+    }
+
+    var displayKey: String { KeyNames.display(key, source: source) }
 
     var actionKind: String { action.kind.displayName }
 
-    /// A joystick consumes W/A/S/D as one unit; a mouse-look binding consumes
-    /// pointer movement. Both names are reserved so a second binding cannot
-    /// silently compete for the same input.
+    /// A joystick consumes W/A/S/D (keyboard) or the left stick; a mouse-look
+    /// binding consumes pointer movement or the right stick. These names are
+    /// reserved so a second binding cannot silently compete for the same input.
     var usesReservedInput: Bool {
         let normalized = key.lowercased()
+        if source == .controller {
+            return normalized == ControllerKey.leftStick.rawValue.lowercased()
+                || normalized == ControllerKey.rightStick.rawValue.lowercased()
+        }
         return normalized == "wasd" || normalized == "mouse"
     }
 }

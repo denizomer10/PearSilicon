@@ -10,7 +10,13 @@ import Foundation
 enum AppSettings {
 
     static var defaults: UserDefaults {
-        UserDefaults(suiteName: "com.pearsilicon.app") ?? .standard
+        // Inside the app bundle, the standard domain already is
+        // com.pearsilicon.app. Asking for that same name as an explicit suite
+        // makes CoreFoundation log a nonsensical-suite warning on every command.
+        // A bare SwiftPM CLI has no bundle identifier, so it still needs the
+        // named suite to read the app's domain.
+        if Bundle.main.bundleIdentifier == "com.pearsilicon.app" { return .standard }
+        return UserDefaults(suiteName: "com.pearsilicon.app") ?? .standard
     }
 
     /// Whether the game is allowed to lock the pointer. Games that need relative

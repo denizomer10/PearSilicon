@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import PearSilicon
@@ -213,6 +214,275 @@ final class InstallerIntegrityTests: XCTestCase {
         try fixture.assertNoTransactions()
     }
 
+    func testPreparationRejectsRunningAppBeforeStagingAndReleasesLease() async throws {
+        let fixture = try IntegrityFixture()
+        defer { fixture.remove() }
+        let app = try await fixture.installer().installBundle(at: fixture.source)
+        let before = try fixture.snapshot(fixture.destination)
+        var tools = fixture.tools()
+        var checks = 0
+        var commands = 0
+        let run = tools.run
+        tools.run = { tool, arguments in
+            commands += 1
+            return try run(tool, arguments)
+        }
+        tools.requireStopped = { _ in
+            checks += 1
+            XCTAssertThrowsError(try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library))
+            throw IntegrityFailure.running
+        }
+        let installer = PackageInstaller(libraryURL: fixture.library, preparationTools: tools)
+
+        XCTAssertThrowsError(try installer.setPreparationMode(.compatibilityEnvironment, for: app)) {
+            XCTAssertEqual($0 as? IntegrityFailure, .running)
+        }
+
+        XCTAssertEqual(checks, 1)
+        XCTAssertEqual(commands, 0)
+        XCTAssertTrue(try fixture.snapshot(fixture.destination) == before, "Running app bundle changed")
+        try fixture.assertNoTransactions()
+        let next = try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library)
+        next.release()
+    }
+
+    func testPreparationRechecksStoppedStateImmediatelyBeforeExchange() async throws {
+        let fixture = try IntegrityFixture()
+        defer { fixture.remove() }
+        let app = try await fixture.installer().installBundle(at: fixture.source)
+        let before = try fixture.snapshot(fixture.destination)
+        var tools = fixture.tools()
+        var checks = 0
+        tools.requireStopped = { _ in
+            checks += 1
+            if checks == 2 { throw IntegrityFailure.running }
+        }
+        let installer = PackageInstaller(libraryURL: fixture.library, preparationTools: tools)
+
+        XCTAssertThrowsError(try installer.setPreparationMode(.compatibilityEnvironment, for: app)) {
+            XCTAssertEqual($0 as? IntegrityFailure, .running)
+        }
+
+        XCTAssertEqual(checks, 2)
+        XCTAssertTrue(try fixture.snapshot(fixture.destination) == before, "Stopped-state failure replaced the bundle")
+        try fixture.assertNoTransactions()
+        let next = try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library)
+        next.release()
+    }
+
+    func testUninstallRejectsRunningAppAndReleasesLease() async throws {
+        let fixture = try IntegrityFixture()
+        defer { fixture.remove() }
+        let app = try await fixture.installer().installBundle(at: fixture.source)
+        let saved = try fixture.createSave()
+        let before = try fixture.snapshot(fixture.destination)
+        var tools = fixture.tools()
+        var checks = 0
+        tools.requireStopped = { _ in
+            checks += 1
+            XCTAssertThrowsError(try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library))
+            throw IntegrityFailure.running
+        }
+        let installer = PackageInstaller(libraryURL: fixture.library, preparationTools: tools)
+
+        XCTAssertThrowsError(try installer.uninstall(app)) {
+            XCTAssertEqual($0 as? IntegrityFailure, .running)
+        }
+
+        XCTAssertEqual(checks, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path))
+        if FileManager.default.fileExists(atPath: fixture.destination.path) {
+            XCTAssertTrue(try fixture.snapshot(fixture.destination) == before, "Running app was partially removed")
+        }
+        XCTAssertEqual(try Data(contentsOf: saved), Data("save-data".utf8))
+        let next = try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library)
+        next.release()
+    }
+
+    func testPreparationExchangeIOFailurePreservesBundleAndReleasesLease() async throws {
+        let fixture = try IntegrityFixture()
+        defer {
+            chflags(fixture.destination.path, 0)
+            fixture.remove()
+        }
+        let app = try await fixture.installer().installBundle(at: fixture.source)
+        let saved = try fixture.createSave()
+        let before = try fixture.snapshot(fixture.destination)
+        let sourceBefore = try fixture.snapshot(fixture.source)
+        var tools = fixture.tools()
+        var protected = false
+        tools.run = { tool, arguments in
+            if tool == "/usr/bin/codesign" {
+                if arguments.contains("--verify") {
+                    guard chflags(fixture.destination.path, UInt32(UF_IMMUTABLE)) == 0 else {
+                        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                    }
+                    protected = true
+                }
+                return ""
+            }
+            return try Shell.run(tool, arguments)
+        }
+        let installer = PackageInstaller(libraryURL: fixture.library, preparationTools: tools)
+
+        XCTAssertThrowsError(try installer.setPreparationMode(.compatibilityEnvironment, for: app)) {
+            XCTAssertEqual(($0 as NSError).domain, NSPOSIXErrorDomain)
+            XCTAssertEqual(($0 as NSError).code, Int(EPERM))
+        }
+
+        XCTAssertTrue(protected, "Must reach the real atomic exchange, not fail during preparation")
+        XCTAssertEqual(chflags(fixture.destination.path, 0), 0)
+        XCTAssertEqual(try fixture.snapshot(fixture.destination), before)
+        XCTAssertEqual(try fixture.snapshot(fixture.source), sourceBefore)
+        XCTAssertEqual(try Data(contentsOf: saved), Data("save-data".utf8))
+        try fixture.assertNoTransactions()
+        let next = try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library)
+        next.release()
+    }
+
+    func testUninstallIOFailurePreservesBundleAndReleasesLease() async throws {
+        let fixture = try IntegrityFixture()
+        defer {
+            chflags(fixture.destination.path, 0)
+            fixture.remove()
+        }
+        let app = try await fixture.installer().installBundle(at: fixture.source)
+        let saved = try fixture.createSave()
+        let before = try fixture.snapshot(fixture.destination)
+        XCTAssertEqual(chflags(fixture.destination.path, UInt32(UF_IMMUTABLE)), 0)
+
+        XCTAssertThrowsError(try fixture.installer().uninstall(app))
+
+        XCTAssertEqual(chflags(fixture.destination.path, 0), 0)
+        XCTAssertEqual(try fixture.snapshot(fixture.destination), before)
+        XCTAssertEqual(try Data(contentsOf: saved), Data("save-data".utf8))
+        try fixture.assertNoTransactions()
+        let next = try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library)
+        next.release()
+    }
+
+    func testUninstallImmutableDescendantFailurePreservesBundleAndSaveAndReleasesLease() async throws {
+        let fixture = try IntegrityFixture()
+        let locked = fixture.destination.appendingPathComponent("Resources/locked.asset")
+        defer {
+            chflags(locked.path, 0)
+            fixture.remove()
+        }
+        let app = try await fixture.installer().installBundle(at: fixture.source)
+        let saved = try fixture.createSave()
+        try FileManager.default.createDirectory(at: locked.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let asset = Data("protected asset".utf8)
+        try asset.write(to: locked)
+        XCTAssertEqual(chflags(locked.path, UInt32(UF_IMMUTABLE)), 0)
+        let installer = fixture.installer()
+
+        let before = try fixture.snapshot(fixture.destination)
+
+        XCTAssertThrowsError(try installer.uninstall(app)) {
+            let error = $0 as NSError
+            XCTAssertEqual(error.domain, NSCocoaErrorDomain)
+            XCTAssertEqual(error.code, CocoaError.fileWriteNoPermission.rawValue)
+        }
+
+        XCTAssertEqual(try fixture.snapshot(fixture.destination), before)
+        XCTAssertEqual(try Data(contentsOf: locked), asset)
+        XCTAssertEqual(try Data(contentsOf: saved), Data("save-data".utf8))
+        try fixture.assertNoTransactions()
+        let next = try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library)
+        next.release()
+    }
+
+    func testArchiveInstallSwitchReinstallAndUninstallPreserveSourceAndSaves() async throws {
+        for mode in [PreparationMode.compatibility, .compatibilityEnvironment, .nativeContainer] {
+            let fixture = try IntegrityFixture()
+            defer { fixture.remove() }
+            let archive = try fixture.package()
+            let archiveBefore = try Data(contentsOf: archive)
+            let sourceBefore = try fixture.snapshot(fixture.source)
+            let installer = fixture.installer()
+            let installed = try await installer.install(packageAt: archive, mode: mode)
+            XCTAssertEqual(installer.currentPreparationMode(for: installed), mode)
+            let saved = try fixture.createSave()
+
+            let switched: PreparationMode = mode == .compatibilityEnvironment ? .compatibility : .compatibilityEnvironment
+            try installer.setPreparationMode(switched, for: installed)
+            XCTAssertEqual(installer.currentPreparationMode(for: installed), switched)
+            let reinstalled = try await installer.install(packageAt: archive, mode: mode)
+            XCTAssertEqual(installer.currentPreparationMode(for: reinstalled), mode)
+            XCTAssertEqual(try Data(contentsOf: saved), Data("save-data".utf8))
+            try installer.uninstall(reinstalled)
+
+            XCTAssertTrue(try installer.scanLibrary().isEmpty)
+            XCTAssertEqual(try Data(contentsOf: saved), Data("save-data".utf8))
+            XCTAssertEqual(try fixture.snapshot(fixture.source), sourceBefore)
+            XCTAssertEqual(try Data(contentsOf: archive), archiveBefore)
+            try fixture.assertNoTransactions()
+            try fixture.assertNoTemporaryWork()
+        }
+    }
+
+    func testTraversalAndSymlinkArchivesCannotOverwriteOutsideFilesOrInstalledBundle() async throws {
+        let python = "/usr/bin/python3"
+        guard FileManager.default.isExecutableFile(atPath: python) else {
+            throw XCTSkip("Python 3 is required to construct adversarial ZIP entries")
+        }
+        for attack in ["traversal", "symlink-parent"] {
+            let fixture = try IntegrityFixture()
+            defer { fixture.remove() }
+            _ = try await fixture.installer().installBundle(at: fixture.source)
+            let before = try fixture.snapshot(fixture.destination)
+            let sourceBefore = try fixture.snapshot(fixture.source)
+            let saved = try fixture.createSave()
+            let outside = fixture.root.appendingPathComponent("outside", isDirectory: true)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+            let sentinel = outside.appendingPathComponent("sentinel")
+            let original = Data("outside-data".utf8)
+            try original.write(to: sentinel)
+            let archive = fixture.root.appendingPathComponent("\(attack).ipa")
+            _ = try Shell.run(python, ["-c", """
+                import pathlib, sys, zipfile
+                archive, source, outside, attack = sys.argv[1:]
+                with zipfile.ZipFile(archive, 'w') as z:
+                    z.write(pathlib.Path(source) / 'Info.plist', 'Payload/Source.app/Info.plist')
+                    z.write(pathlib.Path(source) / 'Game', 'Payload/Source.app/Game')
+                    if attack == 'traversal':
+                        z.writestr('../../../outside/sentinel', b'overwritten')
+                    else:
+                        link = zipfile.ZipInfo('Payload/Source.app/Resources')
+                        link.create_system = 3
+                        link.external_attr = 0o120777 << 16
+                        z.writestr(link, outside.encode())
+                        z.writestr('Payload/Source.app/Resources/sentinel', b'overwritten')
+                """, archive.path, fixture.source.path, outside.path, attack])
+            var tools = fixture.tools()
+            let run = tools.run
+            var beganPreparation = false
+            tools.run = { tool, arguments in
+                if tool == "/usr/bin/ditto" || tool == "/usr/bin/codesign" { beganPreparation = true }
+                return try run(tool, arguments)
+            }
+            let installer = PackageInstaller(libraryURL: fixture.library, preparationTools: tools)
+
+            do {
+                _ = try await installer.install(packageAt: archive)
+                XCTFail("Accepted \(attack) archive")
+            } catch {
+                switch error {
+                case PearError.commandFailed, PearError.invalidPackage: break
+                default: XCTFail("Unexpected admission error: \(error)")
+                }
+            }
+
+            XCTAssertFalse(beganPreparation, "Unsafe archive reached bundle preparation")
+            XCTAssertEqual(try Data(contentsOf: sentinel), original)
+            XCTAssertEqual(try Data(contentsOf: saved), Data("save-data".utf8))
+            XCTAssertEqual(try fixture.snapshot(fixture.destination), before)
+            XCTAssertEqual(try fixture.snapshot(fixture.source), sourceBefore)
+            try fixture.assertNoTransactions()
+            try fixture.assertNoTemporaryWork()
+        }
+    }
+
     func testCRCFailureIsRejectedBeforeReplacingAnInstalledApp() async throws {
         let fixture = try IntegrityFixture()
         defer { fixture.remove() }
@@ -260,6 +530,15 @@ private final class IntegrityFixture {
         let signature = source.appendingPathComponent("_CodeSignature")
         try FileManager.default.createDirectory(at: signature, withIntermediateDirectories: false)
         try Data("original-signature".utf8).write(to: signature.appendingPathComponent("CodeResources"))
+    }
+
+    func package() throws -> URL {
+        let payload = root.appendingPathComponent("Payload", isDirectory: true)
+        try FileManager.default.createDirectory(at: payload, withIntermediateDirectories: false)
+        try FileManager.default.copyItem(at: source, to: payload.appendingPathComponent("Source.app"))
+        let archive = root.appendingPathComponent("Source.ipa")
+        _ = try Shell.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", payload.path, archive.path])
+        return archive
     }
 
     func addImage(at relative: String, data: Data) throws {
@@ -318,6 +597,19 @@ private final class IntegrityFixture {
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: library.path).contains {
             $0.hasPrefix(".pear-install-") || $0.hasPrefix(".pear-preparation-")
         }, file: file, line: line)
+    }
+
+    /// `Work` intentionally keeps the empty/debug entitlement plists used for
+    /// signing. A failed transaction must leave no per-install UUID directory.
+    func assertNoTemporaryWork(file: StaticString = #filePath, line: UInt = #line) throws {
+        let work = support.appendingPathComponent("Work")
+        guard FileManager.default.fileExists(atPath: work.path) else { return }
+        let allowed: Set<String> = [
+            "entitlements.plist", "native-entitlements.plist", "debug-entitlements.plist"
+        ]
+        let unexpected = try FileManager.default.contentsOfDirectory(atPath: work.path)
+            .filter { !allowed.contains($0) }
+        XCTAssertTrue(unexpected.isEmpty, "Temporary work entries remain: \(unexpected)", file: file, line: line)
     }
 
     func createSave() throws -> URL {

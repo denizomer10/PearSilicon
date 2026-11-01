@@ -15,6 +15,10 @@ struct StorageMigrationResult: Sendable {
 /// untouched.
 struct StorageMigration: Sendable {
 
+    /// Flat iOS bundles can live in the legacy Applications folder or the new
+    /// ios-apps folder; both are rebased when storage moves.
+    static let flatApplicationFolders = ["Applications", "ios-apps"]
+
     /// Rewrites an installed app's absolute load paths for the new root and
     /// re-signs the copy. Injectable so tests can exercise the copy/commit
     /// transaction without signing synthetic bundles.
@@ -94,18 +98,22 @@ struct StorageMigration: Sendable {
         try copyNativeContainerDataIfNeeded(from: source, into: staging, progress: progress)
 
         progress("Rebasing installed apps")
-        let stagedApps = try appBundles(in: staging.appendingPathComponent("Applications"))
-        for staged in stagedApps {
-            let original = source.appendingPathComponent("Applications")
-                .appendingPathComponent(staged.lastPathComponent, isDirectory: true)
-            let final = target.appendingPathComponent("Applications")
-                .appendingPathComponent(staged.lastPathComponent, isDirectory: true)
-            progress("Preparing \(staged.deletingPathExtension().lastPathComponent)")
-            try relocateBundle(staged, original, final)
+        for folder in Self.flatApplicationFolders {
+            let stagedApps = try appBundles(in: staging.appendingPathComponent(folder))
+            for staged in stagedApps {
+                let original = source.appendingPathComponent(folder)
+                    .appendingPathComponent(staged.lastPathComponent, isDirectory: true)
+                let final = target.appendingPathComponent(folder)
+                    .appendingPathComponent(staged.lastPathComponent, isDirectory: true)
+                progress("Preparing \(staged.deletingPathExtension().lastPathComponent)")
+                try relocateBundle(staged, original, final)
+            }
         }
 
         progress("Verifying copy")
-        try verifyCopy(from: source, to: staging, relocatedApps: stagedApps.count)
+        try verifyCopy(from: source, to: staging, relocatedApps: Self.flatApplicationFolders.reduce(0) { total, folder in
+            total + ((try? appBundles(in: staging.appendingPathComponent(folder)))?.count ?? 0)
+        })
 
         // Same-volume rename: staging is deliberately a sibling of the target.
         progress("Activating new location")
@@ -161,11 +169,18 @@ struct StorageMigration: Sendable {
     }
 
     private func hasRunningApps(from root: URL) -> Bool {
-        let applications = root.appendingPathComponent("Applications", isDirectory: true)
-        let ids = Set((try? appBundles(in: applications))?.map { $0.deletingPathExtension().lastPathComponent } ?? [])
-        guard !ids.isEmpty else { return false }
-        return NSWorkspace.shared.runningApplications.contains {
-            !$0.isTerminated && $0.bundleIdentifier.map(ids.contains) == true
+        var ids: Set<String> = []
+        for folder in Self.flatApplicationFolders {
+            let applications = root.appendingPathComponent(folder, isDirectory: true)
+            let bundles = (try? appBundles(in: applications)) ?? []
+            ids.formUnion(bundles.map { $0.deletingPathExtension().lastPathComponent })
+        }
+        let canonicalRoot = LibraryPath.canonicalPath(root)
+        return NSWorkspace.shared.runningApplications.contains { running in
+            guard !running.isTerminated else { return false }
+            if let bundleID = running.bundleIdentifier, ids.contains(bundleID) { return true }
+            let path = running.executableURL?.path ?? running.bundleURL?.path
+            return path.map { LibraryPath.canonicalPath(URL(fileURLWithPath: $0)).hasPrefix(canonicalRoot + "/") } ?? false
         }
     }
 
@@ -185,15 +200,21 @@ struct StorageMigration: Sendable {
     /// differ; everything else must match file-for-file in size.
     private func verifyCopy(from source: URL, to copy: URL, relocatedApps: Int) throws {
         func inventory(_ root: URL, excludingApps: Bool) throws -> [String: Int64] {
+            let root = LibraryPath.canonicalURL(root)
             var result: [String: Int64] = [:]
             guard let enumerator = fileManager.enumerator(
                 at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
             ) else { return result }
             for case let item as URL in enumerator {
                 let relative = item.path.dropFirst(root.path.count + 1)
-                if excludingApps && relative.hasPrefix("Applications/") {
-                    let rest = relative.dropFirst("Applications/".count)
-                    if rest.contains("/") || rest.hasSuffix(".app") { continue }
+                if excludingApps {
+                    let relativeString = String(relative)
+                    if let folder = Self.flatApplicationFolders.first(where: {
+                        relativeString.hasPrefix($0 + "/")
+                    }) {
+                        let inside = relativeString.dropFirst(folder.count + 1)
+                        if inside.contains("/") || inside.hasSuffix(".app") { continue }
+                    }
                 }
                 let values = try? item.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
                 guard values?.isRegularFile == true else { continue }
@@ -203,13 +224,17 @@ struct StorageMigration: Sendable {
         }
         let original = try inventory(source, excludingApps: false)
         let copied = try inventory(copy, excludingApps: true)
-        for (path, size) in original where !path.hasPrefix("Applications/") {
+        for (path, size) in original where !Self.flatApplicationFolders.contains(where: { path.hasPrefix($0 + "/") }) {
             guard copied[path] == size else {
                 throw PearError.invalidPackage("Verification failed for \(path); the copy was discarded")
             }
         }
-        let stagedApps = (try? appBundles(in: copy.appendingPathComponent("Applications")))?.count ?? 0
-        let sourceApps = (try? appBundles(in: source.appendingPathComponent("Applications")))?.count ?? 0
+        let stagedApps = Self.flatApplicationFolders.reduce(0) { total, folder in
+            total + ((try? appBundles(in: copy.appendingPathComponent(folder)))?.count ?? 0)
+        }
+        let sourceApps = Self.flatApplicationFolders.reduce(0) { total, folder in
+            total + ((try? appBundles(in: source.appendingPathComponent(folder)))?.count ?? 0)
+        }
         guard stagedApps == sourceApps, stagedApps == relocatedApps else {
             throw PearError.invalidPackage("Not every installed app was prepared in the copy")
         }
@@ -223,7 +248,10 @@ struct StorageMigration: Sendable {
     private func copyNativeContainerDataIfNeeded(
         from source: URL, into staging: URL, progress: @escaping @Sendable (String) -> Void
     ) throws {
-        for app in (try? appBundles(in: source.appendingPathComponent("Applications"))) ?? [] {
+        let bundles = Self.flatApplicationFolders.flatMap {
+            (try? appBundles(in: source.appendingPathComponent($0))) ?? []
+        }
+        for app in bundles {
             let id = app.deletingPathExtension().lastPathComponent
             let container = AppPaths.nativeContainerData(for: id)
             let containerDocuments = container.appendingPathComponent("Documents", isDirectory: true)

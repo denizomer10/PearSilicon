@@ -8,16 +8,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let state = AppState.shared
-        let games = state.runningGames
-        guard !games.isEmpty else { return .terminateNow }
+        let names = state.runningGameNames
+        guard !names.isEmpty else { return .terminateNow }
 
-        let names = games.map(\.displayName).joined(separator: ", ")
+        let joined = names.joined(separator: ", ")
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = games.count == 1
+        alert.messageText = names.count == 1
             ? "A game is still running"
-            : "\(games.count) games are still running"
-        alert.informativeText = "Quitting PearSilicon will also stop: \(names)."
+            : "\(names.count) games are still running"
+        alert.informativeText = "Quitting PearSilicon will also stop: \(joined)."
         alert.addButton(withTitle: "Quit and Stop Games")
         alert.addButton(withTitle: "Cancel")
 

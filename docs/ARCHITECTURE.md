@@ -5,14 +5,96 @@ iOS apps on macOS. It prepares installed app copies and adds an in-process
 compatibility runtime on top of Apple's frameworks. It is not an independent
 implementation of iOS, UIKit or a device kernel.
 
-This document tracks development source. Experimental host/environment loading,
-IPA drop handling and storage relocation are not part of stable v0.2.0. See
-[release channels](../README.md#release-channels) and each artifact's release notes
+This document tracks development source. The three-platform portable library,
+backups, external-library support, managed Mac/Wine launch and updater are
+current source features on a separate feature branch; they are not part of a
+published stable release. See [release channels](../README.md#release-channels)
 for the distinction between source features and published builds.
 
-## Execution path
+## Library model
 
-1. The installer extracts an IPA or reads an iOS device `.app` bundle. It rejects
+The root holds three platform folders. They are created lazily, only when that
+platform receives its first item:
+
+| Folder | Layout | Launch model |
+| --- | --- | --- |
+| `ios-apps` | flat `<bundle-id>.app` bundles | Mac Catalyst preparation + in-process runtime |
+| `mac-apps` | `<id>/Payload/<name>.app`, `Data/` | copy-only import, direct native launch, private `HOME` |
+| `wine-apps` | `<id>/Payload/Program`, `Data/`, `Prefix/` | registered Wine engine + per-game prefix |
+
+The legacy `Applications/` folder is still scanned for iOS apps, so an existing
+library keeps working without a forced migration. `PortableLibrary` reads
+manifests (`pear-app.json`) for Mac/Wine entries, validates relative paths and
+rejects entries that escape their directory. No platform folder is created by a
+read-only scan.
+
+`LibraryEntry` is the shared unit for Mac/Wine entries and for backup snapshots.
+An iOS backup is assembled from APFS clones of the flat bundle, its `Games` data,
+keychain store, ODR folder and keymap; the archive itself uses the same verified
+single-file format. Restore writes into a private staging library first and only
+activates the entry after validation.
+
+## Managed launch boundaries
+
+Mac entries launch directly from their managed payload with an allowlist
+environment and private home/temp directories. There is no sandbox wrapper, VM
+or emulation layer; absolute host paths remain reachable. Wine entries use a
+private prefix and a self-contained engine. Host root mappings (`z:`) are
+removed; a per-entry `g:` mapping exposes only that game's `Payload/Program` as
+a Windows drive so the runner can resolve its own data files and relative paths.
+
+This is **not** a virtual machine, kernel sandbox or anti-cheat-safe environment.
+A native app that requires an unsupported helper or entitlement may fail; Wine
+games that require kernel drivers or anti-cheat will not work. Process handles are
+created only by our own launcher and never from a caller-supplied PID.
+
+## Open-source Wine engines
+
+Automatic engines come from the open-source `Gcenx/macOS_Wine_builds` release
+feed. GitHub's SHA-256 is mandatory; if the rate-limited API is unavailable, the
+public Atom feed and asset page provide the same tag and hash. The tar archive is
+listed and path-admitted before extraction, then the runtime is moved into place
+without a second copy. GPTK is no longer supported.
+
+Graphics selection is per game. The MoltenVK backend pairs MoltenVK with an
+optional, pinned DXVK 1.10.3 x64 component (`Gcenx/DXVK-macOS`): the component
+lives under `<engine>/Graphics/DXVK`, is mirrored into that game's private prefix
+before launch, and Wine's originals are restored when another backend is chosen.
+The prefix marker records which files belong to us, so a foreign DLL is never
+deleted. Preparation also adds Xcode's Game Controllers capability keys when an
+app does not declare controller support; the runtime supplies early discovery,
+identity normalization and a connect replay. DXMT is an optional per-engine overlay installed from `3Shain/dxmt`, but
+it also requires a Wine build that exports winemac's Metal view symbols; release
+Gcenx builds hide them, so the launch plan refuses DXMT instead of aborting in
+DXMT's swapchain. KosmicKrisp was removed: it is arm64-only and the automatic
+WineHQ engines are x86_64. Engines can be removed from the registered list;
+only the engine directory is deleted. Community engines are resolved from a
+GitHub repository URL (newest release archive, or the source ZIP when the
+repository has no release) with GitHub-hosted digests checked when available.
+
+## Updates and runtime refresh
+
+Update checks are explicit user actions against `denizomer10/PearSilicon`.
+The GUI offers only the development channel and a single Check for Updates
+button; Development Beta accepts prereleases and the mutable `development-beta`
+tag. If the unauthenticated API is rate-limited, the updater reconstructs the
+tag, commit and digest from GitHub's public release feed and pages. After
+a GitHub SHA-256 and bundle-signature check, the app is staged privately. The
+relaunch helper waits for the exact parent process, validates the staged and
+installed bundles again, clones the staged app beside the destination, swaps them
+with `RENAME_SWAP` and keeps the old app as a visible rollback copy. GitHub's
+digest is not a publisher signature, and builds are not notarized.
+
+After a new build is installed, **Settings → Updates → Refresh iOS Runtimes Now**
+compares the content fingerprint of each stopped iOS app's runtime directory with
+the app's bundled runtime. Only differing apps are staged, prepared and re-signed;
+the app's own files and data are preserved.
+
+## Mac Catalyst execution path
+
+1. The installer admits an IPA only after reading its ZIP central directory and
+   rejecting traversal, absolute, drive-letter and ambiguous entry paths; then it
+   extracts the archive or reads an iOS device `.app` bundle. It rejects
    extraction/CRC failures and preflights the main executable and recognized
    nested Mach-O images before mutation. Encrypted code is rejected, not decrypted
    or relabeled as plaintext. Preparation/signature verification uses a staged
@@ -38,6 +120,23 @@ Implementation references:
 [`runtime/build.sh`](../runtime/build.sh). The runtime build target is
 `arm64-apple-ios15.0-macabi`, linked against Apple frameworks including UIKit,
 Foundation, Metal and QuartzCore.
+
+### Platform service boundaries
+
+`AppState` is a SwiftUI coordinator; platform rules are kept in separate
+services so a change to one platform cannot silently alter another:
+
+| Boundary | Responsibility |
+| --- | --- |
+| `IOSAppService` | Catalyst preparation, lease handling, runtime environment flags, iOS uninstall |
+| `MacAppService` | Copy-only native Mac import and launch (no Wine engine argument) |
+| `WineAppService` | Wine import, engine resolution, launch, release checks, graphics components |
+| `ManagedAppService` | Shared low-level copy/launch primitive used only by the Mac and Wine services |
+
+`WineExecutableDiscovery` and `WineExecutableSelectionView` keep folder
+inspection and executable selection out of the launcher. Import never executes
+anything from the source folder, and a repair action can repoint an existing
+entry at another program inside its own `Payload/Program`.
 
 The read-only `pearsilicon validate <App.app|Mach-O>` command exposes input
 preflight without launching a game or creating app-data directories. It does not
@@ -131,6 +230,9 @@ and [PlayTools: how it works](https://github.com/PlayCover/PlayTools#how-it-work
   downloads, sustained gameplay, rendering correctness or frame pacing.
 - Background GUI startup does not establish that GUI installation, drag-and-drop
   or settings interactions work end to end. A CLI install test is not a GUI test.
+  GUI package imports are serialized and launch/uninstall/storage mutations are
+  gated while an import is active; this prevents library races but does not
+  substitute for a manual drag-and-drop check.
 - The prebuilt bundle includes PearSilicon's libraries, but some app-preparation
   and relocation paths still require Command Line Tools. That is not a fully
   tool-free clean-Mac installation guarantee.
@@ -142,6 +244,6 @@ and [PlayTools: how it works](https://github.com/PlayCover/PlayTools#how-it-work
   isolation from all same-user processes. Do not treat these mechanisms as a
   security boundary for untrusted apps.
 
-For setup and current limitations, see the [README](../README.md) and
-[CLI reference](CLI.md). Release notes identify the tested build separately from
+For setup and current limitations, see the [README](../README.md),
+[testing and validation](TESTING.md) and [CLI reference](CLI.md). Release notes identify the tested build separately from
 ongoing source/documentation changes.

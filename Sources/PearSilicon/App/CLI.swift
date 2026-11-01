@@ -29,6 +29,7 @@ struct CLIPaths: Sendable {
 
     let support: URL
     let library: URL
+    let legacyLibrary: URL
     let keymaps: URL
     let logs: URL
     let work: URL
@@ -37,7 +38,8 @@ struct CLIPaths: Sendable {
         AppPaths.migrateLegacySupportDirectoryIfNeeded()
         let base = AppPaths.supportRoot
         support = base
-        library = base.appendingPathComponent("Applications", isDirectory: true)
+        library = base.appendingPathComponent(PortableLibrary.iOSFolder, isDirectory: true)
+        legacyLibrary = base.appendingPathComponent("Applications", isDirectory: true)
         keymaps = base.appendingPathComponent("Keymaps", isDirectory: true)
         logs = base.appendingPathComponent("Logs", isDirectory: true)
         work = base.appendingPathComponent("Work", isDirectory: true)
@@ -140,12 +142,108 @@ enum CLI {
         case "link", "install-cli": return try linkCommand(parsed)
         case "build": return try buildProjectCommand(parsed)
         case "host-service": return try hostServiceCommand(parsed)
+        case "apply-update": return try applyUpdateCommand(parsed)
         default:
             throw CLIError.message("unknown command '\(command)'. Run `pearsilicon help`.")
         }
     }
 
     // MARK: Host service
+
+    /// Hidden relaunch helper. The running GUI spawns a copy of the old binary
+    /// with the verified staged app, then quits. The helper waits for that exact
+    /// parent to exit, validates the staged app again, clones it beside the
+    /// destination and swaps atomically.
+    private static func applyUpdateCommand(_ arguments: CLIArguments) throws -> Int32 {
+        guard let sourcePath = arguments.options["source"],
+              let parentText = arguments.options["parent-pid"],
+              let parentPID = Int32(parentText), parentPID > 0 else {
+            throw CLIError.message("apply-update requires --source <staged.app> --parent-pid <pid>")
+        }
+        let destination = Bundle.main.bundleURL.standardizedFileURL
+        guard destination.pathExtension == "app",
+              Bundle.main.bundleIdentifier == "com.pearsilicon.app" else {
+            throw CLIError.message("apply-update must run from inside the installed PearSilicon.app")
+        }
+        let source = URL(fileURLWithPath: sourcePath).standardizedFileURL
+        guard source.pathExtension == "app", source != destination else {
+            throw CLIError.message("The staged update must be a different .app bundle")
+        }
+        let stagingRoot = AppUpdateService.defaultStagingRoot.standardizedFileURL
+        guard LibraryPath.isInside(source, root: stagingRoot) else {
+            throw CLIError.message("The staged update is outside PearSilicon's private update folder")
+        }
+        try verifyUpdateBundle(source)
+
+        print("Waiting for PearSilicon (pid \(parentPID)) to quit…")
+        let deadline = Date().addingTimeInterval(180)
+        let destinationExecutable = destination
+            .appendingPathComponent("Contents/MacOS/PearSilicon").standardizedFileURL.path
+        while kill(parentPID, 0) == 0 {
+            guard Date() < deadline else {
+                throw CLIError.message("Timed out waiting for the running app to quit; nothing was replaced")
+            }
+            var reused = false
+            if let running = NSRunningApplication(processIdentifier: parentPID) {
+                let path = running.executableURL?.standardizedFileURL.path
+                reused = path != nil && path != destinationExecutable
+            }
+            if reused {
+                throw CLIError.message("Parent PID was reused by another process; nothing was replaced")
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        let container = destination.deletingLastPathComponent()
+            .appendingPathComponent(".pear-update-\(UUID().uuidString)", isDirectory: true)
+        let staged = container.appendingPathComponent(destination.lastPathComponent, isDirectory: true)
+        var committed = false
+        defer { if !committed { try? FileManager.default.removeItem(at: container) } }
+        do {
+            try FileManager.default.createDirectory(at: container, withIntermediateDirectories: false)
+            _ = try Shell.run("/usr/bin/ditto", ["--clone", source.path, staged.path])
+            try verifyUpdateBundle(staged)
+            guard renamex_np(staged.path, destination.path, UInt32(RENAME_SWAP)) == 0 else {
+                throw CLIError.message("Atomic update failed: \(String(cString: strerror(errno)))")
+            }
+            // The previous app now sits at `staged`; keep it as a rollback copy.
+            let rollback = destination.deletingLastPathComponent()
+                .appendingPathComponent(".PearSilicon-rollback-\(UUID().uuidString).app", isDirectory: true)
+            do {
+                try verifyUpdateBundle(destination)
+                try FileManager.default.moveItem(at: staged, to: rollback)
+                committed = true
+                print("update installed: \(destination.path)")
+                print("previous app kept at: \(rollback.path)")
+            } catch {
+                _ = renamex_np(staged.path, destination.path, UInt32(RENAME_SWAP))
+                throw error
+            }
+        }
+        try? FileManager.default.removeItem(at: container)
+        if !arguments.flags.contains("no-launch") {
+            _ = try Shell.run("/usr/bin/open", ["-n", destination.path])
+        }
+        return 0
+    }
+
+    private static func verifyUpdateBundle(_ bundle: URL) throws {
+        guard let info = NSDictionary(contentsOf: bundle.appendingPathComponent("Contents/Info.plist"))
+            as? [String: Any],
+              info["CFBundleIdentifier"] as? String == "com.pearsilicon.app",
+              let executable = info["CFBundleExecutable"] as? String else {
+            throw CLIError.message("The update is not a PearSilicon.app bundle")
+        }
+        let binary = bundle.appendingPathComponent("Contents/MacOS/\(executable)")
+        guard FileManager.default.isExecutableFile(atPath: binary.path) else {
+            throw CLIError.message("The update executable is missing")
+        }
+        _ = try Shell.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", bundle.path])
+        let archs = try Shell.run("/usr/bin/lipo", ["-archs", binary.path])
+        guard archs.split(whereSeparator: \.isWhitespace).contains("arm64") else {
+            throw CLIError.message("The update has no arm64 slice")
+        }
+    }
 
     /// Hidden command used by `AppLauncher` to run the out-of-process service.
     /// No UI: exits when its attached game exits, its startup lease expires,
@@ -472,7 +570,7 @@ enum CLI {
     }
 
     private static func listCommand(_ arguments: CLIArguments) throws -> Int32 {
-        let apps = try PackageInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()
+        let apps = try allApps()
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
 
         if arguments.flags.contains("json") {
@@ -735,6 +833,10 @@ enum CLI {
         let paths = CLIPaths.shared
         print("support:  \(paths.support.path)")
         print("library:  \(paths.library.path)")
+        print("legacy:   \(paths.legacyLibrary.path)")
+        print("mac apps: \(paths.support.appendingPathComponent(PortableLibrary.macFolder).path)")
+        print("wine:     \(paths.support.appendingPathComponent(PortableLibrary.wineFolder).path)")
+        print("engines:  \(paths.support.appendingPathComponent("Engines").path)")
         print("keymaps:  \(paths.keymaps.path)")
         print("logs:     \(paths.logs.path)")
         print("odr:      \(paths.support.appendingPathComponent("ODR").path)")
@@ -883,8 +985,24 @@ enum CLI {
 
     // MARK: Helpers
 
+    /// The new iOS library plus the legacy Applications folder, deduplicated by
+    /// bundle identifier with the new library taking precedence.
+    private static func allApps() throws -> [InstalledApp] {
+        let paths = CLIPaths.shared
+        var seen: Set<String> = []
+        var result: [InstalledApp] = []
+        for folder in [paths.library, paths.legacyLibrary] {
+            for app in try PackageInstaller(libraryURL: folder).scanLibrary() {
+                guard !seen.contains(app.id) else { continue }
+                seen.insert(app.id)
+                result.append(app)
+            }
+        }
+        return result
+    }
+
     private static func resolveApp(_ query: String) throws -> InstalledApp {
-        let apps = try PackageInstaller(libraryURL: CLIPaths.shared.library).scanLibrary()
+        let apps = try allApps()
         if let exact = apps.first(where: { $0.id == query }) { return exact }
 
         let matches = apps.filter {

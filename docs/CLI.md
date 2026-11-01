@@ -6,9 +6,11 @@ signer, launcher and keymap code with the app. The supported inputs and options
 differ in places; for example, `.app` directory installation is currently a CLI
 workflow. See [Architecture](ARCHITECTURE.md) for the execution model.
 
-This reference tracks development source. Host/environment injection, storage
-relocation and GUI IPA drop handling are not in stable v0.2.0; published artifacts
-can lag behind the source. See [release channels](../README.md#release-channels)
+This reference tracks development source. The three-platform library, single-file
+backups, updater and Mac/Wine management are on a separate feature branch, not in
+stable v0.2.0 or the published beta; published artifacts can lag behind the source.
+The CLI currently manages the iOS library and legacy iOS apps. Mac and Wine entries
+are managed from the GUI. See [release channels](../README.md#release-channels)
 and the notes for the build you downloaded.
 
 It is designed for two workflows:
@@ -74,11 +76,15 @@ pearsilicon hud <id|name> [on|off]   Print or set the Metal HUD/FPS overlay
 pearsilicon pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
 pearsilicon logs <id|name>      Print or follow the log (--follow, --system)
 pearsilicon paths               Show the Application Support layout
-pearsilicon storage [move <folder>|remove-previous]  Show storage or experimentally relocate managed apps/data
+pearsilicon storage [move <folder>|remove-previous]  Show storage or relocate the managed library
 pearsilicon doctor              Report build tools, runtime location and library status
 pearsilicon link                Symlink this binary to /usr/local/bin
 pearsilicon build <project>     Build a scheme for a device, install, launch
 ```
+
+A hidden `apply-update` command is used only by the GUI's verified relaunch
+helper. It accepts a staged `.app` inside PearSilicon's private update folder and
+the parent PID; it is not a general-purpose replacement command.
 
 `<id|name>` accepts either the bundle identifier or the display name. An
 ambiguous display name lists the candidates instead of guessing.
@@ -139,9 +145,9 @@ requires that toolchain and stops with setup instructions if it is unavailable.
 - **`.app` directory** — an arm64 iOS device-build bundle. Unsupported binaries,
   including simulator builds, cannot be made compatible by renaming the bundle.
 
-IPA archives can also be **dragged onto the main window**. For `.app` directories,
-use `pearsilicon install <path-to-app>`: the GUI currently routes accepted URLs
-through the archive installer and does not implement the directory-install path.
+IPA archives and iOS device `.app` bundles can also be selected in or dragged
+onto the main window. The GUI routes each input to the matching installer and
+serializes overlapping requests; the CLI remains available for scripting.
 
 The GUI and CLI share the preparation pipeline: read-only whole-bundle preflight
 → sibling staged copy → `Info.plist` and signature-sidecar preparation → bounded
@@ -329,11 +335,18 @@ apps and saves before removing the old copy.
 
 ```sh
 pearsilicon storage                        # show the current root and previous copy
-pearsilicon storage move /Volumes/Games    # experimental copy to /Volumes/Games/PearSilicon
+pearsilicon storage move /Volumes/Games    # copy to /Volumes/Games/PearSilicon
 pearsilicon storage remove-previous        # delete the retained rollback copy
 ```
 
-The same commands are available in **Settings → Storage location**.
+The same commands are available in **Settings → General**.
+
+The migration copies `ios-apps`, the legacy `Applications` folder, `mac-apps`,
+`wine-apps`, `Games`, `Keychain`, `ODR`, keymaps, logs, engines and unknown future
+entries, verifies the copy, rewrites iOS load paths and keeps the previous root
+until removed. An opt-in real external APFS test is documented in
+[Testing](TESTING.md#external-disk-check). Passing that test is not a certification
+of every external enclosure or game.
 
 How a move works:
 
@@ -468,7 +481,11 @@ Default managed layout (a selected storage root replaces the top-level path):
 
 ```
 ~/Library/Application Support/PearSilicon/
-  Applications/<bundleID>.app
+  ios-apps/<bundleID>.app
+  Applications/<bundleID>.app     (legacy location, still read)
+  mac-apps/<id>/Payload|Data
+  wine-apps/<id>/Payload|Data|Prefix
+  Engines/<engine-id>/Runtime
   Keymaps/<bundleID>.json
   Logs/<bundleID>.log
   Logs/<bundleID>.host.log        (experimental environment-injection mode)

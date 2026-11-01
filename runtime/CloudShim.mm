@@ -402,7 +402,10 @@ static void PearInstallUbiquityContainer(void) {
     if (tokenMethod) {
         method_setImplementation(tokenMethod, imp_implementationWithBlock(^id(id self) {
             NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"unknown";
-            return [@"pearsilicon-local-" stringByAppendingString:bundleID];
+            // iOS SDKs may Base64-encode this opaque token as NSData. Preserve
+            // the stable local identity bytes, not a string or iCloud credential.
+            NSString *identity = [@"pearsilicon-local-" stringByAppendingString:bundleID];
+            return [[identity dataUsingEncoding:NSUTF8StringEncoding] copy];
         }));
     }
 
