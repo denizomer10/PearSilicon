@@ -1,8 +1,9 @@
 # PearSilicon — Çalışma Durumu
 
 Son güncelleme: 2026-11-01 10:30 · Dal: `feature/portable-multiplatform`
-Son commit: `e9535dc` (origin'a push edildi)
-Uygulama paketi: `build/PearSilicon.app` (release, ad-hoc imzalı, `e9535dc` gömülü)
+Son commit: `5b92ae6` (origin'a push edildi; `development-beta` etiketi de bu commit'e taşındı)
+Uygulama paketi: `build/PearSilicon.app` **0.4.0 (12)**, `5b92ae6`; `development-beta` sürümüne yüklendi (SHA-256 `bcad1d90…`)
+Web sitesi: `pearsilicon-web` `7c9ff49` (Wine/DXVK/denetleyici/kanal güncellemesi)
 
 Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam edebilir.
 
@@ -221,6 +222,8 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
 | --- | --- |
 | `swift build` | temiz |
 | `swift test` | **287 XCTest + 24 Swift Testing, 0 hata, 14 opsiyonel skip** (son koşu) |
+| Development release | `development-beta` → **0.4.0**, asset `PearSilicon.zip` (2.31 MB), SHA-256 `bcad1d90…` |
+| Web sitesi | güncellendi ve `main`'e push edildi (Cloudflare Pages otomatik dağıtım) |
 | Güncelleme kanalları | liste tabanlı seçim testleri ✓ |
 | Community GitHub | URL ayrıştırma + gerçek repo çözümleme testi ✓ |
 | Motor kaldırma | birim testi ✓ |
