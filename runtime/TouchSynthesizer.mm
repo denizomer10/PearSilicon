@@ -297,22 +297,28 @@ static id PearVirtualDigitizer(void) {
     if (!digitizer) return nil;
 
     // Bind to the key window's context, so the touch lands in the right scene.
+    // Without a context the posted collection is malformed and UIKit's event
+    // dispatcher crashes, so wait for a key window instead of caching one.
     UIWindow *key = nil;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
         for (UIWindow *w in ((UIWindowScene *)scene).windows) if (w.isKeyWindow) key = w;
     }
     SEL ctxSel = NSSelectorFromString(@"_contextId");
-    if (key && [key respondsToSelector:ctxSel]) {
-        uint32_t contextId = (uint32_t)((unsigned long (*)(id, SEL))objc_msgSend)(key, ctxSel);
-        SEL setCtx = NSSelectorFromString(@"setContextId:");
-        if ([digitizer respondsToSelector:setCtx]) {
-            ((void (*)(id, SEL, uint32_t))objc_msgSend)(digitizer, setCtx, contextId);
-        }
-        PearLog(@"[PearRuntime][touch] virtual digitizer=%p contextId=0x%x", digitizer, contextId);
-    } else {
-        PearLog(@"[PearRuntime][touch] virtual digitizer=%p (no contextId)", digitizer);
+    if (!key || ![key respondsToSelector:ctxSel]) {
+        PearLog(@"[PearRuntime][touch] virtual digitizer deferred (no key window)");
+        return nil;
     }
+    uint32_t contextId = (uint32_t)((unsigned long (*)(id, SEL))objc_msgSend)(key, ctxSel);
+    if (contextId == 0) {
+        PearLog(@"[PearRuntime][touch] virtual digitizer deferred (contextId 0)");
+        return nil;
+    }
+    SEL setCtx = NSSelectorFromString(@"setContextId:");
+    if ([digitizer respondsToSelector:setCtx]) {
+        ((void (*)(id, SEL, uint32_t))objc_msgSend)(digitizer, setCtx, contextId);
+    }
+    PearLog(@"[PearRuntime][touch] virtual digitizer=%p contextId=0x%x", digitizer, contextId);
     gVirtualDigitizer = digitizer;
     return digitizer;
 }
@@ -322,14 +328,13 @@ static id PearVirtualDigitizer(void) {
 static os_unfair_lock *PearVirtualDigitizerLock(id digitizer) {
     static ptrdiff_t offset = 0;
     static BOOL resolved = NO;
+    static BOOL present = NO;
     if (!resolved) {
         resolved = YES;
         Ivar ivar = class_getInstanceVariable(NSClassFromString(@"UINSVirtualDigitizer"), "_spinLock");
-        if (ivar) offset = ivar_getOffset(ivar);
+        if (ivar) { offset = ivar_getOffset(ivar); present = YES; }
     }
-    if (offset == 0 && class_getInstanceVariable(NSClassFromString(@"UINSVirtualDigitizer"), "_spinLock") == NULL) {
-        return NULL;
-    }
+    if (!present) return NULL;
     return (os_unfair_lock *)((char *)(__bridge void *)digitizer + offset);
 }
 
