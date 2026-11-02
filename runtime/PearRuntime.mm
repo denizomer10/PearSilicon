@@ -1068,6 +1068,17 @@ static NSString *KeyNameForEvent(id event) {
 // "should have proxy before assigning wc" assertion on current macOS. The
 // minimum-size pass is not available before the proxy exists; skip that one
 // pass and let UIKit attach the window normally.
+static BOOL PearIsLegacyApp(void) {
+    if (NSProcessInfo.processInfo.environment[@"PEAR_LEGACY_WINDOW_FIX"].boolValue) return YES;
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    if (info[@"UIApplicationSceneManifest"]) return NO;
+    NSString *sdk = [(NSString *)info[@"DTSDKName"] ?: @"" lowercaseString];
+    NSString *version = [sdk hasPrefix:@"iphoneos"]
+        ? [sdk substringFromIndex:@"iphoneos".length] : sdk;
+    double major = version.doubleValue;
+    return major > 0 && major < 15.0;
+}
+
 // Directly-launched Catalyst processes are not always activated or given a key
 // window, especially after a legacy window-controller path. Bring the game
 // window forward and make it key so normal mouse clicks reach UIKit.
@@ -1085,18 +1096,25 @@ static void InstallNativeTouchTracking(void) {
         Method method = cls ? class_getInstanceMethod(cls, sel) : NULL;
         if (!method) return;
         IMP original = method_getImplementation(method);
-        method_setImplementation(method, imp_implementationWithBlock(^(id self, SEL _cmd, id event) {
+        // imp_implementationWithBlock blocks receive the receiver followed by
+        // the method arguments; the selector is not passed. Declaring a SEL
+        // parameter shifts every argument and hands UIKit a garbage event.
+        method_setImplementation(method, imp_implementationWithBlock(^(id self, id event) {
             @try {
                 NSSet *touches = [event respondsToSelector:@selector(allTouches)]
                     ? ((id (*)(id, SEL))objc_msgSend)(event, @selector(allTouches)) : nil;
                 if (touches.count > 0) gNativeTouchGeneration++;
             } @catch (__unused NSException *exception) {}
-            ((void (*)(id, SEL, id))original)(self, _cmd, event);
+            ((void (*)(id, SEL, id))original)(self, sel, event);
         }));
     });
 }
 
 static void InstallMouseToTouchFallback(void) {
+    // The fallback injects a synthetic touch for every click, so it stays
+    // opt-in: modern apps already receive native touches and a second synthetic
+    // one turns a single click into a double tap.
+    if (!NSProcessInfo.processInfo.environment[@"PEAR_MOUSE_TOUCH"].boolValue) return;
     InstallNativeTouchTracking();
     Class eventClass = NSClassFromString(@"NSEvent");
     SEL add = NSSelectorFromString(@"addLocalMonitorForEventsMatchingMask:handler:");
@@ -1132,16 +1150,13 @@ static void InstallMouseToTouchFallback(void) {
     PearLog(@"[PearRuntime][touch] mouse-to-touch fallback %@", gMouseTouchMonitor ? @"installed" : @"unavailable");
 }
 
-static void ActivateMainWindow(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
+static void ActivateMainWindowOnce(void) {
+    {
         Class appClass = NSClassFromString(@"NSApplication");
         id nsapp = [appClass respondsToSelector:@selector(sharedApplication)]
             ? ((id (*)(id, SEL))objc_msgSend)(appClass, @selector(sharedApplication)) : nil;
-        if ([nsapp respondsToSelector:@selector(activateIgnoringOtherApps:)]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(nsapp,
-                @selector(activateIgnoringOtherApps:), YES);
-        }
+        // Never call activateIgnoringOtherApps: the launcher already activated
+        // the app, and stealing focus from another app is not acceptable.
         id best = nil;
         CGFloat bestArea = 0;
         for (id window in [nsapp windows]) {
@@ -1152,13 +1167,11 @@ static void ActivateMainWindow(void) {
             CGFloat area = frame.size.width * frame.size.height;
             if (area > bestArea) { bestArea = area; best = window; }
         }
-        if (best) {
-            if ([best respondsToSelector:@selector(center)]) {
-                ((void (*)(id, SEL))objc_msgSend)(best, @selector(center));
-            }
-            if ([best respondsToSelector:@selector(makeKeyAndOrderFront:)]) {
-                ((void (*)(id, SEL, id))objc_msgSend)(best,
-                    @selector(makeKeyAndOrderFront:), nil);
+        if (best && [best respondsToSelector:@selector(makeKeyAndOrderFront:)]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(best,
+                @selector(makeKeyAndOrderFront:), nil);
+            if ([best respondsToSelector:@selector(makeKeyWindow)]) {
+                ((void (*)(id, SEL))objc_msgSend)(best, @selector(makeKeyWindow));
             }
         }
         UIWindow *key = nil;
@@ -1170,7 +1183,7 @@ static void ActivateMainWindow(void) {
                 if (area > keyArea) { keyArea = area; key = window; }
             }
         }
-        if (key) [key makeKeyAndVisible];
+        if (key && !key.isKeyWindow) [key makeKeyAndVisible];
         id appDelegate = UIApplication.sharedApplication.delegate;
         UIWindow *appWindow = [appDelegate respondsToSelector:@selector(window)]
             ? ((id (*)(id, SEL))objc_msgSend)(appDelegate, @selector(window)) : nil;
@@ -1198,20 +1211,21 @@ static void ActivateMainWindow(void) {
             [appWindow makeKeyAndVisible];
             PearLog(@"[PearRuntime][window] no scene window; using app window");
         }
-    });
+    }
+}
+
+static void ActivateMainWindow(void) {
+    // The window may not exist yet when the runtime loads, so retry a few
+    // times instead of relying on a single fixed delay.
+    for (NSNumber *delay in @[@1.0, @2.5, @5.0]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ ActivateMainWindowOnce(); });
+    }
 }
 
 static void InstallLegacyWindowFix(void) {
-    BOOL enabled = NSProcessInfo.processInfo.environment[@"PEAR_LEGACY_WINDOW_FIX"].boolValue;
-    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-    if (!enabled && !info[@"UIApplicationSceneManifest"]) {
-        NSString *sdk = [(NSString *)info[@"DTSDKName"] ?: @"" lowercaseString];
-        NSString *version = [sdk hasPrefix:@"iphoneos"]
-            ? [sdk substringFromIndex:@"iphoneos".length] : sdk;
-        double major = version.doubleValue;
-        enabled = major > 0 && major < 15.0;
-    }
-    if (!enabled) return;
+    if (!PearIsLegacyApp()) return;
     PearLog(@"[PearRuntime][window] legacy window fix requested");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
