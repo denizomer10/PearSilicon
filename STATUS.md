@@ -294,3 +294,12 @@ Not: `build/PearSilicon.app` 0.4.5 (17) sabit runtime ile yeniden üretildi.
 Kurulu `ios-apps/*` runtime'ları elle güncellendi ve yeniden imzalandı. Eski
 0.4.4 runtime'ına dönmemek için Settings → "Refresh iOS Runtimes Now"
 kullanılmamalı; yeni app paketi kullanılmalı.
+
+## 10. 2026-11-06 incelemesi
+
+- Bu çalışma ağacında ana pencerenin açık görünümde koyu kalan arka planı, ayırıcıları ve seçim renkleri sistem temasına uyarlandı. Arama sonuçsuzken kurulum önerisi yerine sonuç bulunamadığı gösteriliyor.
+- ServicesShim günlüklerinde önceden biçimlendirilmiş metnin tekrar biçim dizgesi olarak kullanılması düzeltildi.
+- `swift test` değişikliklerden önce başarılı; `swift build` arayüz değişikliklerinden sonra başarılı. Runtime yeniden derlendi.
+- Cut the Rope IPA ön kontrolü, kurulum ve arka planda 12 saniyelik süreç başlatma/durdurma testini geçti. Bu, görsel veya oynanış doğrulaması değildir.
+- Dr. Driving IPA ön kontrolü, kurulum ve arka planda 12 saniyelik süreç başlatma/durdurma testini geçti. Angry Birds HD 1.5.0 desteklenmeyen CPU mimarisi nedeniyle ön kontrolde reddedildi.
+- Eski durum belgesindeki kurulu oyunlar ve günlükler bu çalışma ortamında mevcut değildi. Tüm oyunlar ve shimler uçtan uca doğrulanmış değildir; açık/koyu görünümün görsel kontrolü ve oyun içi testler hâlâ gereklidir.

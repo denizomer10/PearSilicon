@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 /// bundles, and Wine games run in private prefixes.
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showingImporter = false
     @State private var wineExecutablePicker: WineExecutablePicker?
     @State private var alert: AlertPayload?
@@ -20,13 +21,13 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 topBar
                 Rectangle()
-                    .fill(.white.opacity(0.06))
+                    .fill(Color.primary.opacity(0.09))
                     .frame(height: 1)
                 HStack(spacing: 0) {
                     sidebar
                         .frame(width: 310)
                     Rectangle()
-                        .fill(.white.opacity(0.06))
+                        .fill(Color.primary.opacity(0.09))
                         .frame(width: 1)
                     detail
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -94,7 +95,9 @@ struct ContentView: View {
 
     private var backdrop: some View {
         LinearGradient(
-            colors: [Color(red: 0.05, green: 0.07, blue: 0.12), Color(red: 0.02, green: 0.03, blue: 0.06)],
+            colors: colorScheme == .dark
+                ? [Color(red: 0.05, green: 0.07, blue: 0.12), Color(red: 0.02, green: 0.03, blue: 0.06)]
+                : [Color(nsColor: .windowBackgroundColor), Color(nsColor: .controlBackgroundColor)],
             startPoint: .topLeading, endPoint: .bottomTrailing
         )
         .ignoresSafeArea()
@@ -119,7 +122,7 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+                            .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
                     )
                     .accessibilityLabel("PearSilicon")
                 Text("PearSilicon")
@@ -178,8 +181,8 @@ struct ContentView: View {
                 .background {
                     if state.platform == platform {
                         Capsule()
-                            .fill(.white.opacity(0.14))
-                            .overlay(Capsule().strokeBorder(.white.opacity(0.16), lineWidth: 1))
+                            .fill(Color.primary.opacity(0.10))
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
                             .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
                     }
                 }
@@ -187,7 +190,7 @@ struct ContentView: View {
         }
         .padding(4)
         .glassEffect(.regular.interactive(), in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
         .offset(
             x: platformSwitchOffset.width + platformSwitchDrag.width,
@@ -248,8 +251,8 @@ struct ContentView: View {
         let apps = filtered(state.installedApps)
         if apps.isEmpty {
             emptySidebar(
-                title: "No iOS apps",
-                detail: "Drop an .ipa here or click + to install one."
+                title: state.searchText.isEmpty ? "No iOS apps" : "No matching apps",
+                detail: state.searchText.isEmpty ? "Drop an .ipa here or click + to install one." : "Try a different search."
             )
         } else {
             ForEach(apps) { app in
@@ -282,8 +285,8 @@ struct ContentView: View {
         let entries = filtered(state.platformEntries)
         if entries.isEmpty {
             emptySidebar(
-                title: state.platform == .macOS ? "No Mac apps" : "No Wine games",
-                detail: state.platform == .macOS
+                title: !state.searchText.isEmpty ? "No matching results" : (state.platform == .macOS ? "No Mac apps" : "No Wine games"),
+                detail: !state.searchText.isEmpty ? "Try a different search." : state.platform == .macOS
                     ? "Drop a native .app here or click + to copy one into the library."
                     : (state.wineEngines.isEmpty
                        ? "Register a Wine engine in Settings, then add a Windows game."
@@ -324,10 +327,10 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(selected ? Color.white.opacity(0.12) : Color.clear)
+                    .fill(selected ? Color.accentColor.opacity(colorScheme == .dark ? 0.22 : 0.14) : Color.clear)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(selected ? Color.white.opacity(0.14) : Color.clear, lineWidth: 1)
+                            .strokeBorder(selected ? Color.accentColor.opacity(0.35) : Color.clear, lineWidth: 1)
                     )
             }
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
