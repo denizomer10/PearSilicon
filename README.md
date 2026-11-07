@@ -77,8 +77,9 @@ Download the newest development build from
 move `PearSilicon.app` to `/Applications`, and open it.
 
 Each development build is its own prerelease; release notes identify its version,
-tested commit and scope. If macOS blocks the first launch, use
-**System Settings → Privacy & Security → Open Anyway** or right-click → **Open**.
+tested commit and scope. Release notes are written in English by default. If macOS
+blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**
+or right-click → **Open**.
 
 ### Build from source
 
