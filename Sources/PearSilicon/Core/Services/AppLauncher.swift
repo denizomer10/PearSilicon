@@ -186,6 +186,7 @@ final class AppLauncher: @unchecked Sendable {
         env.removeValue(forKey: "PEAR_MOUSE_TOUCH")
         env.removeValue(forKey: "PEAR_VIRTUAL_GAMEPAD")
         env.removeValue(forKey: "PEAR_VIRTUAL_GAMEPAD_MAP")
+        env.removeValue(forKey: "PEAR_FPS_HUD")
         for key in ["PEAR_LEGACY_ATTACH_LAYER", "PEAR_LEGACY_WINDOW_LAYER_ONLY", "PEAR_LEGACY_LOGICAL_SIZE", "PEAR_DIRECT_LEGACY_TOUCH"] {
             env.removeValue(forKey: key)
         }

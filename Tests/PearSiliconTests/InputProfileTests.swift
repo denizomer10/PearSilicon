@@ -12,9 +12,11 @@ final class InputProfileTests: XCTestCase {
         let id = "test.input." + UUID().uuidString
         defer { clear(id) }
 
-        XCTAssertTrue(AppSettings.compatibilityEnvironment(
+        let modernEnvironment = AppSettings.compatibilityEnvironment(
             for: id, compatibility: .modern, virtualGamepad: false
-        ).isEmpty)
+        )
+        XCTAssertEqual(modernEnvironment, ["PEAR_MOUSE_TOUCH": "1"])
+        XCTAssertNil(modernEnvironment["PEAR_LEGACY_WINDOW_LAYER_ONLY"])
 
         let environment = AppSettings.compatibilityEnvironment(
             for: id, compatibility: legacyProfile, virtualGamepad: false
@@ -63,13 +65,16 @@ final class InputProfileTests: XCTestCase {
         XCTAssertFalse(AppSettings.isLegacyBridgeEnabled(for: id, compatibility: legacyProfile))
         XCTAssertFalse(AppSettings.isMouseTouchFallbackEnabled(for: id, compatibility: legacyProfile))
         XCTAssertTrue(AppSettings.hasCompatibilityOverride(for: id, compatibility: legacyProfile))
+        XCTAssertTrue(AppSettings.hasCompatibilityOverride(for: id, compatibility: .modern))
         XCTAssertTrue(AppSettings.compatibilityEnvironment(
             for: id, compatibility: legacyProfile, virtualGamepad: false
         ).isEmpty)
 
         AppSettings.clearCompatibilityOverrides(for: id)
         XCTAssertFalse(AppSettings.hasCompatibilityOverride(for: id, compatibility: legacyProfile))
+        XCTAssertFalse(AppSettings.hasCompatibilityOverride(for: id, compatibility: .modern))
         XCTAssertTrue(AppSettings.isLegacyBridgeEnabled(for: id, compatibility: legacyProfile))
+        XCTAssertTrue(AppSettings.isMouseTouchFallbackEnabled(for: id, compatibility: .modern))
     }
 
     private func clear(_ id: String) {

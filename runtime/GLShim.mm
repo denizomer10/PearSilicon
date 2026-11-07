@@ -23,6 +23,8 @@
 #import "PearRuntime.h"
 #import "PearTouchGeometry.h"
 
+extern void PearRecordFramePresented(void);
+
 static BOOL PearGLDebug(void);
 
 static CGSize PearDeclaredDrawableSize(CGSize size) {
@@ -536,7 +538,9 @@ static void PearInstallEAGLHook(void) {
         IMP presentOriginal = method_getImplementation(presentMethod);
         method_setImplementation(presentMethod, imp_implementationWithBlock(^BOOL(id self, NSUInteger target) {
             PearUpdateDrawableCrop();
-            return ((BOOL (*)(id, SEL, NSUInteger))presentOriginal)(self, presentSelector, target);
+            BOOL presented = ((BOOL (*)(id, SEL, NSUInteger))presentOriginal)(self, presentSelector, target);
+            if (presented) PearRecordFramePresented();
+            return presented;
         }));
         PearLog(@"[PearRuntime][gl] EAGL present hook installed");
     }

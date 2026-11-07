@@ -174,6 +174,7 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/TrackingShim.mm" \
   "$ROOT/runtime/SandboxShim.mm" \
   "$ROOT/runtime/GLShim.mm" \
+  "$ROOT/runtime/FPSHUD.mm" \
   "$ROOT/runtime/WebInputShim.mm" \
   "$ROOT/runtime/FoundationShim.mm" \
   "$ROOT/runtime/HostService.mm"
@@ -205,12 +206,25 @@ SWIFTC="$(xcrun --find swiftc)"
 "$CLANG" -c -target "$CLANG_TARGET" -isysroot "$SDK" \
   "$ROOT/runtime/swift/PearSwiftUIKitSupport.c" \
   -o "$OUT_DIR/PearSwiftUIKitSupport.o"
+# The numeric raw-representable ABI must live in the `UIKit` module, not just
+# in this dylib. Compile it as its own module and alias the system headers so
+# the mangled protocol/conformance/witness symbols match the original overlay.
 "$SWIFTC" -target "$CLANG_TARGET" -sdk "$SDK" -F "$IOS_FRAMEWORKS" \
-  -emit-library -module-name PearSwiftUIKit \
+  -parse-as-library -emit-object -module-name PearSwiftUIKit \
+  -o "$OUT_DIR/PearSwiftUIKit.o" \
+  "$ROOT/runtime/swift/PearSwiftUIKit.swift"
+"$SWIFTC" -target "$CLANG_TARGET" -sdk "$SDK" -F "$IOS_FRAMEWORKS" \
+  -parse-as-library -emit-object -module-name UIKit \
+  -module-alias AppleUIKit=UIKit \
+  -o "$OUT_DIR/PearUIKitNumeric.o" \
+  "$ROOT/runtime/swift/PearUIKitNumeric.swift"
+"$SWIFTC" -target "$CLANG_TARGET" -sdk "$SDK" -F "$IOS_FRAMEWORKS" \
+  -parse-as-library -emit-library \
   -Xlinker -install_name -Xlinker @rpath/libswiftUIKit.dylib \
   -Xlinker -undefined -Xlinker dynamic_lookup \
   -o "$SWIFT_OVERLAY" \
-  "$ROOT/runtime/swift/PearSwiftUIKit.swift" \
+  "$OUT_DIR/PearSwiftUIKit.o" \
+  "$OUT_DIR/PearUIKitNumeric.o" \
   "$OUT_DIR/PearSwiftUIKitSupport.o"
 file "$SWIFT_OVERLAY"
 

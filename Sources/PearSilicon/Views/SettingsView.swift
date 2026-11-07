@@ -459,7 +459,7 @@ struct SettingsView: View {
 
     private var about: some View {
         VStack(spacing: 16) {
-            Image("PearLogo", bundle: .module)
+            PearBrand.logo
                 .resizable()
                 .interpolation(.high)
                 .frame(width: 128, height: 128)

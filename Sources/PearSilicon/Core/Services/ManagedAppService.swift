@@ -726,8 +726,9 @@ final class ManagedAppProcess: Identifiable {
     }
 
     func stop() {
-        // Process owns/reaps this child; do not issue kill() on a cached PID.
-        if process.isRunning { process.terminate() }
+        // The process is still running, so this PID is still ours. SIGKILL
+        // bypasses hung run loops and blocked input handlers.
+        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
     }
 }
 

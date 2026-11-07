@@ -1079,6 +1079,7 @@ static NSString *KeyNameForEvent(id event) {
 // if no UIEvent touch arrives shortly afterwards, synthesize one at the click.
 extern void PearInstallMouseToTouchFallback(void);
 extern void PearInstallLegacyWindowFix(void);
+extern void PearInstallFPSHUD(void);
 
 static void ActivateMainWindowOnce(void) {
     // A background launch must never promote its window over another app.
@@ -1415,6 +1416,7 @@ static void WatchKeymap(NSString *path) {
 
     PearInstallLegacyWindowFix();
     if (!PearVirtualGamepadEnabled()) PearInstallMouseToTouchFallback();
+    PearInstallFPSHUD();
     ActivateMainWindow();
 
     // Skip this bootstrap for input debugging. Other shims have independent

@@ -274,12 +274,12 @@ struct AppDetailView: View {
                 .buttonStyle(.glassProminent)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Toggle("Metal HUD (FPS)", isOn: Binding(
+                    Toggle("Performance HUD (FPS)", isOn: Binding(
                         get: { state.isMetalHUDEnabled(for: app) },
                         set: { state.setMetalHUDEnabled($0, for: app) }
                     ))
                     .toggleStyle(.switch)
-                    Text("Metal performance overlay. Relaunch to apply.")
+                    Text("Shows an FPS overlay. Native Metal apps use Metal HUD; legacy OpenGL games get a runtime overlay. Relaunch to apply.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

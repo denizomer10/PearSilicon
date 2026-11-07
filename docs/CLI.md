@@ -72,7 +72,7 @@ pearsilicon info <id|name>      Paths, version, keymap, runtime, ODR folder, pid
 pearsilicon uninstall <id|name> Remove an app and its keymap
 pearsilicon keymap <id|name>    Print the keymap (--path, --generate, --set FILE)
 pearsilicon keys <id|name> [on|off]  Print or set the keymapper toggle
-pearsilicon hud <id|name> [on|off]   Print or set the Metal HUD/FPS overlay
+pearsilicon hud <id|name> [on|off]   Print or set the performance HUD/FPS overlay
 pearsilicon pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
 pearsilicon compat <id|name> [--json]  Show the detected compatibility profile
 pearsilicon legacy <id|name> [on|off|auto]  Override the legacy window bridge

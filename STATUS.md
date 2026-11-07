@@ -1,15 +1,47 @@
 # PearSilicon — Çalışma Durumu
 
 Son güncelleme: 2026-11-07 · Dal: `denizomer10-virtual-gamepad-inputs`
-Son commit: 0.4.8 release commit'i
-Uygulama paketi: **0.4.8 (20)**; `v0.4.8` Development Beta release'ine yüklendi
+Son commit: 0.4.9 release commit'i
+Uygulama paketi: **0.4.9 (21)**; `v0.4.9` Development Beta release'ine yüklendi
 Web sitesi: `pearsilicon-web` (release listesi indirme bağlantısı ve gerçek sürüm notları)
 
 Bir sonraki geliştirici/agent §0, §1 ve §4'ü okuyarak kaldığı yerden devam edebilir.
 
 ---
 
-## 0. 0.4.8 (2026-11-07) — GTA III ve LCS
+## 0. 0.4.9 (2026-11-07) — Logo, giriş, LCS ve FPS
+
+- **Logo:** SwiftUI'ın paketlenmiş/translocate edilmiş uygulamada çözemediği
+  `Image("PearLogo", bundle: .module)` yolu bırakıldı. Logo artık
+  `Bundle.module` URL'i üzerinden `NSImage` ile yükleniyor; üst çubuk, boş
+  durum ve Hakkında ekranlarında aynı `PearBrand.logo` kullanılıyor. PNG'nin
+  gerçekten görünür piksel ürettiği offscreen `ImageRenderer` testiyle
+  doğrulanıyor.
+- **Minecraft PE / modern dokunma:** fare→dokunma fallback'i artık modern
+  profilli uygulamalarda da varsayılan açık. Native bir UIKit dokunuşu 220 ms
+  içinde gelirse sentetik dokunuş iptal edilir; böylece normal fare kullanan
+  uygulamalarda çift tıklama oluşmaz. Çalışan Minecraft süreci izinsiz
+  kapatılmadı; oyun içi tıklama doğrulaması kullanıcıya bırakıldı.
+- **GTA LCS:** El yazımı assembly/boş conformance descriptor yerine
+  `PearUIKitNumeric.swift` derleyici tarafından `UIKit` modülü olarak üretiliyor.
+  `_UIKitNumericRawRepresentable`, operatörler ve `UIWindow.Level` uyumu gerçek
+  Swift ABI'siyle eşleşiyor; LCS açılışta çökmüyor ve 30 saniyeden uzun süre
+  ayakta kalıyor.
+- **Durdurma:** GUI ve yönetilen süreçlerde Stop artık doğrudan `SIGKILL`
+  gönderiyor; 250 ms sonra durum uzlaştırılıyor. Askıda kalan oyun penceresi
+  kapanmadan beklemiyor.
+- **FPS HUD:** EAGL `presentRenderbuffer:` sayacı eklendi. HUD ayrı bir pencere
+  yerine oyun penceresinin içine, dokunuşları geçiren bir alt view olarak
+  yerleşiyor; böylece tıklamaları yutamıyor. `PEAR_FPS_HUD=1` yalnız gerçek bir
+  OpenGL ES karesi sunulduktan sonra kuruluyor; modern algılanan ama OpenGL
+  kullanan LCS de kapsanıyor, saf Metal uygulamalar `MTL_HUD_ENABLED` ile
+  kalıyor. GTA III'te `[PearRuntime][hud] FPS overlay installed (OpenGL ES)`
+  logu doğrulandı.
+- Yeni logo render regresyon testi eklendi.
+
+---
+
+## 0.1 0.4.8 (2026-11-07) — GTA III ve LCS
 
 - **GTA III** (`com.rockstargames.gta3ios` 1.3.13, SDK 12.1, legacy):
   beyaz ekran, otomatik legacy köprünün UIKit kök layer'ını AppKit host'a

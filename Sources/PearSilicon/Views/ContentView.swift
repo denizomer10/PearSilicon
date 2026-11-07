@@ -113,7 +113,7 @@ struct ContentView: View {
     private var topBar: some View {
         HStack(spacing: 16) {
             HStack(spacing: 10) {
-                Image("PearLogo", bundle: .module)
+                PearBrand.logo
                     .resizable()
                     .interpolation(.high)
                     .frame(width: 30, height: 30)
@@ -366,7 +366,7 @@ struct ContentView: View {
 
     private var placeholder: some View {
         VStack(spacing: 18) {
-            Image("PearLogo", bundle: .module)
+            PearBrand.logo
                 .resizable()
                 .interpolation(.high)
                 .frame(width: 104, height: 104)

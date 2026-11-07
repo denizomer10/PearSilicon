@@ -462,6 +462,7 @@ enum CLI {
             environment["PEAR_LOG_FILE"] = logPath
         }
 
+        let compatibility = AppCompatibility.detect(bundleURL: app.bundleURL)
         let hudEnabled: Bool
         if arguments.flags.contains("metal-hud") {
             hudEnabled = true
@@ -472,6 +473,10 @@ enum CLI {
         }
         if hudEnabled {
             environment["MTL_HUD_ENABLED"] = "1"
+            // Metal HUD covers native Metal renderers; the runtime overlay
+            // activates only when an OpenGL ES frame is actually presented,
+            // which includes titles detected as modern (for example GTA LCS).
+            environment["PEAR_FPS_HUD"] = "1"
         }
 
         let pointerLock: Bool
@@ -484,8 +489,6 @@ enum CLI {
         }
         environment.removeValue(forKey: "PEAR_ALLOW_POINTER_LOCK")
         if pointerLock { environment["PEAR_ALLOW_POINTER_LOCK"] = "1" }
-
-        let compatibility = AppCompatibility.detect(bundleURL: app.bundleURL)
 
         if AppSettings.defaults.bool(forKey: "virtualGamepad.enabled." + app.id) {
             environment["PEAR_VIRTUAL_GAMEPAD"] = "1"
@@ -537,7 +540,7 @@ enum CLI {
             print("launched \(app.displayName) [\(app.id)]")
         }
         print("  keymap: \(keymapState(enabled: enabled, hasFile: hasKeymap, url: keymapURL))")
-        print("  metal HUD: \(hudEnabled ? "on" : "off")")
+        print("  performance HUD: \(hudEnabled ? "on" : "off")")
         print("  pointer lock: \(launchEnvironment["PEAR_ALLOW_POINTER_LOCK"] == "1" ? "allowed" : "disabled")")
         if launchEnvironment["PEAR_VIRTUAL_GAMEPAD"] == "1" {
             print("  virtual gamepad: on (mouse capture is armed by the first click)")
@@ -673,7 +676,7 @@ enum CLI {
         print("log:         \(paths.logs.appendingPathComponent("\(app.id).log").path)")
         print("running:     \(pid.map { "yes (pid \($0))" } ?? "no")")
         print("pointer lock: \(AppSettings.pointerLockAllowed(for: app.id) ? "allowed" : "disabled")")
-        print("metal HUD:   \((((AppSettings.defaults.object(forKey: "metalHUD.enabled." + app.id) as? Bool) ?? false) ? "on" : "off"))")
+        print("performance HUD:   \((((AppSettings.defaults.object(forKey: "metalHUD.enabled." + app.id) as? Bool) ?? false) ? "on" : "off"))")
         print("runtime:     \(AppLauncher.runtimeLibraryURL()?.path ?? "not found")")
         let mode = PackageInstaller(libraryURL: paths.library).currentPreparationMode(for: app)
         print("preparation: \(mode.rawValue)")
@@ -779,7 +782,7 @@ enum CLI {
         return 0
     }
 
-    /// Prints or persists the per-app Metal HUD toggle (the GUI's switch). Takes
+    /// Prints or persists the per-app performance HUD toggle (the GUI's switch). Takes
     /// effect on the next launch, when the environment is read.
     private static func hudCommand(_ arguments: CLIArguments) throws -> Int32 {
         guard let query = arguments.positionals.first else {
@@ -791,7 +794,7 @@ enum CLI {
 
         guard let state = arguments.positionals.dropFirst().first else {
             let enabled = defaults.bool(forKey: key)
-            print("metal HUD: \(enabled ? "on" : "off") for \(app.displayName) [\(app.id)]")
+            print("performance HUD: \(enabled ? "on" : "off") for \(app.displayName) [\(app.id)]")
             return 0
         }
 
@@ -804,7 +807,7 @@ enum CLI {
             throw CLIError.message("expected 'on' or 'off', got '\(state)'")
         }
         notifyLibraryChanged()
-        print("metal HUD \(state.lowercased()) for \(app.displayName) — relaunch to apply")
+        print("performance HUD \(state.lowercased()) for \(app.displayName) — relaunch to apply")
         return 0
     }
 
@@ -1356,7 +1359,7 @@ enum CLI {
           uninstall <id|name>  Remove an app and its keymap (--yes to skip the prompt)
           keymap <id|name>     Print the keymap (--path, --generate, --set <file>)
           keys <id|name> [on|off]  Print or set the keymapper toggle
-          hud <id|name> [on|off]   Print or set the Metal HUD/FPS overlay
+          hud <id|name> [on|off]   Print or set the performance HUD/FPS overlay
           pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
           compat <id|name> [--json]  Show the detected compatibility profile
           legacy <id|name> [on|off|auto]  Override the legacy window bridge
@@ -1371,7 +1374,7 @@ enum CLI {
 
         COMMON OPTIONS
           --keys / --no-keys   Force the keymapper on or off for this launch
-          --metal-hud / --no-metal-hud  Force the Metal HUD/FPS overlay on or off
+          --metal-hud / --no-metal-hud  Force the performance HUD/FPS overlay on or off
           --pointer-lock / --no-pointer-lock  Force the game's pointer lock on or off
           --log                Write a log file and follow it
           --wait               Wait for the app to exit

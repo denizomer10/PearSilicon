@@ -38,7 +38,7 @@ only with apps and games you are authorized to run.
 
 | Platform | What it does |
 | --- | --- |
-| **iOS Apps** | IPA / device `.app` preparation, Catalyst runtime shims, Metal HUD, pointer lock, opt-in keymapper |
+| **iOS Apps** | IPA / device `.app` preparation, Catalyst runtime shims, performance HUD, pointer lock, opt-in keymapper |
 | **Mac Apps** | Copy-only `.app` import with redirected data, launched natively |
 | **Wine Games** | Per-game prefixes, private data, verified engines, DXVK or DXMT graphics |
 | **Library** | iOS, Mac and Wine tabs; movable library; per-entry `.pearbackup` backups |

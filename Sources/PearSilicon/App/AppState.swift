@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -245,28 +246,24 @@ final class AppState: ObservableObject {
         runningApps[app.id]?.isTerminated == false
     }
 
-    /// Stops a running game (terminates the process) and removes its overlay.
-    /// The Stop control disappears immediately; the status line is cleared once
-    /// the process is actually gone.
+    /// Stops a running game immediately and removes its overlay.
+    /// SIGKILL is deliberate: a hung or input-starved title must not linger and
+    /// keep the window alive. The Stop control disappears right away.
     func stop(_ app: InstalledApp) {
         guard let running = runningApps[app.id] else { return }
         overlays[app.id]?.detach()
         overlays[app.id] = nil
         runningApps[app.id] = nil // hide Stop right away
         stoppingApps.insert(app.id)
-        running.terminate()
+        let pid = running.processIdentifier
+        if pid > 0, kill(pid, SIGKILL) != 0, errno != ESRCH {
+            running.forceTerminate()
+        }
         statusMessage = "Stopping \(app.displayName)…"
 
-        // Reconcile: notifications normally arrive, but a game can take a moment
-        // (or ignore SIGTERM). Escalate, then clear the status.
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 250_000_000)
             guard let self else { return }
-            if let still = NSRunningApplication(processIdentifier: running.processIdentifier),
-               !still.isTerminated {
-                still.forceTerminate()
-            }
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
             self.refreshRunningApps()
             self.stoppingApps.remove(app.id)
             if self.statusMessage.hasPrefix("Stopping ") { self.statusMessage = L10n.ready }

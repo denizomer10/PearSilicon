@@ -74,13 +74,15 @@ enum AppSettings {
         legacyBridgeOverride(for: bundleID) ?? compatibility.isLegacyRuntime
     }
 
-    /// Effective mouse-to-touch state. Modern apps handle mouse input natively;
-    /// legacy apps need synthesized touches unless the game itself sees them.
+    /// Effective mouse-to-touch state. Enabled by default for every app: a
+    /// native UIKit touch normally arrives first, and the runtime cancels the
+    /// synthetic fallback when it sees that. Modern games that only understand
+    /// touches (for example Minecraft PE) otherwise receive no mouse input.
     static func isMouseTouchFallbackEnabled(
         for bundleID: String,
         compatibility: AppCompatibility
     ) -> Bool {
-        mouseTouchFallbackOverride(for: bundleID) ?? compatibility.isLegacyRuntime
+        mouseTouchFallbackOverride(for: bundleID) ?? true
     }
 
     /// True when a stored override disagrees with detection (shown in the UI
@@ -91,8 +93,7 @@ enum AppSettings {
     ) -> Bool {
         if let legacy = legacyBridgeOverride(for: bundleID),
            legacy != compatibility.isLegacyRuntime { return true }
-        if let touch = mouseTouchFallbackOverride(for: bundleID),
-           touch != compatibility.isLegacyRuntime { return true }
+        if let touch = mouseTouchFallbackOverride(for: bundleID), touch != true { return true }
         return false
     }
 

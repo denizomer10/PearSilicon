@@ -205,12 +205,12 @@ struct ManagedAppDetailView: View {
                     enginePicker
                 }
 
-                Toggle("Metal HUD (FPS)", isOn: Binding(
+                Toggle("Performance HUD (FPS)", isOn: Binding(
                     get: { entry.manifest.metalHUDEnabled },
                     set: { state.setMetalHUDEnabled($0, for: entry) }
                 ))
                 .toggleStyle(.switch)
-                Text("Shows Metal's FPS/performance overlay. Relaunch to apply.")
+                Text("Shows an FPS/performance overlay. Relaunch to apply.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
