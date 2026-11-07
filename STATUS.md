@@ -1,5 +1,20 @@
 # PearSilicon — Çalışma Durumu
 
+## Aktif hedef — PearLegacyEngine ve Miku Flick (2026-11-07)
+
+- PearSilicon çalışma dalı: `codex/pear-legacy-engine`.
+- Amaç: 32 bit iOS uygulamaları için PearLegacyEngine fork'unu geliştirmek;
+  Miku Flick'i baştan sona oynanabilir olarak doğrulamak ve ardından motoru
+  PearSilicon'un iOS IPA kurulum/başlatma akışına entegre etmek.
+- Referanslar: yerel `../PearLegacyEngine` (GitHub fork: `denizomer10/PearLegacyEngine`)
+  ve `../HyperHLE-Reborn`. Miku Flick IPA'sı yerel motor dizininde mevcut;
+  oyun dosyası kaynak deposuna eklenmeyecek.
+- Başlangıç durumu: motorun oyunla çalışması ve bitirilebilirliği henüz
+  doğrulanmadı; entegrasyon henüz yapılmadı. Önce derleme, açılış ve oyun içi
+  engeller ölçülecek, sonra düzeltmeler ve uçtan uca testler kaydedilecek.
+
+---
+
 Son güncelleme: 2026-11-01 10:30 · Dal: `feature/portable-multiplatform`
 Son commit: `6cc4894` (origin'a push edildi; sürüm `v0.4.3` ayrı release olarak yayınlandı)
 Uygulama paketi: `build/PearSilicon.app` **0.4.3 (15)**, `6cc4894`; ayrı `v0.4.3` release'ine yüklendi (SHA-256 `14b5c8d6…`)
