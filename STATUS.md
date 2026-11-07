@@ -12,12 +12,19 @@
 - Motor dalı: `../PearLegacyEngine` içinde `codex/miku-flick`; alt modüller
   kuruldu. Rust, CMake ve Boost Homebrew ile kuruldu. CMake 4 ile derleme:
   `CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build` (başarılı).
-- İlk oyun açılışı: ARMv7 ikilisi çalışmaya başladı, ancak
-  `UIWindow setRootViewController:` uygulanmadığı için başlangıçta durdu.
-  Günlük: `/tmp/pearlegacy-miku-baseline.log`. Sıradaki iş bu API'nin doğru
-  yaşam döngüsü ve görünüm sahipliğiyle uygulanması ve yeniden test edilmesi.
+- Motor `07339595` ile `UIWindow.rootViewController` eklendi; dal fork'a
+  gönderildi. `cargo test` geçti (30 Rust birim testi ve 109 TestApp CLI testi;
+  yeni test sahiplik, içerik değişimi ve pencere boyutunu kapsıyor). TestApp için
+  yerel Apple Silicon test araçlarında özel SDK ve hizalanmış dylib kullanıldı.
+- Miku Flick başlangıçtaki pencere engelini geçti; sıradaki engel ES 2
+  desteği: `EAGL initWithAPI:2` başarısız, ardından `_glDeleteProgram`
+  uygulanmadığı için duruyor (`/tmp/pearlegacy-miku-rootvc.log`). HyperHLE
+  karşılaştırmasında oyun çizim döngüsüne kadar ilerledi; macOS OpenGL 3
+  bağlamında sunum gölgelendiricisi GLSL 120 derleyemediği için kareler
+  gösterilemedi (`/tmp/hyperhle-miku-baseline.log`). ES 2 uygulamasını ve
+  macOS sunum yolunu uyarlayıp gerçek görüntü ve girişle tekrar sınamak gerek.
 - Oynanabilirlik ve bitirilebilirlik henüz doğrulanmadı; PearSilicon entegrasyonu
-  ve fork'a motor değişikliklerinin gönderilmesi henüz yapılmadı.
+  henüz yapılmadı.
 
 ---
 
