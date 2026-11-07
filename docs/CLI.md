@@ -74,6 +74,9 @@ pearsilicon keymap <id|name>    Print the keymap (--path, --generate, --set FILE
 pearsilicon keys <id|name> [on|off]  Print or set the keymapper toggle
 pearsilicon hud <id|name> [on|off]   Print or set the Metal HUD/FPS overlay
 pearsilicon pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
+pearsilicon compat <id|name> [--json]  Show the detected compatibility profile
+pearsilicon legacy <id|name> [on|off|auto]  Override the legacy window bridge
+pearsilicon mousetouch <id|name> [on|off|auto]  Override mouse-to-touch fallback
 pearsilicon refresh-runtime <id|name>  Refresh one stopped iOS app's runtime
 pearsilicon logs <id|name>      Print or follow the log (--follow, --system)
 pearsilicon paths               Show the Application Support layout
@@ -124,6 +127,9 @@ pearsilicon keymap com.example.game --set ./my-keymap.json
 pearsilicon keys com.example.game on
 pearsilicon hud com.example.game on
 pearsilicon pointerlock com.example.game off
+pearsilicon compat com.example.game --json
+pearsilicon legacy com.example.game auto
+pearsilicon mousetouch com.example.game off
 pearsilicon refresh-runtime com.example.game
 pearsilicon run ~/Downloads/App.app --metal-hud
 pearsilicon list --json
@@ -509,4 +515,4 @@ when the CLI installs or removes an app, so an open window stays in sync.
 
 ### Mouse input and pointer lock
 
-Pointer lock defaults to off for apps without a saved preference. Enable it for a game that needs relative mouse input using `pointerlock <id> on`; explicit per-app choices remain in effect. In the app details, **Mouse-to-touch fallback** is an opt-in for games that do not receive normal mouse touches. It supports clicks and drags; disable it if the game receives duplicate touches. Both settings take effect on relaunch. The selected app must be stopped before refreshing its runtime. A runtime refresh stages and signs a copy of the app; game data is kept separately.
+Pointer lock defaults to off for apps without a saved preference. Enable it for a game that needs relative mouse input using `pointerlock <id> on`; explicit per-app choices remain in effect. Legacy window bridging and **mouse-to-touch fallback** are detected automatically from the game's `Info.plist`. `compat <id>` shows the profile and effective state; `legacy` and `mousetouch` accept `on`, `off` or `auto` to store or clear a manual override. Overrides are preserved for existing installations but no longer appear in the GUI. Both settings take effect on relaunch. The selected app must be stopped before refreshing its runtime. A runtime refresh stages and signs a copy of the app; game data is kept separately.

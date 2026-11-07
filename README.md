@@ -147,6 +147,24 @@ tap, hold, joystick, mouse-look and swipe.
 
 Configure bindings in the in-app **Keymap** tab.
 
+## Automatic compatibility
+
+Older scene-less apps built with an iOS SDK before 15 need a window re-attach
+and synthesized touches to receive mouse input. PearSilicon detects this per
+game from its `Info.plist` (no scene manifest plus `DTSDKName` major below 15)
+and applies the bridges automatically — there is nothing to configure.
+
+The **Compatibility** card on a game's detail page shows the detected profile
+and the effective *Window bridge* and *Mouse→touch* state. Existing manual
+values are preserved but hidden; when an override is stored, the card offers
+**Use automatic**. Automation for scripted setups is available from the CLI:
+
+```sh
+pearsilicon compat com.example.game
+pearsilicon legacy com.example.game auto
+pearsilicon mousetouch com.example.game off
+```
+
 ## Wine, engines and graphics
 
 Imported games live under `wine-apps/<id>/` with `Payload`, `Data` and `Prefix`.

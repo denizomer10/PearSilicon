@@ -12,8 +12,6 @@ struct ContentView: View {
     @State private var showingImporter = false
     @State private var wineExecutablePicker: WineExecutablePicker?
     @State private var alert: AlertPayload?
-    @State private var platformSwitchOffset: CGSize = .zero
-    @GestureState private var platformSwitchDrag: CGSize = .zero
 
     var body: some View {
         ZStack {
@@ -192,23 +190,7 @@ struct ContentView: View {
         .glassEffect(.regular.interactive(), in: Capsule())
         .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
-        .offset(
-            x: platformSwitchOffset.width + platformSwitchDrag.width,
-            y: platformSwitchOffset.height + platformSwitchDrag.height
-        )
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 6)
-                .updating($platformSwitchDrag) { value, state, _ in
-                    state = value.translation
-                }
-                .onEnded { value in
-                    platformSwitchOffset = CGSize(
-                        width: platformSwitchOffset.width + value.translation.width,
-                        height: platformSwitchOffset.height + value.translation.height
-                    )
-                }
-        )
-        .help("Click a platform or drag the glass switch to move it")
+        .help("Switch between iOS, Mac and Wine libraries")
     }
 
     // MARK: - Sidebar
@@ -244,6 +226,7 @@ struct ContentView: View {
             }
         }
         .padding(14)
+        .background(.ultraThinMaterial.opacity(0.22))
     }
 
     @ViewBuilder
@@ -382,14 +365,40 @@ struct ContentView: View {
     }
 
     private var placeholder: some View {
-        ContentUnavailableView(
-            state.platform == .iOS ? "Select an iOS app"
-                : (state.platform == .macOS ? "Select a Mac app" : "Select a Wine game"),
-            systemImage: state.platform.symbol,
-            description: Text(state.platform == .wine
-                ? "Windows games run in a private prefix with their saves stored in the game's own folder."
-                : "Click + to install, or drop a package into the window.")
-        )
+        VStack(spacing: 18) {
+            Image("PearLogo", bundle: .module)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 104, height: 104)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.30), radius: 22, y: 10)
+
+            VStack(spacing: 6) {
+                Text(state.platform == .iOS ? "Select an iOS app"
+                     : (state.platform == .macOS ? "Select a Mac app" : "Select a Wine game"))
+                    .font(.system(.title2, design: .rounded).weight(.semibold))
+                Text(state.platform == .wine
+                     ? "Windows games run in a private prefix with their saves stored in the game's own folder."
+                     : "Click + to install, or drop a package into the window.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+            }
+
+            HStack(spacing: 7) {
+                Image(systemName: state.platform.symbol)
+                Text("PearSilicon")
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.tertiary)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Import
@@ -588,8 +597,11 @@ struct StatusBar: View {
                 .truncationMode(.middle)
             Spacer()
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .glassEffect(.regular, in: Rectangle())
+        .background(.ultraThinMaterial.opacity(0.45))
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
+        }
     }
 }

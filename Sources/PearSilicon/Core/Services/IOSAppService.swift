@@ -18,10 +18,10 @@ struct IOSAppService {
         keymapURL: URL?,
         metalHUDEnabled: Bool,
         pointerLockAllowed: Bool,
-        mouseTouchFallback: Bool = false,
         virtualGamepad: Bool = false,
         virtualGamepadMapping: VirtualGamepadMapping = .standard
     ) async throws -> NSRunningApplication? {
+        let compatibility = AppCompatibility.detect(bundleURL: app.bundleURL)
         var extra: [String: String] = ["PEAR_IOS_SANDBOX": "1"]
         if metalHUDEnabled {
             extra["MTL_HUD_ENABLED"] = "1"
@@ -31,12 +31,17 @@ struct IOSAppService {
         // from hiding the cursor before the first click arms the pad.
         if pointerLockAllowed && !virtualGamepad { extra["PEAR_ALLOW_POINTER_LOCK"] = "1" }
 
-        if mouseTouchFallback && !virtualGamepad { extra["PEAR_MOUSE_TOUCH"] = "1" }
         if virtualGamepad {
             extra["PEAR_VIRTUAL_GAMEPAD"] = "1"
             extra["PEAR_VIRTUAL_GAMEPAD_MAP"] = virtualGamepadMapping.environmentValue
         }
-        extra.merge(AppSettings.legacyEnvironment(for: app.id, virtualGamepad: virtualGamepad)) { _, selected in selected }
+        extra.merge(
+            AppSettings.compatibilityEnvironment(
+                for: app.id,
+                compatibility: compatibility,
+                virtualGamepad: virtualGamepad
+            )
+        ) { _, selected in selected }
 
         let launchLease = try AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
         defer { launchLease.release() }

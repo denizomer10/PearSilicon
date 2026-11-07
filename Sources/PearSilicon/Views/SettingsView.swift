@@ -30,6 +30,7 @@ struct SettingsView: View {
             wine.tabItem { Label("Wine", systemImage: "gamecontroller") }
             updates.tabItem { Label("Updates", systemImage: "arrow.down.circle") }
             keymapper.tabItem { Label("Keymapper", systemImage: "keyboard") }
+            about.tabItem { Label("About", systemImage: "info.circle") }
         }
         .frame(width: 700, height: 580)
         .padding()
@@ -452,5 +453,82 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - About
+
+    private var about: some View {
+        VStack(spacing: 16) {
+            Image("PearLogo", bundle: .module)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 128, height: 128)
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.28), radius: 20, y: 8)
+
+            VStack(spacing: 4) {
+                Text("PearSilicon")
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                Text("Version \(Self.appVersion) (build \(Self.appBuild))")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            Text("Run iOS and Mac Catalyst games on Apple silicon with a native, "
+                 + "Liquid Glass interface.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+
+            VStack(alignment: .leading, spacing: 10) {
+                aboutRow("wand.and.stars", "Compatibility",
+                         "Legacy window bridging and mouse-to-touch input are detected "
+                         + "automatically for each game. Open the Compatibility card on a "
+                         + "game to review or override it.")
+                aboutRow("keyboard", "Input",
+                         "Per-game keymapper and virtual gamepad, including full axis and "
+                         + "button remapping.")
+                aboutRow("sparkles", "Design",
+                         "Built entirely with Liquid Glass materials that follow the "
+                         + "system appearance and accessibility settings.")
+            }
+            .padding(18)
+            .frame(maxWidth: 460)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            Spacer(minLength: 0)
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func aboutRow(_ symbol: String, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.callout.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.7"
+    }
+
+    private static var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "19"
     }
 }

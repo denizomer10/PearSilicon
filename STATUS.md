@@ -358,3 +358,11 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - Düzeltilen gerçek hatalar: `input ?? .none` ifadesinin `Optional.none` seçip varsayılan atamayı geri getirmesi; D-pad tuşlarının tekrar denetimine girmemesi; ikinci Escape'in yakalamayı yeniden açması.
 - Doğrulanan: `swift build`, `swift test` (**307 XCTest + 24 Swift Testing, 16 skip, 0 hata**), `./runtime/build.sh`, `./scripts/build-app.sh release` ve capture state smoke testi geçti. Yeni eşleme modeli için 8 test eklendi. GTA Vice City'de fare/kamera, tuş eşlemeleri ve odak dönüşü **kullanıcı oyun içi testi bekliyor**; bu satır o testin sonucu değildir.
 
+### 2026-11-08 — otomatik uyumluluk ve arayüz yenilemesi
+
+- Legacy pencere köprüsü ve fare→dokunma yedeği artık oyun başına otomatik algılanıyor. Algılama runtime'daki `PearIsLegacyApp()` kuralını aynı şekilde uygular: `UIApplicationSceneManifest` yok ve `DTSDKName` ana sürümü 15'ten küçük. `AppCompatibility` plist okumasını yol + değişiklik tarihi ile önbelleğe alır.
+- GUI'deki Legacy/Mouse-to-touch anahtarları ve çözünürlük seçici kaldırıldı. Detay sayfasındaki salt-okunur **Compatibility** kartı profili ve etkin durumu gösterir; kayıtlı bir manuel değer varsa **Use automatic** ile temizlenebilir. Mevcut `legacyBridge.*` ve `mouseTouch.*` kayıtları korunur, böylece kullanıcı ayarları kaybolmaz.
+- CLI aynı yolu kullanır: `pearsilicon compat <id> [--json]`, `pearsilicon legacy <id> [on|off|auto]`, `pearsilicon mousetouch <id> [on|off|auto]`. `launch` artık `AppCompatibility.detect` + `compatibilityEnvironment` çağırır.
+- GUI yenilemesi: uygulama içi Pear logosu ve boş durum ekranı, Yeniden boyutlandırılabilir iki sütunlu detay sayfası, cam sekme çubuğu, durum rozetleri, **Settings → About** sekmesi. Sabit 260 pt Actions sütununun yol açtığı kırpma giderildi; test amaçlı sürüklenebilir platform anahtarı kaldırılarak pencere yerleşimi sabitlendi.
+- Doğrulanan: `swift build`, `swift test` (**311 XCTest + 24 Swift Testing, 16 skip, 0 hata**), yeni `AppCompatibility` algılama testleri (4 dosya senaryosu), `./scripts/build-app.sh release`.
+
