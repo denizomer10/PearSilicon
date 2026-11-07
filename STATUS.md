@@ -9,9 +9,15 @@
 - Referanslar: yerel `../PearLegacyEngine` (GitHub fork: `denizomer10/PearLegacyEngine`)
   ve `../HyperHLE-Reborn`. Miku Flick IPA'sı yerel motor dizininde mevcut;
   oyun dosyası kaynak deposuna eklenmeyecek.
-- Başlangıç durumu: motorun oyunla çalışması ve bitirilebilirliği henüz
-  doğrulanmadı; entegrasyon henüz yapılmadı. Önce derleme, açılış ve oyun içi
-  engeller ölçülecek, sonra düzeltmeler ve uçtan uca testler kaydedilecek.
+- Motor dalı: `../PearLegacyEngine` içinde `codex/miku-flick`; alt modüller
+  kuruldu. Rust, CMake ve Boost Homebrew ile kuruldu. CMake 4 ile derleme:
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build` (başarılı).
+- İlk oyun açılışı: ARMv7 ikilisi çalışmaya başladı, ancak
+  `UIWindow setRootViewController:` uygulanmadığı için başlangıçta durdu.
+  Günlük: `/tmp/pearlegacy-miku-baseline.log`. Sıradaki iş bu API'nin doğru
+  yaşam döngüsü ve görünüm sahipliğiyle uygulanması ve yeniden test edilmesi.
+- Oynanabilirlik ve bitirilebilirlik henüz doğrulanmadı; PearSilicon entegrasyonu
+  ve fork'a motor değişikliklerinin gönderilmesi henüz yapılmadı.
 
 ---
 
