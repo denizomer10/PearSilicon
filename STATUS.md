@@ -1,5 +1,47 @@
 # PearSilicon — Çalışma Durumu
 
+## Aktif hedef — PearLegacyEngine (32-bit iOS) ve Miku Flick (2026-11-07)
+
+- PearSilicon çalışma dalı: `denizomer10-pear-legacy-engine`.
+- **Ana hedef:** Miku Flick'i (`com.sega.MikuFlick`) baştan sona oynanabilir hale
+  getirmek; ardından PearLegacyEngine'i PearSilicon'a entegre edip iOS
+  sekmesinden **yalnız IPA seçilerek** kurulup açılabilmesini sağlamak.
+- **Geliştirilecek bileşen:** `PearLegacyEngine` (32-bit iOS uyumluluk katmanı).
+  Fork: `denizomer10/PearLegacyEngine`; yerel çalışma kopyası
+  `/Users/mac/PearLegacyEngine`.
+- **Referanslar:** `HyperHLE-Reborn` (`/Users/mac/HyperHLE-Reborn`; olgun ES 2
+  yolu) ve PearLegacyEngine'in kendi `codex/hyperhle-es2-reference` dalı
+  (`7bd91764 Implement OpenGL ES 2.0 support`).
+- **PearSilicon tarafı:** mevcut iOS kurulum akışı
+  (`IOSAppService`, `PackageInstaller`, `AppLauncher`, `PlatformShim`) 32-bit
+  armv7 IPA'ları çalıştıramıyor; PearLegacyEngine yürütücüsü buraya bağlanacak.
+
+### Durum (bu oturum)
+
+1. PearSilicon dalı oluşturuldu ve bu STATUS.md ile hedef kayda geçirildi.
+2. Motor dalları hazır: `codex/miku-flick` (UIWindow rootViewController,
+   `07339595`) ve `codex/es2-port` (boş, ES 2 çalışması buraya).
+3. **Kalan engel:** Miku Flick ES 2.0 istiyor. `EAGL initWithAPI:2` şu an `nil`
+   dönüyor; ardından `_glDeleteProgram` uygulanmadığı için süreç duruyor
+   (`/tmp/pearlegacy-miku-rootvc.log`). Oynanabilirlik henüz doğrulanmadı.
+4. HyperHLE karşılaştırması: Oyun çizim döngüsüne ulaşıyor ancak ES 2 bağlamı
+   **OpenGL 3.3 Core**; sunum gölgelendiricisi `#version 120` derlenemediği için
+   kare sunulmuyor (`/tmp/hyperhle-miku-baseline.log`). PearLegacyEngine'de ES 2
+   yolunu **OpenGL 2.1 uyumluluk bağlamı + GLSL 120** üzerine kurmak daha güvenli.
+5. PearSilicon entegrasyonu henüz yapılmadı.
+
+### Sıradaki adımlar
+
+1. `codex/es2-port`: ES 2.0 EAGL bağlamı, gölgelendirici/program API'leri ve
+   sunum yolunu ekle; `cargo build` + `cargo test`.
+2. Miku Flick'i başlat, gerçek kare/giriş al; engelleri sırayla kapat.
+3. Oyunu baştan sona oynanabilir doğrula (menü → şarkı seçimi → oynanış).
+4. Dalı fork'a push et (`denizomer10/PearLegacyEngine`).
+5. PearSilicon: iOS sekmesinde IPA seç → PearLegacyEngine ile çalıştır;
+   motor ikilisi/paketi uygulamaya göm veya indirilebilir yap.
+
+---
+
 Son güncelleme: 2026-11-01 10:30 · Dal: `feature/portable-multiplatform`
 Son commit: `6cc4894` (origin'a push edildi; sürüm `v0.4.3` ayrı release olarak yayınlandı)
 Uygulama paketi: `build/PearSilicon.app` **0.4.3 (15)**, `6cc4894`; ayrı `v0.4.3` release'ine yüklendi (SHA-256 `14b5c8d6…`)
