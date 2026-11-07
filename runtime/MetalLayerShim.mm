@@ -13,7 +13,9 @@
 #import <QuartzCore/QuartzCore.h>
 #import <Metal/Metal.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import "PearRuntime.h"
+#include <mutex>
 
 static BOOL PearMetalDebug(void) {
     return getenv("PEAR_DEBUG_METAL") != NULL;
@@ -38,9 +40,9 @@ static void PearClampTextureDescriptor(MTLTextureDescriptor *descriptor) {
 static void PearInstallTextureGuard(id<MTLDevice> device) {
     if (!device) return;
     static BOOL installed = NO;
-    if (installed) return;
-
     Class cls = [device class];
+    @synchronized ([MTLTextureDescriptor class]) {
+    if (installed) return;
     SEL plain = @selector(newTextureWithDescriptor:);
     Method method = class_getInstanceMethod(cls, plain);
     if (!method) return;
@@ -81,6 +83,7 @@ static void PearInstallTextureGuard(id<MTLDevice> device) {
     }
 
     if (PearMetalDebug()) PearLog(@"[PearRuntime][metal] zero-size texture guard installed");
+    }
 }
 
 static UIWindow *PearKeyWindow(void) {
@@ -107,6 +110,12 @@ static UIWindow *PearFirstVisibleWindow(void) {
 /// touches. Making the first visible window key is the same state a normal iOS
 /// launch produces.
 static void PearEnsureKeyWindow(void) {
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    Class cls = NSClassFromString(@"NSApplication");
+    id app = [cls respondsToSelector:@selector(sharedApplication)]
+        ? ((id (*)(id, SEL))objc_msgSend)(cls, @selector(sharedApplication)) : nil;
+    if (!app || ![app respondsToSelector:@selector(isActive)] ||
+        !((BOOL (*)(id, SEL))objc_msgSend)(app, @selector(isActive))) return;
     if (PearKeyWindow()) return;
     UIWindow *window = PearFirstVisibleWindow();
     if (!window) return;
@@ -114,8 +123,10 @@ static void PearEnsureKeyWindow(void) {
     PearLog(@"[PearRuntime][window] promoted %@ to key window", NSStringFromClass(window.class));
 }
 
+static char kPearSeededBounds, kPearSeededDrawable;
+
 static void PearFixMetalLayers(void);
-static void PearInstallNextDrawableFix(void);
+static BOOL PearInstallNextDrawableFix(void);
 
 static void PearFixMetalLayers(void) {
     PearInstallNextDrawableFix();
@@ -139,6 +150,17 @@ static void PearFixMetalLayers(void) {
         }
     }
 
+    // Legacy apps may own a delegate window without a connected scene. Scan
+    // that same window used by input and UIScreen, or its Metal layer is
+    // silently skipped forever.
+    if (windowCount == 0) {
+        UIWindow *window = PearPrimaryWindow();
+        if (window.layer) {
+            [stack addObject:window.layer];
+            windowCount++;
+        }
+    }
+
     int fixed = 0;
     while (stack.count > 0) {
         CALayer *layer = stack.lastObject;
@@ -154,8 +176,20 @@ static void PearFixMetalLayers(void) {
             }
 
             CGRect bounds = metal.bounds;
+            CALayer *host = metal.superlayer;
+            CGSize seed = CGSizeMake(1920, 1080);
+            BOOL seededBounds = [objc_getAssociatedObject(metal, &kPearSeededBounds) boolValue];
+            if (seededBounds && !CGSizeEqualToSize(bounds.size, seed)) {
+                objc_setAssociatedObject(metal, &kPearSeededBounds, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                seededBounds = NO;
+            }
+            if (seededBounds && host.bounds.size.width > 0 && host.bounds.size.height > 0) {
+                bounds = host.bounds;
+                metal.bounds = bounds;
+                objc_setAssociatedObject(metal, &kPearSeededBounds, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                changed = YES;
+            }
             if (bounds.size.width <= 0 || bounds.size.height <= 0) {
-                CALayer *host = metal.superlayer;
                 bounds = host ? host.bounds : CGRectZero;
                 if (bounds.size.width > 0 && bounds.size.height > 0) {
                     metal.bounds = bounds;
@@ -165,6 +199,17 @@ static void PearFixMetalLayers(void) {
 
             CGFloat scale = metal.contentsScale > 0 ? metal.contentsScale : 1.0;
             CGSize wanted = CGSizeMake(bounds.size.width * scale, bounds.size.height * scale);
+            BOOL seededDrawable = [objc_getAssociatedObject(metal, &kPearSeededDrawable) boolValue];
+            if (seededDrawable && !CGSizeEqualToSize(metal.drawableSize, seed)) {
+                objc_setAssociatedObject(metal, &kPearSeededDrawable, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                seededDrawable = NO;
+            }
+            if (seededDrawable && host.bounds.size.width > 0 && host.bounds.size.height > 0 &&
+                wanted.width > 0 && wanted.height > 0) {
+                metal.drawableSize = wanted;
+                objc_setAssociatedObject(metal, &kPearSeededDrawable, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                changed = YES;
+            }
             if (metal.drawableSize.width <= 0 || metal.drawableSize.height <= 0) {
                 if (wanted.width > 0 && wanted.height > 0) {
                     metal.drawableSize = wanted;
@@ -195,19 +240,20 @@ static void PearFixMetalLayers(void) {
 /// window, so the periodic scan below cannot see it yet. Setting the device at
 /// the moment a drawable is requested closes that window without changing the
 /// layer's size or contents.
-static void PearInstallNextDrawableFix(void) {
+static BOOL PearInstallNextDrawableFix(void) {
     static BOOL installed = NO;
-    if (installed) return;
     Class layerClass = (Class)objc_getClass("CAMetalLayer");
     if (!layerClass) {
         if (PearMetalDebug()) PearLog(@"[PearRuntime][metal] CAMetalLayer not registered yet");
-        return;
+        return NO;
     }
+    @synchronized (layerClass) {
+    if (installed) return YES;
     SEL selector = NSSelectorFromString(@"nextDrawable");
     Method method = class_getInstanceMethod(layerClass, selector);
     if (!method) {
         if (PearMetalDebug()) PearLog(@"[PearRuntime][metal] CAMetalLayer has no nextDrawable");
-        return;
+        return NO;
     }
     installed = YES;
     if (PearMetalDebug()) PearLog(@"[PearRuntime][metal] nextDrawable fix installed");
@@ -232,28 +278,63 @@ static void PearInstallNextDrawableFix(void) {
         // the periodic window scan replaces it as soon as real bounds exist.
         if (layer.bounds.size.width <= 0 || layer.bounds.size.height <= 0) {
             layer.bounds = CGRectMake(0, 0, 1920, 1080);
+            objc_setAssociatedObject(layer, &kPearSeededBounds, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         if (layer.drawableSize.width <= 0 || layer.drawableSize.height <= 0) {
             layer.drawableSize = CGSizeMake(1920, 1080);
+            objc_setAssociatedObject(layer, &kPearSeededDrawable, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
 
-        return ((id (*)(id, SEL))original)(self, selector);
+        static const BOOL trace = getenv("PEAR_PERF_TRACE") != NULL;
+        if (!trace) return ((id (*)(id, SEL))original)(self, selector);
+        double start = CACurrentMediaTime();
+        id drawable = ((id (*)(id, SEL))original)(self, selector);
+        double elapsedMS = (CACurrentMediaTime() - start) * 1000.0;
+        static std::mutex timingLock;
+        static uint64_t count = 0, slow = 0, empty = 0;
+        static double totalMS = 0, longestMS = 0, reportedAt = 0;
+        {
+            std::lock_guard<std::mutex> guard(timingLock);
+            count++; totalMS += elapsedMS;
+            if (elapsedMS > longestMS) longestMS = elapsedMS;
+            if (elapsedMS > 16.667) slow++;
+            if (!drawable) empty++;
+            double now = CACurrentMediaTime();
+            if (reportedAt == 0) reportedAt = now;
+            if (now - reportedAt >= 5) {
+                double average = totalMS / count, maximum = longestMS;
+                uint64_t calls = count, stalled = slow, nils = empty;
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                    PearLog(@"[PearRuntime][perf] drawable acquisition calls=%llu avg=%.3fms max=%.3fms over16ms=%llu nil=%llu (not FPS or GPU duration)",
+                            (unsigned long long)calls, average, maximum, (unsigned long long)stalled, (unsigned long long)nils);
+                });
+                count = slow = empty = 0; totalMS = longestMS = 0; reportedAt = now;
+            }
+        }
+        return drawable;
     }));
+    }
+    return YES;
 }
 
 __attribute__((constructor))
 static void PearMetalLayerShimInit(void) {
     if (NSProcessInfo.processInfo.environment[@"PEAR_NO_METAL_FIX"]) return;
     PearInstallTextureGuard(MTLCreateSystemDefaultDevice());
-    PearInstallNextDrawableFix();
-    // CAMetalLayer may not be registered yet during dyld initializers, and the
-    // app's main thread can be busy for a long time while it loads content, so
-    // retry from a background queue.
-    for (int i = 1; i <= 400; i++) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.05 * NSEC_PER_SEC)),
-                       dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            @autoreleasepool { PearInstallNextDrawableFix(); }
+    if (!PearInstallNextDrawableFix()) {
+        // A single bounded retry source stops as soon as the class is ready.
+        // Avoid queuing hundreds of work items for every game launch.
+        static dispatch_source_t retry;
+        retry = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(retry, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 20), NSEC_PER_SEC / 20, NSEC_PER_SEC / 200);
+        __block int attempts = 0;
+        dispatch_source_set_event_handler(retry, ^{
+            if (PearInstallNextDrawableFix() || ++attempts >= 400) {
+                dispatch_source_cancel(retry);
+                retry = nil;
+            }
         });
+        dispatch_resume(retry);
     }
     // The layer and the key window can appear well after the app's first frame,
     // especially when an engine preloads content. Check for a full minute.

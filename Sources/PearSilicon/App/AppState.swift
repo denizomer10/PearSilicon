@@ -88,6 +88,11 @@ final class AppState: ObservableObject {
     /// Bundle ids allowed to take pointer lock (needed for mouse-look camera
     /// control in some games).
     @Published private(set) var pointerLockAllowedApps: Set<String> = []
+    @Published private(set) var mouseTouchFallbackApps: Set<String> = []
+    @Published private(set) var virtualGamepadApps: Set<String> = []
+    @Published private(set) var virtualGamepadMappings: [String: VirtualGamepadMapping] = [:]
+    @Published private(set) var legacyBridgeApps: Set<String> = []
+    @Published private(set) var legacyResolutions: [String: String] = [:]
 
 
     /// Default for apps without an explicit setting (also default OFF).
@@ -326,6 +331,11 @@ final class AppState: ObservableObject {
         var enabled: Set<String> = []
         var hud: Set<String> = []
         var pointerLock: Set<String> = []
+        var mouseTouch: Set<String> = []
+        var virtualPads: Set<String> = []
+        var virtualMappings: [String: VirtualGamepadMapping] = [:]
+        var legacy: Set<String> = []
+        var resolutions: [String: String] = [:]
         for app in installedApps {
             let key = "keymapper.enabled." + app.id
             if let stored = AppSettings.defaults.object(forKey: key) as? Bool, stored {
@@ -334,6 +344,11 @@ final class AppState: ObservableObject {
             if AppSettings.defaults.bool(forKey: "metalHUD.enabled." + app.id) {
                 hud.insert(app.id)
             }
+            if AppSettings.legacyBridgeEnabled(for: app.id) { legacy.insert(app.id) }
+            resolutions[app.id] = AppSettings.legacyResolution(for: app.id)
+            if AppSettings.defaults.bool(forKey: "virtualGamepad.enabled." + app.id) { virtualPads.insert(app.id) }
+            virtualMappings[app.id] = AppSettings.virtualGamepadMapping(for: app.id)
+            if AppSettings.defaults.bool(forKey: "mouseTouch.enabled." + app.id) { mouseTouch.insert(app.id) }
             if AppSettings.pointerLockAllowed(for: app.id) {
                 pointerLock.insert(app.id)
             }
@@ -341,6 +356,11 @@ final class AppState: ObservableObject {
         keymapperEnabledApps = enabled
         metalHUDEnabledApps = hud
         pointerLockAllowedApps = pointerLock
+        mouseTouchFallbackApps = mouseTouch
+        virtualGamepadApps = virtualPads
+        virtualGamepadMappings = virtualMappings
+        legacyBridgeApps = legacy
+        legacyResolutions = resolutions
     }
 
     func isKeymapperEnabled(for app: InstalledApp) -> Bool {
@@ -383,6 +403,44 @@ final class AppState: ObservableObject {
     func setPointerLockAllowed(_ allowed: Bool, for app: InstalledApp) {
         AppSettings.setPointerLockAllowed(allowed, for: app.id)
         if allowed { pointerLockAllowedApps.insert(app.id) } else { pointerLockAllowedApps.remove(app.id) }
+    }
+
+    func isMouseTouchFallbackEnabled(for app: InstalledApp) -> Bool {
+        mouseTouchFallbackApps.contains(app.id)
+    }
+
+    func setMouseTouchFallbackEnabled(_ enabled: Bool, for app: InstalledApp) {
+        AppSettings.defaults.set(enabled, forKey: "mouseTouch.enabled." + app.id)
+        if enabled { mouseTouchFallbackApps.insert(app.id) } else { mouseTouchFallbackApps.remove(app.id) }
+    }
+
+    func isVirtualGamepadEnabled(for app: InstalledApp) -> Bool {
+        virtualGamepadApps.contains(app.id)
+    }
+
+    func setVirtualGamepadEnabled(_ enabled: Bool, for app: InstalledApp) {
+        AppSettings.defaults.set(enabled, forKey: "virtualGamepad.enabled." + app.id)
+        if enabled { virtualGamepadApps.insert(app.id) } else { virtualGamepadApps.remove(app.id) }
+    }
+
+    func virtualGamepadMapping(for app: InstalledApp) -> VirtualGamepadMapping {
+        virtualGamepadMappings[app.id] ?? .standard
+    }
+
+    func setVirtualGamepadMapping(_ mapping: VirtualGamepadMapping, for app: InstalledApp) {
+        AppSettings.setVirtualGamepadMapping(mapping, for: app.id)
+        virtualGamepadMappings[app.id] = mapping
+    }
+
+    func setLegacyBridgeEnabled(_ enabled: Bool, for app: InstalledApp) {
+        AppSettings.defaults.set(enabled, forKey: "legacyBridge.enabled." + app.id)
+        if enabled { legacyBridgeApps.insert(app.id) } else { legacyBridgeApps.remove(app.id) }
+    }
+
+    func setLegacyResolution(_ resolution: String, for app: InstalledApp) {
+        guard AppSettings.legacyResolutionChoices.contains(resolution) else { return }
+        AppSettings.defaults.set(resolution, forKey: "legacyBridge.resolution." + app.id)
+        legacyResolutions[app.id] = resolution
     }
 
     // MARK: - Selection
@@ -1025,7 +1083,9 @@ final class AppState: ObservableObject {
 
         // Input translation is opted in per game and default OFF. When disabled,
         // no keymap is passed, so the runtime installs no input handlers.
-        let enabled = isKeymapperEnabled(for: app)
+        // Gamepad mode owns the input path, so the touch keymap is not passed.
+        let virtualGamepad = isVirtualGamepadEnabled(for: app)
+        let enabled = isKeymapperEnabled(for: app) && !virtualGamepad
         let keymapURL = enabled ? keymapStore.fileURL(for: app.id) : nil
 
         do {
@@ -1034,7 +1094,10 @@ final class AppState: ObservableObject {
                 libraryURL: libraryURL,
                 keymapURL: keymapURL,
                 metalHUDEnabled: isMetalHUDEnabled(for: app),
-                pointerLockAllowed: isPointerLockAllowed(for: app)
+                pointerLockAllowed: isPointerLockAllowed(for: app),
+                mouseTouchFallback: isMouseTouchFallbackEnabled(for: app),
+                virtualGamepad: virtualGamepad,
+                virtualGamepadMapping: virtualGamepadMapping(for: app)
             )
             statusMessage = L10n.launching(app.displayName)
             launchingAppID = app.id

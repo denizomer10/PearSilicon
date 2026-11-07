@@ -4,6 +4,29 @@ import XCTest
 
 @MainActor
 final class PreparationModeTests: XCTestCase {
+    func testLegacyIndirectInputDefaultPreservesExplicitAppChoices() throws {
+        let cases: [(String?, Bool?, Bool?)] = [
+            ("iphoneos10.3", nil, false),
+            ("iphoneos16.4", nil, false),
+            ("iphoneos17.0", nil, nil),
+            (nil, nil, nil),
+            ("iphoneos10.3", true, true),
+            ("iphoneos10.3", false, false),
+        ]
+        for (sdk, declared, expected) in cases {
+            let fixture = try PreparationFixture()
+            defer { fixture.remove() }
+            let url = fixture.bundleURL.appendingPathComponent("Info.plist")
+            var info = try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any])
+            info["DTSDKName"] = sdk
+            info["UIApplicationSupportsIndirectInputEvents"] = declared
+            try PropertyListSerialization.data(fromPropertyList: info, format: .binary, options: 0).write(to: url)
+            try fixture.prepare(.compatibility)
+            let result = try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any])
+            XCTAssertEqual(result["UIApplicationSupportsIndirectInputEvents"] as? Bool, expected, "sdk: \(sdk ?? "missing")")
+        }
+    }
+
     func testEnvironmentRepairsMixedMarkerAndLoadCommandEvenWhenAlreadySelected() throws {
         let fixture = try PreparationFixture()
         defer { fixture.remove() }

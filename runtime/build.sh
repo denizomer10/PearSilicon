@@ -50,6 +50,26 @@ cat > "$ROOT/runtime/compile_commands.json" <<JSON
   },
   {
     "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/MouseTouchShim.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c MouseTouchShim.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/VirtualGamepadShim.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c VirtualGamepadShim.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/LegacyWindowShim.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c LegacyWindowShim.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/LegacyDirectTouch.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c LegacyDirectTouch.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
     "file": "$ROOT/runtime/BeepShim.mm",
     "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c BeepShim.mm"
   },
@@ -141,6 +161,10 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/MetalLayerShim.mm" \
   "$ROOT/runtime/TouchSynthesizer.mm" \
   "$ROOT/runtime/PointerLockShim.mm" \
+  "$ROOT/runtime/MouseTouchShim.mm" \
+  "$ROOT/runtime/LegacyWindowShim.mm" \
+  "$ROOT/runtime/LegacyDirectTouch.mm" \
+  "$ROOT/runtime/VirtualGamepadShim.mm" \
   "$ROOT/runtime/BeepShim.mm" \
   "$ROOT/runtime/ODRShim.mm" \
   "$ROOT/runtime/ServicesShim.mm" \

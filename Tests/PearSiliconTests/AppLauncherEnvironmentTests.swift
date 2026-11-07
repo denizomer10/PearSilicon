@@ -3,6 +3,40 @@ import XCTest
 @testable import PearSilicon
 
 final class AppLauncherEnvironmentTests: XCTestCase {
+    func testInputOverridesDoNotLeakBetweenGames() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let mapping = "{\"buttons\":{\"space\":\"a\"}}"
+        let inherited = [
+            "PEAR_ALLOW_POINTER_LOCK": "1", "PEAR_MOUSE_TOUCH": "1",
+            "PEAR_VIRTUAL_GAMEPAD": "1", "PEAR_VIRTUAL_GAMEPAD_MAP": mapping,
+        ]
+        let disabled = fixture.launcher.buildEnvironment(
+            app: fixture.app, keymapURL: nil, extra: [:], nativeContainer: false, baseEnvironment: inherited
+        )
+        XCTAssertNil(disabled["PEAR_ALLOW_POINTER_LOCK"])
+        XCTAssertNil(disabled["PEAR_MOUSE_TOUCH"])
+        XCTAssertNil(disabled["PEAR_VIRTUAL_GAMEPAD"])
+        XCTAssertNil(disabled["PEAR_VIRTUAL_GAMEPAD_MAP"])
+        let enabled = fixture.launcher.buildEnvironment(
+            app: fixture.app, keymapURL: nil, extra: inherited, nativeContainer: false, baseEnvironment: [:]
+        )
+        XCTAssertEqual(enabled["PEAR_ALLOW_POINTER_LOCK"], "1")
+        XCTAssertEqual(enabled["PEAR_MOUSE_TOUCH"], "1")
+        XCTAssertEqual(enabled["PEAR_VIRTUAL_GAMEPAD"], "1")
+        XCTAssertEqual(enabled["PEAR_VIRTUAL_GAMEPAD_MAP"], mapping)
+    }
+
+    func testPointerLockDefaultsOffAndHonorsExplicitChoice() {
+        let id = "test.pointer." + UUID().uuidString
+        defer { AppSettings.defaults.removeObject(forKey: "pointerLock.enabled." + id) }
+        XCTAssertFalse(AppSettings.pointerLockAllowed(for: id))
+        AppSettings.setPointerLockAllowed(true, for: id)
+        XCTAssertTrue(AppSettings.pointerLockAllowed(for: id))
+        AppSettings.setPointerLockAllowed(false, for: id)
+        XCTAssertFalse(AppSettings.pointerLockAllowed(for: id))
+    }
+
     func testLegacyLaunchDoesNotInheritAnotherGamesHostOrInjection() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

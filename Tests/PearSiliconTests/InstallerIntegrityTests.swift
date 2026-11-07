@@ -483,6 +483,65 @@ final class InstallerIntegrityTests: XCTestCase {
         }
     }
 
+    func testZIPCommentMayContainEndRecordSignature() async throws {
+        let fixture = try IntegrityFixture()
+        defer { fixture.remove() }
+        let archive = try fixture.package()
+        _ = try Shell.run("/usr/bin/python3", ["-c", """
+            import sys, zipfile
+            with zipfile.ZipFile(sys.argv[1], 'a') as archive:
+                archive.comment = b'comment PK\\x05\\x06 trailing text'
+            """, archive.path])
+        let installed = try await fixture.installer().install(packageAt: archive)
+        XCTAssertEqual(installed.bundleURL, fixture.destination)
+        try fixture.assertNoTransactions()
+        try fixture.assertNoTemporaryWork()
+    }
+
+    func testArchiveWithMultipleAppsIsRejectedWithoutReplacingExistingApp() async throws {
+        let fixture = try IntegrityFixture()
+        defer { fixture.remove() }
+        _ = try await fixture.installer().installBundle(at: fixture.source)
+        let before = try fixture.snapshot(fixture.destination)
+        let archive = try fixture.package()
+        _ = try Shell.run("/usr/bin/python3", ["-c", """
+            import sys, zipfile
+            with zipfile.ZipFile(sys.argv[1], 'a') as archive:
+                archive.writestr('Payload/Second.app/Info.plist', b'extra')
+            """, archive.path])
+        do {
+            _ = try await fixture.installer().install(packageAt: archive)
+            XCTFail("An ambiguous archive was accepted")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("multiple apps"), error.localizedDescription)
+        }
+        XCTAssertEqual(try fixture.snapshot(fixture.destination), before)
+        try fixture.assertNoTransactions()
+        try fixture.assertNoTemporaryWork()
+    }
+
+    func testMalformedZIP64OffsetIsRejectedWithoutOverflow() async throws {
+        let fixture = try IntegrityFixture()
+        defer { fixture.remove() }
+        let archive = fixture.root.appendingPathComponent("InvalidZIP64.ipa")
+        // ZIP64 locator immediately before an EOCD that requests ZIP64. The
+        // malicious offset is UInt64.max and must be rejected, not added to.
+        var bytes = Data(repeating: 0, count: 42)
+        bytes.replaceSubrange(0..<4, with: [0x50, 0x4b, 0x06, 0x07])
+        bytes.replaceSubrange(8..<16, with: Array(repeating: 0xff, count: 8))
+        bytes.replaceSubrange(20..<24, with: [0x50, 0x4b, 0x05, 0x06])
+        bytes.replaceSubrange(30..<32, with: [0xff, 0xff])
+        try bytes.write(to: archive)
+        do {
+            _ = try await fixture.installer().install(packageAt: archive)
+            XCTFail("Accepted an out-of-range ZIP64 offset")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("ZIP64 end record"), error.localizedDescription)
+        }
+        try fixture.assertNoTransactions()
+        try fixture.assertNoTemporaryWork()
+    }
+
     func testCRCFailureIsRejectedBeforeReplacingAnInstalledApp() async throws {
         let fixture = try IntegrityFixture()
         defer { fixture.remove() }

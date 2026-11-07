@@ -135,6 +135,7 @@ enum CLI {
         case "keys": return try keysCommand(parsed)
         case "hud": return try hudCommand(parsed)
         case "pointerlock": return try pointerLockCommand(parsed)
+        case "refresh-runtime": return try refreshRuntimeCommand(parsed)
         case "logs": return try logsCommand(parsed)
         case "paths": return try pathsCommand()
         case "storage": return try storageCommand(parsed)
@@ -146,6 +147,23 @@ enum CLI {
         default:
             throw CLIError.message("unknown command '\(command)'. Run `pearsilicon help`.")
         }
+    }
+
+    /// Refresh a single stopped app transactionally, without touching other games.
+    private static func refreshRuntimeCommand(_ arguments: CLIArguments) throws -> Int32 {
+        guard arguments.positionals.count == 1, let query = arguments.positionals.first else {
+            throw CLIError.message("usage: pearsilicon refresh-runtime <bundle-id|name>")
+        }
+        let app = try resolveApp(query)
+        guard let runtime = AppLauncher.runtimeLibraryURL() else {
+            throw CLIError.message("PearSilicon runtime was not found")
+        }
+        let installer = PackageInstaller(libraryURL: CLIPaths.shared.library)
+        let changed = try installer.refreshRuntimeIfNeeded(
+            for: app, sourceRuntimeDirectory: runtime.deletingLastPathComponent()
+        )
+        print(changed ? "refreshed runtime for \(app.displayName)" : "runtime already current for \(app.displayName)")
+        return 0
     }
 
     // MARK: Host service
@@ -461,9 +479,25 @@ enum CLI {
         } else {
             pointerLock = AppSettings.pointerLockAllowed(for: app.id)
         }
-        if pointerLock {
-            environment["PEAR_ALLOW_POINTER_LOCK"] = "1"
+        environment.removeValue(forKey: "PEAR_ALLOW_POINTER_LOCK")
+        if pointerLock { environment["PEAR_ALLOW_POINTER_LOCK"] = "1" }
+
+        if AppSettings.defaults.bool(forKey: "mouseTouch.enabled." + app.id) {
+            environment["PEAR_MOUSE_TOUCH"] = "1"
         }
+
+        if AppSettings.defaults.bool(forKey: "virtualGamepad.enabled." + app.id) {
+            environment["PEAR_VIRTUAL_GAMEPAD"] = "1"
+        }
+        if environment["PEAR_VIRTUAL_GAMEPAD"] == "1" {
+            // The virtual pad disassociates and hides the cursor itself; the
+            // game's native pointer lock would fight that capture.
+            environment.removeValue(forKey: "PEAR_ALLOW_POINTER_LOCK")
+            environment.removeValue(forKey: "PEAR_MOUSE_TOUCH")
+            environment["PEAR_VIRTUAL_GAMEPAD_MAP"] = AppSettings.virtualGamepadMapping(for: app.id).environmentValue
+        }
+
+        environment.merge(AppSettings.legacyEnvironment(for: app.id, virtualGamepad: environment["PEAR_VIRTUAL_GAMEPAD"] == "1")) { _, selected in selected }
 
         let nativeContainer = false
 
@@ -499,7 +533,10 @@ enum CLI {
         }
         print("  keymap: \(keymapState(enabled: enabled, hasFile: hasKeymap, url: keymapURL))")
         print("  metal HUD: \(hudEnabled ? "on" : "off")")
-        print("  pointer lock: \(pointerLock ? "allowed" : "disabled")")
+        print("  pointer lock: \(launchEnvironment["PEAR_ALLOW_POINTER_LOCK"] == "1" ? "allowed" : "disabled")")
+        if launchEnvironment["PEAR_VIRTUAL_GAMEPAD"] == "1" {
+            print("  virtual gamepad: on (mouse capture is armed by the first click)")
+        }
         print("  mode: \(mode == .compatibilityEnvironment ? "environment-injected in-process runtime + local KV/device-profile host" : "in-process runtime via LC_LOAD_DYLIB")")
         print("  container: iOS-like filesystem view (hooks + requested macOS sandbox profile)")
         if let logPath { print("  log:    \(logPath)") }
@@ -1201,6 +1238,7 @@ enum CLI {
           keys <id|name> [on|off]  Print or set the keymapper toggle
           hud <id|name> [on|off]   Print or set the Metal HUD/FPS overlay
           pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
+          refresh-runtime <id|name>  Refresh one stopped iOS app's runtime
           logs <id|name>       Print or follow the log (--follow, --system)
           paths                Show the Application Support layout
           storage [move <folder>|remove-previous]  Show storage or experimentally relocate apps/data

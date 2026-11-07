@@ -181,6 +181,14 @@ final class AppLauncher: @unchecked Sendable {
 
     func buildEnvironment(app: InstalledApp, keymapURL: URL?, extra: [String: String], nativeContainer: Bool, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var env = baseEnvironment
+        // Per-app input settings must not leak from a parent game or shell.
+        env.removeValue(forKey: "PEAR_ALLOW_POINTER_LOCK")
+        env.removeValue(forKey: "PEAR_MOUSE_TOUCH")
+        env.removeValue(forKey: "PEAR_VIRTUAL_GAMEPAD")
+        env.removeValue(forKey: "PEAR_VIRTUAL_GAMEPAD_MAP")
+        for key in ["PEAR_LEGACY_ATTACH_LAYER", "PEAR_LEGACY_WINDOW_LAYER_ONLY", "PEAR_LEGACY_LOGICAL_SIZE", "PEAR_DIRECT_LEGACY_TOUCH"] {
+            env.removeValue(forKey: key)
+        }
         let managedProfileKeys = ["PEAR_DEVICE_PROFILE_SOURCE", "PEAR_DEVICE_PROFILE_BUNDLE", "PEAR_DEVICE_VENDOR_UUID"]
         // A launcher may itself have been started from a compatibility session.
         // Never forward another game's capability, insertion, or profile metadata.

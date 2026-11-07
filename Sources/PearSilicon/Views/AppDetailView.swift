@@ -26,7 +26,8 @@ struct AppDetailView: View {
 
             switch tab {
             case .overview:
-                overview
+                ScrollView { overview }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .keymap:
                 KeymapEditorView(app: app)
             }
@@ -143,6 +144,34 @@ struct AppDetailView: View {
                         .fixedSize(horizontal: false, vertical: true)
 
 
+                    Toggle("Legacy window and touch bridge (Experimental)", isOn: Binding(
+                        get: { state.legacyBridgeApps.contains(app.id) },
+                        set: { state.setLegacyBridgeEnabled($0, for: app) }
+                    ))
+                    .toggleStyle(.switch)
+                    if state.legacyBridgeApps.contains(app.id) {
+                        Picker("Internal resolution", selection: Binding(
+                            get: { state.legacyResolutions[app.id] ?? "auto" },
+                            set: { state.setLegacyResolution($0, for: app) }
+                        )) {
+                            ForEach(AppSettings.legacyResolutionChoices, id: \.self) { value in
+                                Text(value == "auto" ? "Follow game" : value).tag(value)
+                            }
+                        }
+                        Text("For older apps with an empty window or broken mouse input. Scales the game to fit the window. Relaunch to apply.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Toggle("Mouse-to-touch fallback", isOn: Binding(
+                        get: { state.isMouseTouchFallbackEnabled(for: app) },
+                        set: { state.setMouseTouchFallbackEnabled($0, for: app) }
+                    ))
+                    .toggleStyle(.switch)
+                    Text("Try this if the game does not respond to mouse clicks or drags. Turn it off if touches are duplicated. Relaunch to apply.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     Divider()
 

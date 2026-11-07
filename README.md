@@ -136,6 +136,13 @@ tap, hold, joystick, mouse-look and swipe.
 - Genshin Impact’s iOS build does not expose its native controller mode on Mac;
   its Control Type remains “Touchscreen”. Controller keymapper bindings still
   drive its touch controls.
+- **Keyboard Mouse to Gamepad Inputs** is a separate per-app toggle for games
+  with native controller support. The game receives a hidden virtual controller;
+  every A/B/X/Y, shoulder, trigger, D-pad, MENU/OPTIONS and stick control can be
+  rebound to a key or mouse button, along with the left-stick keys. Click the
+  game to capture the mouse and Escape releases it. Mouse sensitivity and an
+  invert-vertical-look switch are included. This mode does not use the touch
+  keymapper or native pointer lock.
 
 Configure bindings in the in-app **Keymap** tab.
 

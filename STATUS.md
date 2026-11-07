@@ -303,3 +303,58 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - Cut the Rope IPA ön kontrolü, kurulum ve arka planda 12 saniyelik süreç başlatma/durdurma testini geçti. Bu, görsel veya oynanış doğrulaması değildir.
 - Dr. Driving IPA ön kontrolü, kurulum ve arka planda 12 saniyelik süreç başlatma/durdurma testini geçti. Angry Birds HD 1.5.0 desteklenmeyen CPU mimarisi nedeniyle ön kontrolde reddedildi.
 - Eski durum belgesindeki kurulu oyunlar ve günlükler bu çalışma ortamında mevcut değildi. Tüm oyunlar ve shimler uçtan uca doğrulanmış değildir; açık/koyu görünümün görsel kontrolü ve oyun içi testler hâlâ gereklidir.
+
+## 11. 2026-11-06 — giriş, IPA ve grafik incelemesi
+
+- GTA Vice City için kayıtlı pointer lock tercihi kapatıldı; yeni oyunlarda varsayılan kapalı, açıkça kaydedilmiş tercihler korunur.
+- Fare-dokunma yedeği ayrı `MouseTouchShim.mm` modülünde oyun başına isteğe bağlıdır; basma/sürükleme/bırakma, yerel dokunma bekleme süresi ve odak kaybında bırakma eklenmiştir. Cut the Rope için tercih açıldı.
+- Legacy GL dokunma dönüşümü yalnız gerçek görüntü ölçeklemesi etkinken uygulanır. `scripts/touch-geometry-smoke.mm` küçük/büyük/kenar boşluklu geometriyi kontrol eder; oyun içi dokunma testi değildir.
+- Metal geçici 1920×1080 değerleri, yalnız shim tarafından konulmuş ve oyun tarafından değiştirilmemişse gerçek katman boyutuna güncellenir. Tam ekran, iç çözünürlük ve Metal HUD görsel olarak henüz doğrulanmadı.
+- ZIP64 adresi taşması ve ZIP yorumunda bitiş imzası bulunması durumları düzeltildi. Birden fazla app içeren IPA belirsiz sayılarak reddedilir; hasarlı, şifreli veya desteklenmeyen mimarili tüm IPA'ların çalışacağı iddia edilemez.
+- İzole Cut the Rope, GTA ve eski iOS 10 SDK’lı Gutterball IPA kurulumları ve süreç testleri geçti. Kullanıcı Cut the Rope fare tıklama/sürükleme ile GTA imleç serbestliğini doğruladı. Gutterball için kullanıcı kontrolü sürüyor; HUD görsel olarak doğrulanmadı.
+- Legacy pencere davranışı `LegacyWindowShim.mm` içine ayrıldı; pencere düzeltmesi ana döngüden önce denenir ve sınıf geç yüklenirse yeniden denenir. Sahnesiz uygulamalarda ekran, GL ve sanal dokunma aynı uygulama-delegate penceresini kullanır.
+- iOS 17 öncesi SDK ile derlenen ve `UIApplicationSupportsIndirectInputEvents` belirtmeyen uygulamalarda önceki doğrudan dokunma varsayılanı korunur; açık tercihler ve bilinmeyen SDK'lar değiştirilmez. Bu politika test edildi.
+- Gutterball ilk kullanıcı denemesinde eski runtime ile `_setContentMinSizeFromScene` hatasıyla çöktü; runtime güncellendi ve arka plan süreç testi geçti. Son kullanıcı geri bildirimi hâlâ açılmadığı yönündedir; son denemeye ait yeni süreç/çökme kaydı görülmediğinden başlatıcı mesajı araştırılıyor. Başarı iddia edilmemelidir.
+
+## 12. 2026-11-07 — devam eden doğrulama
+
+- Gutterball'da boş uyarı paneli ve 0×0 native pencere ayrı sorunlar olarak saptandı. Alert/glass yerleşimi korunuyor; yalnız boş legacy host penceresine başlangıç boyutu veriliyor.
+- Deneysel legacy katman bağlantısı görüntüyü getirdi. Doğrudan yerel legacy dokunma köprüsü için kullanıcı tıklamanın çalıştığını doğruladı. Ölçekleme hâlâ kullanıcı testinde sorunlu; sabit mantıksal çözünürlük ve doğrudan UIWindow katmanı seçenekleri deneniyor. Başarı genelleştirilmemeli.
+- Deneysel sanal gamepad modülü public GameController API'siyle yazıldı. İzole IPA testinde hidden virtual controller bağlandı; fiziksel klavye/fare ve native pointer-lock ile oyun içi kontrol henüz doğrulanmadı. Oyun bazında GUI seçeneği eklendi.
+- Bu makine M1; M5/M6 test edilmedi. Kısa Gutterball menü performans kaydı yaklaşık 33.34 ms ortanca sunum aralığı gösterdi. GPU yolu hatası sonucu çıkarılmadı. Ayrıntılar `docs/COMPATIBILITY_RESEARCH.md`.
+- Bu oturumdaki değişiklikler henüz commit/push/release yapılmadı. Son Swift test turu 296 XCTest + 24 Swift Testing, 0 hata, 16 skip; yeni runtime yollarının tümü uçtan uca doğrulanmış değildir.
+
+### 2026-11-07 — kalıcı profil kurulumu
+
+- Kullanıcı önceki denemede Gutterball tıklama/sürükleme ve başlık çubuğundan taşımanın çalıştığını doğruladı. Legacy profil ve 1024×768 iç çözünürlük tercihi kalıcı kaydedildi; GUI'ye deneysel legacy profil ve klavye/fare → sanal gamepad seçenekleri eklendi.
+- Güncel yerel uygulama `/Applications/PearSilicon.app` içine kuruldu; önceki kopya `build/Backups/PearSilicon-before-input-update-20261107-072049.app` altında. Bu yeni bir yayın değildir.
+- Normal kurulumdan yeniden başlatmada kullanıcı giriş sorununun tekrarlandığını bildirdi. Günlükte kök görünümü olmayan ikinci UIKit penceresi key oluyor. `PearPrimaryWindow` artık içeriksiz key pencereyi oyun penceresinin önüne koymuyor. Düzeltme kurulu uygulamaya ve Gutterball runtime'ına aktarıldı; normal başlatma sonrasında kullanıcı tıklama, sürükleme ve pencere boyutlandırma denemesi için **“sorunsuz çalışıyor”** geri bildirimi verdi. Bu doğrulama Gutterball'ın mevcut profili içindir; diğer oyunlara genellenmez.
+- Son Swift turu: **299 XCTest + 24 Swift Testing, 16 skip, 0 hata**. Runtime yeniden derlendi. Tüm oyunlar, Retina/HUD ve M5/M6 donanımı için genel başarı iddiası yok.
+
+### 2026-11-07 — diğer oyunlar ve GTA sanal gamepad
+
+- Run Sackboy Run, ayrı geçici kütüphanede güncel runtime ve legacy 1024×768 profiliyle kurulum/12 saniye süreç/nonempty pencere testini geçti. Kullanıcı ayrıca “sorunsuz çalıştı” bildirdi. Testin kendi geçici süreci ve kütüphanesi temizlendi; kullanıcı kayıtları değiştirilmedi.
+- GTA Vice City güncel runtime ile sanal gamepad modunda başlatıldı. Gerçek günlükte `connected=1`, keyboard/mouse connected ve `capture requested=1 foreground=1 available=1 locked=1` görüldü. Gerçek kullanıcı klavye olayları sol çubuk ve A/Menu değerlerine ulaşıyor. Oyun içi hareket/kamera ve yeniden boyutlandırma sonucu bekleniyor.
+- Sanal gamepad sağ çubuğu, native capture kaybedildiğinde artık hemen nötrleniyor. İsteğe bağlı `PEAR_DEBUG_POINTER` yalnız kontrol değerlerini ve capture durum değişimini kaydediyor.
+- Geometri smoke testi yeniden geçti. Native yakalama için cursor warp veya dokunma mouse-look eklenmedi.
+- GTA kullanıcı testi: klavye çalışıyor, fare/kamera çalışmıyor. Yakalama son kullanıcı olaylarında Esc ile kapatılmış (`requested=0 locked=0`); açık yakalamayla tekrar kontrol istendi. Bu nedenle GTA mouse-look doğrulanmış sayılmıyor. Ham mouse örnekleri/ kabul sayısı ve sanal sağ çubuk readback tanılaması hazırlandı; sonraki runtime yüklemesinde etkin olacak.
+- Cut the Rope ve Dr. Driving güncel runtime ile ayrı geçici kütüphanelerde başlatma/nonempty pencere testlerini geçti; bu son testler görsel ölçekleme doğrulaması değildir.
+
+### 2026-11-07 — yön uyumu ve odak sonrası capture
+
+- Dr. Driving ekran görüntüsündeki kırpmanın kaynağı: GL drawable 320×480, viewport 480×320. Yalnız tek yön ailesi bildiren GL uygulamalarında ilk drawable bu bildirimle hizalanıyor; karışık/eksik bildirimler korunuyor. Tahmin yerine gerçek renderbuffer boyutu sorgulanıyor. Yeni günlükte renderbuffer ve viewport **480×320**; kullanıcı büyütme/küçültme, görüntü ve tıklamalar için **“Görüntü ve tıklamalar düzgün”** doğrulaması verdi.
+- GTA'da kullanıcı native yakalamayla kamera hareketinin çalıştığını, Command-Tab sonrası kaybolduğunu bildirdi. Capture isteği, odak nedeniyle askıya alınma ve Escape basma kenarı ayrı durumda tutuldu; çift key-down aynı isteği iki kez çevirmiyor. AppKit ve UIKit odak bildirimlerinde tercih iki yönde geçersiz kılınıyor; oyun içi ilk tıklama capture'ı yeniden istiyor ve o tıklamayı ateş/dokunma olarak göndermiyor. Yeni oyun içi odak turu bekleniyor.
+- Yeni durum testi (`scripts/pointer-capture-state-smoke.cpp`) odak turu, Escape ile bırakma ve tıklamayla geri alma durumlarını geçti. Geometri testi yön düzeltmesi/karışık yönleri de kapsıyor. İlgili Swift regresyon turu **29 test, 0 hata**.
+- Minecraft güncel runtime ile ayrı kütüphanede başlatma/nonempty pencere testini geçti; görsel ölçekleme bu testten çıkarılamaz.
+- Güncel yerel uygulama /Applications'a yeniden kuruldu; önceki sürüm `build/Backups/PearSilicon-before-focus-orientation-20261107-074032.app` altında. Oyun verileri korunuyor; yeni commit/push/release yok.
+- GTA'nın sonraki tanılamasında ham fare örnekleri geliyor, ancak native `locked=0` olduğundan kabul edilmiyor. Yeniden yakalama için eklenen local monitor ilk tıklamayı tüketiyordu; UIKit'in native etkinleştirme hareketini görmesi için bu ilk basma/bırakma çifti artık aynen iletiliyor (bir önceki maddede yazan tüketme davranışı kaldırıldı). Bu düzeltmenin oyun içi doğrulaması bekleniyor.
+
+### 2026-11-07 — yapılandırılabilir klavye/fare → sanal gamepad
+
+- `Enable keymapper` ayrı tutuldu. Keymap sekmesine bağımsız **Keyboard Mouse to Gamepad Inputs** anahtarı eklendi. Açıkken oyun gizli `GCVirtualController` görür; dokunma keymapper'ı ve native pointer lock istenmez. Keymapper anahtarı kapalıyken de bu mod çalışır.
+- A/B/X/Y, L1/R1, L2/R2, D-pad, MENU/OPTIONS, L3/R3 ve sol çubuk yönleri ayrı ayrı tuşa veya fare düğmesine atanabilir; fare hassasiyeti 0,2–3 arasında ayarlanır ve dikey bakış yönü ters çevrilebilir. Tuş yakalama alanında Escape atamayı iptal eder.
+- Eşleme oyun başına `virtualGamepad.map.<bundle>` altında JSON saklanır ve başlatmada `PEAR_VIRTUAL_GAMEPAD_MAP` ile runtime'a geçer. GUI ve CLI aynı kayıtlı ayarı kullanır; değişiklik bir sonraki başlatmada etkili olur. `PEAR_VIRTUAL_GAMEPAD` ve eşleme değişkeni oyunlar arasında sızmaz.
+- Fare yakalama artık oyunun native pointer lock'una bağlı değil: oyun penceresindeki ilk sol tıklama `CGAssociateMouseAndMouseCursorPosition(false)` ve imleç gizleme ile yakalar ve o tıklamayı oyuna iletir. Escape bırakır; ikinci Escape yeniden yakalamaz. Capture açıkken GCMouse ham örnekleri kabul edilir, NSEvent deltaları yedek yoldur. Odak kaybı capture'ı bırakır, oyuna dönüşte otomatik geri gelir; çıkışta imleç ve ilişkilendirme geri yüklenir.
+- Düzeltilen gerçek hatalar: `input ?? .none` ifadesinin `Optional.none` seçip varsayılan atamayı geri getirmesi; D-pad tuşlarının tekrar denetimine girmemesi; ikinci Escape'in yakalamayı yeniden açması.
+- Doğrulanan: `swift build`, `swift test` (**307 XCTest + 24 Swift Testing, 16 skip, 0 hata**), `./runtime/build.sh`, `./scripts/build-app.sh release` ve capture state smoke testi geçti. Yeni eşleme modeli için 8 test eklendi. GTA Vice City'de fare/kamera, tuş eşlemeleri ve odak dönüşü **kullanıcı oyun içi testi bekliyor**; bu satır o testin sonucu değildir.
+

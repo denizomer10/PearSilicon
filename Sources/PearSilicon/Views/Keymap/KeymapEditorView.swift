@@ -12,20 +12,79 @@ struct KeymapEditorView: View {
     @Namespace private var glassNamespace
 
     var body: some View {
-        VStack(spacing: 16) {
-            toolbar
-            enableToggle
+        ScrollView {
+            VStack(spacing: 16) {
+                toolbar
+                enableToggle
+                virtualGamepadSection
 
-            HStack(alignment: .top, spacing: 16) {
-                KeymapCanvasView(keymap: $draft)
-                    .frame(minWidth: 320, minHeight: 260)
-                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                HStack(alignment: .top, spacing: 16) {
+                    KeymapCanvasView(keymap: $draft)
+                        .frame(minWidth: 320, minHeight: 260)
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-                bindingList
-                    .frame(width: 340)
+                    bindingList
+                        .frame(width: 340)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: app.id) { load() }
+    }
+
+    // MARK: - Keyboard/mouse → gamepad
+
+    /// A second, independent input path. It stays separate from the touch
+    /// keymapper: the game sees a real (hidden) controller, and every control
+    /// below can be rebound to a key or mouse button.
+    private var virtualGamepadSection: some View {
+        let enabled = state.isVirtualGamepadEnabled(for: app)
+        let running = state.isRunning(app)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Toggle("Keyboard Mouse to Gamepad Inputs", isOn: Binding(
+                    get: { enabled },
+                    set: { state.setVirtualGamepadEnabled($0, for: app) }
+                ))
+                .toggleStyle(.switch)
+
+                Spacer()
+
+                if running && enabled {
+                    Button {
+                        Task { await state.launch(app) }
+                    } label: {
+                        Label("Relaunch to apply", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                }
+            }
+
+            Text("For games with controller support. The game receives a hidden virtual controller instead of touch input; click the game to capture the mouse, then move it to drive the right stick. Escape releases the mouse.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if enabled {
+                Divider()
+                VirtualGamepadMappingEditor(mapping: Binding(
+                    get: { state.virtualGamepadMapping(for: app) },
+                    set: { state.setVirtualGamepadMapping($0, for: app) }
+                ))
+
+                if state.isKeymapperEnabled(for: app) {
+                    Label(
+                        "The touch keymapper stays enabled, but its bindings are not used while gamepad mode is on.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(14)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     // MARK: - Enable toggle

@@ -29,6 +29,28 @@
 #import <dlfcn.h>
 #import <os/lock.h>
 
+// Scene-less legacy apps can have only the app delegate's UIWindow. Keep the
+// context ID and coordinate dimensions tied to the same actual window.
+UIWindow *PearPrimaryWindow(void) {
+    UIApplication *app = UIApplication.sharedApplication;
+    UIWindow *firstVisible = nil;
+    for (UIScene *scene in app.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            // Catalyst can create a key host window without game content.
+            // It must not displace the app's real rendering/input window.
+            if (!window.hidden && window.rootViewController && window.isKeyWindow) return window;
+            if (!window.hidden && window.rootViewController && !firstVisible) firstVisible = window;
+        }
+    }
+    id delegate = app.delegate;
+    if ([delegate respondsToSelector:@selector(window)]) {
+        id window = ((id (*)(id, SEL))objc_msgSend)(delegate, @selector(window));
+        if ([window isKindOfClass:UIWindow.class] && !((UIWindow *)window).hidden) return window;
+    }
+    return firstVisible;
+}
+
 typedef struct __IOHIDEvent *IOHIDEventRef;
 typedef int32_t IOFixed; // 16.16 fixed point
 
@@ -157,11 +179,7 @@ void PearSynthesizeTouch(BOOL down, CGFloat nx, CGFloat ny) {
 
     UIApplication *app = UIApplication.sharedApplication;
     BOOL hasSelector = [app respondsToSelector:gEnqueueSelector];
-    UIWindow *key = nil;
-    for (UIScene *scene in app.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) continue;
-        for (UIWindow *w in ((UIWindowScene *)scene).windows) { if (w.isKeyWindow) key = w; }
-    }
+    UIWindow *key = PearPrimaryWindow();
     if (getenv("PEAR_DEBUG_TOUCH")) {
         PearLog(@"[PearRuntime][touch] synthesize down=%d state=%ld keyWindow=%@ sel=%d",
               down, (long)app.applicationState,
@@ -299,11 +317,7 @@ static id PearVirtualDigitizer(void) {
     // Bind to the key window's context, so the touch lands in the right scene.
     // Without a context the posted collection is malformed and UIKit's event
     // dispatcher crashes, so wait for a key window instead of caching one.
-    UIWindow *key = nil;
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) continue;
-        for (UIWindow *w in ((UIWindowScene *)scene).windows) if (w.isKeyWindow) key = w;
-    }
+    UIWindow *key = PearPrimaryWindow();
     SEL ctxSel = NSSelectorFromString(@"_contextId");
     if (!key || ![key respondsToSelector:ctxSel]) {
         PearLog(@"[PearRuntime][touch] virtual digitizer deferred (no key window)");
@@ -348,11 +362,9 @@ void PearSynthesizeVirtualFinger(BOOL down, NSString *key, CGFloat nx, CGFloat n
 
     // Digitizer coordinates are in the window's UIKit point space (larger than
     // the on-screen window; iOSSupport scales it).
-    CGSize pts = CGSizeMake(1000, 1000);
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) continue;
-        for (UIWindow *w in ((UIWindowScene *)scene).windows) if (w.isKeyWindow) pts = w.bounds.size;
-    }
+    UIWindow *window = PearPrimaryWindow();
+    if (!window || window.bounds.size.width < 1 || window.bounds.size.height < 1) return;
+    CGSize pts = window.bounds.size;
     double x = (double)nx * pts.width;
     double y = (double)ny * pts.height;
 
