@@ -91,9 +91,9 @@ static void PearInstallAlertLogging(void) {
     method_setImplementation(method, imp_implementationWithBlock(^id(id self, NSString *title, NSString *message, NSInteger style) {
         if ((message && [message containsString:@"audio system"]) ||
             (title && [title containsString:@"Unavailable"])) {
-            PearLog([NSString stringWithFormat:@"[PearRuntime][diagnostic] alert title=%@ message=%@", title, message]);
+            PearLog(@"%@", [NSString stringWithFormat:@"[PearRuntime][diagnostic] alert title=%@ message=%@", title, message]);
             for (NSString *line in [NSThread callStackSymbols]) {
-                PearLog([NSString stringWithFormat:@"[PearRuntime][diagnostic]   %@", line]);
+                PearLog(@"%@", [NSString stringWithFormat:@"[PearRuntime][diagnostic]   %@", line]);
             }
         }
         return ((id (*)(id, SEL, NSString *, NSString *, NSInteger))original)(self, selector, title, message, style);
@@ -155,7 +155,7 @@ extern "C" size_t PearMangledProcAvailableMemory(void) {
         static BOOL logged = NO;
         if (!logged) {
             logged = YES;
-            PearLog([NSString stringWithFormat:@"[PearRuntime][memory] available=%zu MB",
+            PearLog(@"%@", [NSString stringWithFormat:@"[PearRuntime][memory] available=%zu MB",
                      available / (1024 * 1024)]);
         }
     }
@@ -214,7 +214,7 @@ static void PearSetDeviceBufferFrames(AudioDeviceID device, AudioObjectPropertyS
         UInt32 actual = 0;
         UInt32 size = sizeof(actual);
         AudioObjectGetPropertyData(device, &readAddress, 0, NULL, &size, &actual);
-        PearLog([NSString stringWithFormat:
+        PearLog(@"%@", [NSString stringWithFormat:
             @"[PearRuntime][audio] device buffer device=%u scope=%u want=%u status=%d actual=%u",
             (unsigned)device, (unsigned)scope, (unsigned)frames, (int)status, (unsigned)actual]);
     }
@@ -232,7 +232,7 @@ static void PearRestoreDeviceBuffers(void) {
 static void PearApplyPreferredIOBuffer(UInt32 frames) {
     if (frames < 32 || frames > 4096) return;
     if (PearServicesDebug()) {
-        PearLog([NSString stringWithFormat:@"[PearRuntime][audio] preferred IO buffer %u frames", (unsigned)frames]);
+        PearLog(@"%@", [NSString stringWithFormat:@"[PearRuntime][audio] preferred IO buffer %u frames", (unsigned)frames]);
     }
 
     if (!gDeviceBuffersCaptured) {
@@ -388,7 +388,7 @@ static void PearObserveAudioInterruptions(void) {
                               @"AVAudioSessionMediaServicesWereResetNotification" ]) {
         [center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
                         usingBlock:^(NSNotification *note) {
-            PearLog([NSString stringWithFormat:@"[PearRuntime][audio] %@ %@",
+            PearLog(@"%@", [NSString stringWithFormat:@"[PearRuntime][audio] %@ %@",
                      note.name, note.userInfo ?: @{}]);
         }];
     }
@@ -399,7 +399,7 @@ static void PearObserveAudioInterruptions(void) {
         id session = sessionClass ? ((id (*)(id, SEL))objc_msgSend)(sessionClass,
                                                                    @selector(sharedInstance)) : nil;
         if (!session) return;
-        PearLog([NSString stringWithFormat:
+        PearLog(@"%@", [NSString stringWithFormat:
             @"[PearRuntime][audio] session active=%@ otherAudio=%@ category=%@ mode=%@ inputAvailable=%@ outputChannels=%@",
             @(PearAudioBoolProperty(session, @"isActive")),
             @(PearAudioBoolProperty(session, @"isOtherAudioPlaying")),
@@ -507,7 +507,7 @@ static AudioComponent PearAudioComponentFindNext(AudioComponent existing,
                     subtype[1] = (char)(mapped >> 16);
                     subtype[2] = (char)(mapped >> 8);
                     subtype[3] = (char)mapped;
-                    PearLog([NSString stringWithFormat:@"[PearRuntime][audio] RemoteIO mapped to host unit '%s'", subtype]);
+                    PearLog(@"%@", [NSString stringWithFormat:@"[PearRuntime][audio] RemoteIO mapped to host unit '%s'", subtype]);
                 }
             }
             return component;
@@ -556,7 +556,7 @@ static void PearLogAudioUnitStatus(const char *call, AudioUnit unit, OSStatus st
     if (component) AudioComponentGetDescription(component, &description);
     PearAudioUnitFourCC(description.componentType, type);
     PearAudioUnitFourCC(description.componentSubType, subtype);
-    PearLog([NSString stringWithFormat:@"[PearRuntime][audio] %s unit=%p %s/%s status=%d %s",
+    PearLog(@"%@", [NSString stringWithFormat:@"[PearRuntime][audio] %s unit=%p %s/%s status=%d %s",
              call, unit, type, subtype, (int)status, detail ?: ""]);
 }
 
@@ -736,7 +736,7 @@ static OSStatus PearAudioComponentInstanceNew(AudioComponent component, AudioUni
         char type[5], subtype[5];
         PearAudioUnitFourCC(description.componentType, type);
         PearAudioUnitFourCC(description.componentSubType, subtype);
-        PearLog([NSString stringWithFormat:@"[PearRuntime][audio] InstanceNew %s/%s status=%d instance=%p",
+        PearLog(@"%@", [NSString stringWithFormat:@"[PearRuntime][audio] InstanceNew %s/%s status=%d instance=%p",
                  type, subtype, (int)status, outInstance ? *outInstance : NULL]);
     }
     return status;

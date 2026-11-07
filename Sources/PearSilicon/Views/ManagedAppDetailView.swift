@@ -127,7 +127,7 @@ struct ManagedAppDetailView: View {
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
-                        .background(Capsule().fill(.white.opacity(0.12)))
+                        .background(Capsule().fill(Color.primary.opacity(0.10)))
                     Text("v\(entry.manifest.version)")
                         .font(.caption)
                         .foregroundStyle(.secondary)

@@ -258,3 +258,48 @@ Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam ed
 - Wine VM değildir; kernel anti-cheat çalışmaz; Rosetta 2 gerekir.
 - Yedekler şifresiz; uygulama ad-hoc imzalı, noterize değil.
 - Controller köprüsü yalnız GameController kullanan uygulamalarda etkilidir.
+
+## 9. 2026-11-02 — 0.4.5 regresyon düzeltmesi
+
+0.4.5 (`da96a2f`) tüm iOS uygulamalarında ilk fare olayında SIGSEGV üretiyordu.
+Kök neden ve düzeltmeler:
+
+- **`InstallNativeTouchTracking` imzası:** `imp_implementationWithBlock`
+  blokları `(self, ...metot argümanları)` alır; SEL geçirilmez. Blokta fazladan
+  `SEL _cmd` parametresi vardı, bu yüzden `event` çöp bir işaretçiye düşüyor ve
+  `-[UIApplication sendEvent:]` çöp olayla çağrılıyordu. Blok artık
+  `^(id self, id event)` ve orijinal IMP'ye yakalanan `sel` veriliyor.
+  (Red, SLIMEIM, Gutterball çökmeleri bunun kanıtıydı.)
+- **Fare→dokunma yedeği artık varsayılan kapalı:** her tıklamada sentetik dokunma
+  üretiyordu; modern uygulamalarda tek tıklamayı çift tıklamaya çeviriyordu.
+  Yalnız `PEAR_MOUSE_TOUCH=1` ile açılır.
+- **`ActivateMainWindow`:** `activateIgnoringOtherApps:` ve `center` kaldırıldı
+  (odak çalma yok). Pencere 1/2.5/5 sn'de yeniden denenir, en büyük görünür
+  NSWindow `makeKeyAndOrderFront:` + `makeKeyWindow` ile anahtar yapılır; UIWindow
+  yalnız anahtar değilse `makeKeyAndVisible` çağrılır. Tıklamaların pencereye
+  ulaşması için gerekli.
+- **`PearIsLegacyApp()`:** eski-SDK (pre-15, sahne manifesti yok) koşulu tek
+  yerde toplandı; `InstallLegacyWindowFix` bunu kullanıyor.
+- **Sanal digitizer:** anahtar pencere/`contextId` yoksa artık oluşturulmuyor
+  (bozuk koleksiyon UIKit'i çökertiyordu); `_spinLock` ivar'ı yoksa kilit
+  alınmıyor.
+
+Doğrulama (arka planda, odak çalmadan, `pearsilicon launch --background`):
+Riptide GP2, Minecraft, Gutterball ve SLIME IM açıldı; yeni çökme raporu yok.
+Gutterball penceresi oluştu ve `sample` çıktısında Metal draw call'ları görüldü
+(artık beyaz ekran değil). `swift build`, `swift test` (24 Swift Testing) ve
+`./scripts/build-app.sh release` temiz.
+
+Not: `build/PearSilicon.app` 0.4.5 (17) sabit runtime ile yeniden üretildi.
+Kurulu `ios-apps/*` runtime'ları elle güncellendi ve yeniden imzalandı. Eski
+0.4.4 runtime'ına dönmemek için Settings → "Refresh iOS Runtimes Now"
+kullanılmamalı; yeni app paketi kullanılmalı.
+
+## 10. 2026-11-06 incelemesi
+
+- Bu çalışma ağacında ana pencerenin açık görünümde koyu kalan arka planı, ayırıcıları ve seçim renkleri sistem temasına uyarlandı. Arama sonuçsuzken kurulum önerisi yerine sonuç bulunamadığı gösteriliyor.
+- ServicesShim günlüklerinde önceden biçimlendirilmiş metnin tekrar biçim dizgesi olarak kullanılması düzeltildi.
+- `swift test` değişikliklerden önce başarılı; `swift build` arayüz değişikliklerinden sonra başarılı. Runtime yeniden derlendi.
+- Cut the Rope IPA ön kontrolü, kurulum ve arka planda 12 saniyelik süreç başlatma/durdurma testini geçti. Bu, görsel veya oynanış doğrulaması değildir.
+- Dr. Driving IPA ön kontrolü, kurulum ve arka planda 12 saniyelik süreç başlatma/durdurma testini geçti. Angry Birds HD 1.5.0 desteklenmeyen CPU mimarisi nedeniyle ön kontrolde reddedildi.
+- Eski durum belgesindeki kurulu oyunlar ve günlükler bu çalışma ortamında mevcut değildi. Tüm oyunlar ve shimler uçtan uca doğrulanmış değildir; açık/koyu görünümün görsel kontrolü ve oyun içi testler hâlâ gereklidir.
