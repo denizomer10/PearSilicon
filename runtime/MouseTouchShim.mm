@@ -8,6 +8,7 @@
 extern void PearSynthesizeVirtualFinger(BOOL down, NSString *key, CGFloat nx, CGFloat ny);
 extern void PearSendLegacyDirectTouch(BOOL down, CGFloat nx, CGFloat ny);
 extern void PearCancelLegacyDirectTouch(void);
+extern void PearRunLegacyDirectTouchSelfTest(void);
 
 static void PearSendMouseTouch(BOOL down, CGFloat nx, CGFloat ny) {
     if (NSProcessInfo.processInfo.environment[@"PEAR_DIRECT_LEGACY_TOUCH"].boolValue)
@@ -150,5 +151,6 @@ void PearInstallMouseToTouchFallback(void) {
             cancel();
         }];
     PearLog(@"[PearRuntime][touch] mouse-to-touch fallback %@", gMouseTouchMonitor ? @"installed" : @"unavailable");
+    PearRunLegacyDirectTouchSelfTest();
 }
 

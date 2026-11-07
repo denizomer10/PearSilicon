@@ -66,6 +66,7 @@ static CGSize gNativeDrawableSize = { 0, 0 };
 static __weak CALayer *gDrawableLayer;
 static int gLastCropViewport[4] = { -1, -1, -1, -1 };
 static int gLastPresentViewport[4] = { -1, -1, -1, -1 };
+static uint64_t gPresentCount = 0;
 static BOOL gCropApplied = NO;
 
 static void PearFitDrawable(CALayer *layer);
@@ -79,6 +80,32 @@ static void PearUpdateDrawableCrop(void) {
     if (getenv("PEAR_NO_GL_VIEWPORT_FIT")) return;
     CALayer *layer = gDrawableLayer;
     if (!layer) return;
+
+    gPresentCount++;
+    if (PearGLDebug() && gPresentCount % 120 == 0) {
+        typedef void (*PearGetIntegerv)(int, int *);
+        typedef void (*PearReadPixels)(int, int, int, int, unsigned, unsigned, void *);
+        static PearGetIntegerv getIntegervDebug;
+        static PearReadPixels readPixelsDebug;
+        if (!getIntegervDebug) getIntegervDebug = (PearGetIntegerv)dlsym(OpenGLESHandle(), "glGetIntegerv");
+        if (!readPixelsDebug) readPixelsDebug = (PearReadPixels)dlsym(OpenGLESHandle(), "glReadPixels");
+        int vp[4] = { 0, 0, 0, 0 };
+        unsigned char center[4] = { 0, 0, 0, 0 };
+        unsigned char corner[4] = { 0, 0, 0, 0 };
+        if (getIntegervDebug && readPixelsDebug) {
+            getIntegervDebug(0x0BA2 /* GL_VIEWPORT */, vp);
+            if (vp[2] > 0 && vp[3] > 0) {
+                readPixelsDebug(vp[0] + vp[2] / 2, vp[1] + vp[3] / 2, 1, 1,
+                                0x1908 /* GL_RGBA */, 0x1401 /* GL_UNSIGNED_BYTE */, center);
+                readPixelsDebug(vp[0] + 4, vp[1] + vp[3] - 4, 1, 1,
+                                0x1908, 0x1401, corner);
+            }
+        }
+        PearLog(@"[PearRuntime][gl] present #%llu center=%02x%02x%02x%02x corner=%02x%02x%02x%02x",
+                (unsigned long long)gPresentCount,
+                center[0], center[1], center[2], center[3],
+                corner[0], corner[1], corner[2], corner[3]);
+    }
 
     // The window can be resized (or rotated) after the renderbuffer was
     // created. Re-fit on every present so the visible scale follows the window;

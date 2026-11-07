@@ -1,11 +1,30 @@
 # PearSilicon — Çalışma Durumu
 
-Son güncelleme: 2026-11-01 10:30 · Dal: `feature/portable-multiplatform`
-Son commit: `6cc4894` (origin'a push edildi; sürüm `v0.4.3` ayrı release olarak yayınlandı)
-Uygulama paketi: `build/PearSilicon.app` **0.4.3 (15)**, `6cc4894`; ayrı `v0.4.3` release'ine yüklendi (SHA-256 `14b5c8d6…`)
-Web sitesi: `pearsilicon-web` `6e25918` (release listesi indirme bağlantısı ve gerçek sürüm notları)
+Son güncelleme: 2026-11-07 · Dal: `denizomer10-virtual-gamepad-inputs`
+Son commit: 0.4.8 release commit'i
+Uygulama paketi: **0.4.8 (20)**; `v0.4.8` Development Beta release'ine yüklendi
+Web sitesi: `pearsilicon-web` (release listesi indirme bağlantısı ve gerçek sürüm notları)
 
-Bir sonraki geliştirici/agent §1 ve §4'ü okuyarak kaldığı yerden devam edebilir.
+Bir sonraki geliştirici/agent §0, §1 ve §4'ü okuyarak kaldığı yerden devam edebilir.
+
+---
+
+## 0. 0.4.8 (2026-11-07) — GTA III ve LCS
+
+- **GTA III** (`com.rockstargames.gta3ios` 1.3.13, SDK 12.1, legacy):
+  beyaz ekran, otomatik legacy köprünün UIKit kök layer'ını AppKit host'a
+  bağlamasıyla giderildi. Oyun açılıyor ve `EAGLView` çiziyor.
+- **GTA III dokunma:** `PEAR_DIRECT_LEGACY_TOUCH` yolu artık `EAGLView`'a
+  ulaşıyor; loglarda `touchesBegan`/`touchesEnded` görülüyor. Oyun gamepad ile
+  sorunsuz; fare→dokunma eşlemesi çalışıyor ancak hassasiyeti/konumu tam değil.
+  Dokunma koordinatı ve çoklu dokunma iyileştirmesi sonraki adım.
+- **GTA LCS** (`com.rockstargames.gtalcs` 2.4.150, SDK 16.2): açılışta
+  `RockstarMobile` timer'ında null fonksiyon çağrısıyla çöküyordu. Eksik
+  `UIKit._UIKitNumericRawRepresentable.+` sembolü `libswiftUIKit.dylib` içine
+  eklendi; kurulu uygulamanın dylib'i yamanıp yeniden imzalandı. Süreç artık
+  açık kalıyor; yeni crash raporu üretilmiyor.
+- Teşhisler `PEAR_DEBUG_GL`, `PEAR_DEBUG_TOUCH` ve `PEAR_DEBUG_VIEWS` ile
+  isteğe bağlı; normal oyunda ek log üretilmez.
 
 ---
 

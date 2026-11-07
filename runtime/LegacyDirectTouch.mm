@@ -5,6 +5,7 @@
 // not post system events or generate input on its own.
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 
 @interface PearLegacyTouch : UITouch
 @property(nonatomic, weak) UIWindow *pearWindow;
@@ -52,6 +53,19 @@
 static PearLegacyTouch *gDirectTouch;
 static PearLegacyEvent *gDirectEvent;
 
+static BOOL PearLegacyTouchDebug(void) {
+    return getenv("PEAR_DEBUG_TOUCH") != NULL;
+}
+
+static void PearLogDirectTarget(UIView *view) {
+    if (!PearLegacyTouchDebug() || !view) return;
+    SEL sel = @selector(touchesBegan:withEvent:);
+    IMP impl = class_getMethodImplementation(view.class, sel);
+    PearLog(@"[PearRuntime][mouse-touch] direct target=%@ interaction=%d began=%d impl=%p",
+            NSStringFromClass(view.class), (int)view.userInteractionEnabled,
+            (int)[view respondsToSelector:sel], impl);
+}
+
 void PearCancelLegacyDirectTouch(void) {
     if (!gDirectTouch) return;
     gDirectTouch.pearPhase = UITouchPhaseCancelled;
@@ -82,7 +96,8 @@ void PearSendLegacyDirectTouch(BOOL down, CGFloat nx, CGFloat ny) {
         gDirectTouch.pearPhase = UITouchPhaseBegan;
         gDirectTouch.pearTimestamp = NSProcessInfo.processInfo.systemUptime;
         gDirectEvent.pearTouch = gDirectTouch;
-        if (getenv("PEAR_DEBUG_TOUCH")) PearLog(@"[PearRuntime][mouse-touch] direct began view=%@ point=%@", NSStringFromClass(view.class), NSStringFromCGPoint(point));
+        if (PearLegacyTouchDebug()) PearLog(@"[PearRuntime][mouse-touch] direct began view=%@ point=%@", NSStringFromClass(view.class), NSStringFromCGPoint(point));
+        PearLogDirectTarget(view);
         [view touchesBegan:gDirectEvent.allTouches withEvent:gDirectEvent];
         return;
     }
@@ -98,4 +113,21 @@ void PearSendLegacyDirectTouch(BOOL down, CGFloat nx, CGFloat ny) {
         gDirectEvent = nil;
         gDirectTouch = nil;
     }
+}
+
+
+// Opt-in diagnostic used by the runtime smoke tests: deliver one tap at the
+// centre of the reattached legacy window without posting system events.
+void PearRunLegacyDirectTouchSelfTest(void) {
+    if (!getenv("PEAR_TEST_LEGACY_TOUCH")) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        PearLog(@"[PearRuntime][mouse-touch] self-test tap begin");
+        PearSendLegacyDirectTouch(YES, 0.5, 0.5);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            PearSendLegacyDirectTouch(NO, 0.5, 0.5);
+            PearLog(@"[PearRuntime][mouse-touch] self-test tap end");
+        });
+    });
 }
