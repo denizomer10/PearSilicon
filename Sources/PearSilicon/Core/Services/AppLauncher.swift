@@ -610,9 +610,8 @@ final class AppLauncher: @unchecked Sendable {
         )
 
         var args = [app.bundleURL.path]
-        let scaleHack = AppSettings.legacyScaleHack(for: app.id)
-        if scaleHack > 1 {
-            args.append("--scale-hack=\(scaleHack)")
+        if AppSettings.legacyLargeWindow(for: app.id) {
+            args.append("--large-window")
         }
         if AppSettings.legacyFullscreen(for: app.id) {
             args.append("--fullscreen")

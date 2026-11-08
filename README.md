@@ -53,7 +53,7 @@ authorized to run.
   IPA and `.app` packages (such as *Miku Flick*), installs them cleanly into the
   unified iOS library, and launches them in a game-named macOS `.app` host powered
   by **[PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine)** with
-  SwiftUI controls for resolution scaling (`1x`–`4x`), fullscreen mode, and save data.
+  SwiftUI controls for free window resizing, fullscreen mode, and save data.
 - **Controllers:** Xbox, DualSense/DualShock, Switch Pro and other macOS
   GameController pads are discovered early; non-whitelisted identities are
   normalized, prepared apps receive capability keys, and the keymapper can drive

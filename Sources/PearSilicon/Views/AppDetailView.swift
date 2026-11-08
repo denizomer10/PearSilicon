@@ -349,22 +349,11 @@ struct AppDetailView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Resolution Scale")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("Resolution Scale", selection: Binding(
-                    get: { state.legacyScaleHack(for: app) },
-                    set: { state.setLegacyScaleHack($0, for: app) }
-                )) {
-                    Text("1x").tag(1)
-                    Text("2x").tag(2)
-                    Text("3x").tag(3)
-                    Text("4x").tag(4)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-            }
+            Toggle("Large Window", isOn: Binding(
+                get: { state.legacyLargeWindow(for: app) },
+                set: { state.setLegacyLargeWindow($0, for: app) }
+            ))
+            .toggleStyle(.switch)
 
             Toggle("Start Fullscreen", isOn: Binding(
                 get: { state.isLegacyFullscreen(for: app) },

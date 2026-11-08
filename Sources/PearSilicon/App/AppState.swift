@@ -403,13 +403,13 @@ final class AppState: ObservableObject {
         AppLauncher.isLegacy32BitApp(app)
     }
 
-    func legacyScaleHack(for app: InstalledApp) -> Int {
-        AppSettings.legacyScaleHack(for: app.id)
+    func legacyLargeWindow(for app: InstalledApp) -> Bool {
+        AppSettings.legacyLargeWindow(for: app.id)
     }
 
-    func setLegacyScaleHack(_ scale: Int, for app: InstalledApp) {
+    func setLegacyLargeWindow(_ enabled: Bool, for app: InstalledApp) {
         objectWillChange.send()
-        AppSettings.setLegacyScaleHack(scale, for: app.id)
+        AppSettings.setLegacyLargeWindow(enabled, for: app.id)
     }
 
     func isLegacyFullscreen(for app: InstalledApp) -> Bool {

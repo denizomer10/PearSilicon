@@ -35,14 +35,15 @@ enum AppSettings {
 
     // MARK: - PearLegacyEngine (32-bit iOS runtime) options
 
-    /// Resolution scale factor (`--scale-hack`) for a 32-bit iOS app (1...4).
-    static func legacyScaleHack(for bundleID: String) -> Int {
-        let value = defaults.integer(forKey: "legacy32.scaleHack." + bundleID)
-        return (1...4).contains(value) ? value : 2
+    /// Whether to open the 32-bit iOS app with an enlarged, resizable window
+    /// (`--large-window`). Defaults to true when unset.
+    static func legacyLargeWindow(for bundleID: String) -> Bool {
+        let key = "legacy32.largeWindow." + bundleID
+        return defaults.object(forKey: key) == nil ? true : defaults.bool(forKey: key)
     }
 
-    static func setLegacyScaleHack(_ scale: Int, for bundleID: String) {
-        defaults.set(max(1, min(4, scale)), forKey: "legacy32.scaleHack." + bundleID)
+    static func setLegacyLargeWindow(_ enabled: Bool, for bundleID: String) {
+        defaults.set(enabled, forKey: "legacy32.largeWindow." + bundleID)
     }
 
     /// Whether to start the 32-bit iOS app in fullscreen mode (`--fullscreen`).
