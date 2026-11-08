@@ -17,15 +17,35 @@ struct IOSAppService {
         libraryURL: URL,
         keymapURL: URL?,
         metalHUDEnabled: Bool,
-        pointerLockAllowed: Bool
+        pointerLockAllowed: Bool,
+        virtualGamepad: Bool = false,
+        virtualGamepadMapping: VirtualGamepadMapping = .standard
     ) async throws -> NSRunningApplication? {
+        let compatibility = AppCompatibility.detect(bundleURL: app.bundleURL)
         var extra: [String: String] = ["PEAR_IOS_SANDBOX": "1"]
         if metalHUDEnabled {
             extra["MTL_HUD_ENABLED"] = "1"
+            // Metal HUD covers native Metal renderers; the runtime overlay
+            // activates only when an OpenGL ES frame is actually presented,
+            // which includes titles detected as modern (for example GTA LCS).
+            extra["PEAR_FPS_HUD"] = "1"
         }
-        if pointerLockAllowed {
-            extra["PEAR_ALLOW_POINTER_LOCK"] = "1"
+        // The virtual pad captures the cursor itself, so native pointer lock is
+        // not requested in that mode. Leaving it off also prevents the game
+        // from hiding the cursor before the first click arms the pad.
+        if pointerLockAllowed && !virtualGamepad { extra["PEAR_ALLOW_POINTER_LOCK"] = "1" }
+
+        if virtualGamepad {
+            extra["PEAR_VIRTUAL_GAMEPAD"] = "1"
+            extra["PEAR_VIRTUAL_GAMEPAD_MAP"] = virtualGamepadMapping.environmentValue
         }
+        extra.merge(
+            AppSettings.compatibilityEnvironment(
+                for: app.id,
+                compatibility: compatibility,
+                virtualGamepad: virtualGamepad
+            )
+        ) { _, selected in selected }
 
         let launchLease = try AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
         defer { launchLease.release() }
@@ -37,7 +57,7 @@ struct IOSAppService {
 
         return try await launcher.launch(
             app,
-            keymapURL: keymapURL,
+            keymapURL: virtualGamepad ? nil : keymapURL,
             extraEnvironment: extra,
             nativeContainer: false,
             launchLease: launchLease

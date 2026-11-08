@@ -135,6 +135,10 @@ enum CLI {
         case "keys": return try keysCommand(parsed)
         case "hud": return try hudCommand(parsed)
         case "pointerlock": return try pointerLockCommand(parsed)
+        case "compat", "compatibility": return try compatCommand(parsed)
+        case "legacy": return try compatibilityOverrideCommand(parsed, kind: .legacyBridge)
+        case "mousetouch": return try compatibilityOverrideCommand(parsed, kind: .mouseTouch)
+        case "refresh-runtime": return try refreshRuntimeCommand(parsed)
         case "logs": return try logsCommand(parsed)
         case "paths": return try pathsCommand()
         case "storage": return try storageCommand(parsed)
@@ -146,6 +150,23 @@ enum CLI {
         default:
             throw CLIError.message("unknown command '\(command)'. Run `pearsilicon help`.")
         }
+    }
+
+    /// Refresh a single stopped app transactionally, without touching other games.
+    private static func refreshRuntimeCommand(_ arguments: CLIArguments) throws -> Int32 {
+        guard arguments.positionals.count == 1, let query = arguments.positionals.first else {
+            throw CLIError.message("usage: pearsilicon refresh-runtime <bundle-id|name>")
+        }
+        let app = try resolveApp(query)
+        guard let runtime = AppLauncher.runtimeLibraryURL() else {
+            throw CLIError.message("PearSilicon runtime was not found")
+        }
+        let installer = PackageInstaller(libraryURL: CLIPaths.shared.library)
+        let changed = try installer.refreshRuntimeIfNeeded(
+            for: app, sourceRuntimeDirectory: runtime.deletingLastPathComponent()
+        )
+        print(changed ? "refreshed runtime for \(app.displayName)" : "runtime already current for \(app.displayName)")
+        return 0
     }
 
     // MARK: Host service
@@ -443,6 +464,7 @@ enum CLI {
             environment["PEAR_LOG_FILE"] = logPath
         }
 
+        let compatibility = AppCompatibility.detect(bundleURL: app.bundleURL)
         let hudEnabled: Bool
         if arguments.flags.contains("metal-hud") {
             hudEnabled = true
@@ -453,6 +475,10 @@ enum CLI {
         }
         if hudEnabled {
             environment["MTL_HUD_ENABLED"] = "1"
+            // Metal HUD covers native Metal renderers; the runtime overlay
+            // activates only when an OpenGL ES frame is actually presented,
+            // which includes titles detected as modern (for example GTA LCS).
+            environment["PEAR_FPS_HUD"] = "1"
         }
 
         let pointerLock: Bool
@@ -463,9 +489,25 @@ enum CLI {
         } else {
             pointerLock = AppSettings.pointerLockAllowed(for: app.id)
         }
-        if pointerLock {
-            environment["PEAR_ALLOW_POINTER_LOCK"] = "1"
+        environment.removeValue(forKey: "PEAR_ALLOW_POINTER_LOCK")
+        if pointerLock { environment["PEAR_ALLOW_POINTER_LOCK"] = "1" }
+
+        if AppSettings.defaults.bool(forKey: "virtualGamepad.enabled." + app.id) {
+            environment["PEAR_VIRTUAL_GAMEPAD"] = "1"
         }
+        if environment["PEAR_VIRTUAL_GAMEPAD"] == "1" {
+            // The virtual pad disassociates and hides the cursor itself; the
+            // game's native pointer lock would fight that capture.
+            environment.removeValue(forKey: "PEAR_ALLOW_POINTER_LOCK")
+            environment.removeValue(forKey: "PEAR_MOUSE_TOUCH")
+            environment["PEAR_VIRTUAL_GAMEPAD_MAP"] = AppSettings.virtualGamepadMapping(for: app.id).environmentValue
+        }
+
+        environment.merge(AppSettings.compatibilityEnvironment(
+            for: app.id,
+            compatibility: compatibility,
+            virtualGamepad: environment["PEAR_VIRTUAL_GAMEPAD"] == "1"
+        )) { _, selected in selected }
 
         let nativeContainer = false
 
@@ -500,8 +542,11 @@ enum CLI {
             print("launched \(app.displayName) [\(app.id)]")
         }
         print("  keymap: \(keymapState(enabled: enabled, hasFile: hasKeymap, url: keymapURL))")
-        print("  metal HUD: \(hudEnabled ? "on" : "off")")
-        print("  pointer lock: \(pointerLock ? "allowed" : "disabled")")
+        print("  performance HUD: \(hudEnabled ? "on" : "off")")
+        print("  pointer lock: \(launchEnvironment["PEAR_ALLOW_POINTER_LOCK"] == "1" ? "allowed" : "disabled")")
+        if launchEnvironment["PEAR_VIRTUAL_GAMEPAD"] == "1" {
+            print("  virtual gamepad: on (mouse capture is armed by the first click)")
+        }
         if AppLauncher.isLegacy32BitApp(app) {
             print("  mode: PearLegacyEngine (32-bit iOS compatibility layer)")
         } else {
@@ -642,7 +687,7 @@ enum CLI {
         print("log:         \(paths.logs.appendingPathComponent("\(app.id).log").path)")
         print("running:     \(pid.map { "yes (pid \($0))" } ?? "no")")
         print("pointer lock: \(AppSettings.pointerLockAllowed(for: app.id) ? "allowed" : "disabled")")
-        print("metal HUD:   \((((AppSettings.defaults.object(forKey: "metalHUD.enabled." + app.id) as? Bool) ?? false) ? "on" : "off"))")
+        print("performance HUD:   \((((AppSettings.defaults.object(forKey: "metalHUD.enabled." + app.id) as? Bool) ?? false) ? "on" : "off"))")
         print("runtime:     \(AppLauncher.runtimeLibraryURL()?.path ?? "not found")")
         let mode = PackageInstaller(libraryURL: paths.library).currentPreparationMode(for: app)
         print("preparation: \(mode.rawValue)")
@@ -748,7 +793,7 @@ enum CLI {
         return 0
     }
 
-    /// Prints or persists the per-app Metal HUD toggle (the GUI's switch). Takes
+    /// Prints or persists the per-app performance HUD toggle (the GUI's switch). Takes
     /// effect on the next launch, when the environment is read.
     private static func hudCommand(_ arguments: CLIArguments) throws -> Int32 {
         guard let query = arguments.positionals.first else {
@@ -760,7 +805,7 @@ enum CLI {
 
         guard let state = arguments.positionals.dropFirst().first else {
             let enabled = defaults.bool(forKey: key)
-            print("metal HUD: \(enabled ? "on" : "off") for \(app.displayName) [\(app.id)]")
+            print("performance HUD: \(enabled ? "on" : "off") for \(app.displayName) [\(app.id)]")
             return 0
         }
 
@@ -773,7 +818,7 @@ enum CLI {
             throw CLIError.message("expected 'on' or 'off', got '\(state)'")
         }
         notifyLibraryChanged()
-        print("metal HUD \(state.lowercased()) for \(app.displayName) — relaunch to apply")
+        print("performance HUD \(state.lowercased()) for \(app.displayName) — relaunch to apply")
         return 0
     }
 
@@ -802,6 +847,121 @@ enum CLI {
         }
         notifyLibraryChanged()
         print("pointer lock \(state.lowercased()) for \(app.displayName) — relaunch to apply")
+        return 0
+    }
+
+    // MARK: Compatibility
+
+    private enum CompatibilityOverrideKind {
+        case legacyBridge
+        case mouseTouch
+
+        var keyPrefix: String {
+            switch self {
+            case .legacyBridge: "legacyBridge.enabled."
+            case .mouseTouch: "mouseTouch.enabled."
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .legacyBridge: "legacy window bridge"
+            case .mouseTouch: "mouse-to-touch fallback"
+            }
+        }
+
+        var usageName: String {
+            switch self {
+            case .legacyBridge: "legacy"
+            case .mouseTouch: "mousetouch"
+            }
+        }
+    }
+
+    /// Prints the detected profile and the effective automatic state.
+    private static func compatCommand(_ arguments: CLIArguments) throws -> Int32 {
+        guard let query = arguments.positionals.first else {
+            throw CLIError.message("usage: pearsilicon compat <bundle-id|name> [--json]")
+        }
+        let app = try resolveApp(query)
+        let compatibility = AppCompatibility.detect(bundleURL: app.bundleURL)
+        let legacy = AppSettings.isLegacyBridgeEnabled(for: app.id, compatibility: compatibility)
+        let mouseTouch = AppSettings.isMouseTouchFallbackEnabled(for: app.id, compatibility: compatibility)
+        let override = AppSettings.hasCompatibilityOverride(for: app.id, compatibility: compatibility)
+
+        if arguments.flags.contains("json") {
+            let payload: [String: Any] = [
+                "bundleID": app.id,
+                "name": app.displayName,
+                "sdk": compatibility.sdkName ?? "",
+                "sdkMajor": compatibility.sdkMajor ?? 0,
+                "usesSceneManifest": compatibility.usesSceneManifest,
+                "profile": compatibility.isLegacyRuntime ? "legacy" : "modern",
+                "legacyBridge": legacy,
+                "mouseTouch": mouseTouch,
+                "override": override,
+                "legacyResolution": AppSettings.legacyResolution(for: app.id),
+                "virtualGamepad": AppSettings.defaults.bool(forKey: "virtualGamepad.enabled." + app.id),
+            ]
+            let data = try JSONSerialization.data(
+                withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]
+            )
+            print(String(decoding: data, as: UTF8.self))
+            return 0
+        }
+
+        print("compatibility for \(app.displayName) [\(app.id)]")
+        print("  detected SDK:    \(compatibility.sdkName ?? "unknown")")
+        print("  scene manifest:  \(compatibility.usesSceneManifest ? "yes" : "no")")
+        print("  profile:         \(compatibility.isLegacyRuntime ? "legacy" : "modern")")
+        print("  window bridge:   \(legacy ? "on" : "off")")
+        print("  mouse→touch:     \(mouseTouch ? "on" : "off")")
+        print("  source:          \(override ? "manual override" : "automatic detection")")
+        if legacy {
+            print("  logical size:    \(AppSettings.legacyResolution(for: app.id))")
+        }
+        return 0
+    }
+
+    /// Changes or clears a per-app compatibility override. `auto` removes the
+    /// stored key so detection takes over again.
+    private static func compatibilityOverrideCommand(
+        _ arguments: CLIArguments,
+        kind: CompatibilityOverrideKind
+    ) throws -> Int32 {
+        guard let query = arguments.positionals.first else {
+            throw CLIError.message("usage: pearsilicon \(kind.usageName) <bundle-id|name> [on|off|auto]")
+        }
+        let app = try resolveApp(query)
+        let defaults = AppSettings.defaults
+        let key = kind.keyPrefix + app.id
+
+        guard let state = arguments.positionals.dropFirst().first else {
+            let compatibility = AppCompatibility.detect(bundleURL: app.bundleURL)
+            let automatic = compatibility.isLegacyRuntime
+            if let stored = defaults.object(forKey: key) as? Bool {
+                print("\(kind.label): \(stored ? "on" : "off") (manual override) for \(app.displayName) [\(app.id)]")
+                print("automatic would be: \(automatic ? "on" : "off") — use `pearsilicon \(kind.usageName) \(app.id) auto` to reset")
+            } else {
+                print("\(kind.label): \(automatic ? "on" : "off") (automatic) for \(app.displayName) [\(app.id)]")
+            }
+            return 0
+        }
+
+        switch state.lowercased() {
+        case "on", "1", "true", "yes":
+            defaults.set(true, forKey: key)
+            print("\(kind.label) forced on for \(app.displayName) — relaunch to apply")
+        case "off", "0", "false", "no":
+            defaults.set(false, forKey: key)
+            print("\(kind.label) forced off for \(app.displayName) — relaunch to apply")
+        case "auto", "reset", "default":
+            defaults.removeObject(forKey: key)
+            print("\(kind.label) back to automatic for \(app.displayName) — relaunch to apply")
+        default:
+            throw CLIError.message("expected 'on', 'off' or 'auto', got '\(state)'")
+        }
+        notifyLibraryChanged()
         return 0
     }
 
@@ -1210,8 +1370,12 @@ enum CLI {
           uninstall <id|name>  Remove an app and its keymap (--yes to skip the prompt)
           keymap <id|name>     Print the keymap (--path, --generate, --set <file>)
           keys <id|name> [on|off]  Print or set the keymapper toggle
-          hud <id|name> [on|off]   Print or set the Metal HUD/FPS overlay
+          hud <id|name> [on|off]   Print or set the performance HUD/FPS overlay
           pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
+          compat <id|name> [--json]  Show the detected compatibility profile
+          legacy <id|name> [on|off|auto]  Override the legacy window bridge
+          mousetouch <id|name> [on|off|auto]  Override mouse-to-touch fallback
+          refresh-runtime <id|name>  Refresh one stopped iOS app's runtime
           logs <id|name>       Print or follow the log (--follow, --system)
           paths                Show the Application Support layout
           storage [move <folder>|remove-previous]  Show storage or experimentally relocate apps/data
@@ -1221,7 +1385,7 @@ enum CLI {
 
         COMMON OPTIONS
           --keys / --no-keys   Force the keymapper on or off for this launch
-          --metal-hud / --no-metal-hud  Force the Metal HUD/FPS overlay on or off
+          --metal-hud / --no-metal-hud  Force the performance HUD/FPS overlay on or off
           --pointer-lock / --no-pointer-lock  Force the game's pointer lock on or off
           --log                Write a log file and follow it
           --wait               Wait for the app to exit
@@ -1261,6 +1425,8 @@ enum CLI {
           pearsilicon keys com.example.game on
           pearsilicon hud com.example.game on
           pearsilicon pointerlock com.example.game on
+          pearsilicon compat com.example.game
+          pearsilicon mousetouch com.example.game auto
           pearsilicon run ~/Downloads/App.app --metal-hud
           pearsilicon launch com.example.game --env-injection --background
           pearsilicon doctor

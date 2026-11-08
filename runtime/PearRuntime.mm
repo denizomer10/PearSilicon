@@ -15,6 +15,11 @@
 #import <pwd.h>
 #import <unistd.h>
 
+extern BOOL PearVirtualGamepadEnabled(void);
+extern void PearInstallVirtualGamepad(void);
+extern void PearVirtualGamepadKey(NSString *key, BOOL pressed);
+extern void PearVirtualGamepadMouse(float dx, float dy);
+
 /// The log file used when the launcher did not pass PEAR_LOG_FILE. GUI launches
 /// need the same trace as `--log` runs, otherwise an exception inside a third
 /// party crash reporter leaves no actionable information behind.
@@ -387,6 +392,7 @@ static void LookFlush(void) {
 // Coalesces raw mouse movement: GCMouse fires at device rate, so accumulate and
 // post at most ~60 times a second.
 static void UpdateMouseLook(float dx, float dy) {
+    if (PearVirtualGamepadEnabled()) { PearVirtualGamepadMouse(dx, dy); return; }
     if (!gLookBinding) return;
     gLookPendingDx += dx;
     gLookPendingDy += dy;
@@ -434,6 +440,7 @@ static BOOL InputRateAllows(GCKeyCode keyCode) {
 /// chained handler paths.
 static void HandleKeyPress(GCKeyCode keyCode, BOOL pressed) {
     NSString *key = KeyNameForCode(keyCode);
+    if (PearVirtualGamepadEnabled()) { PearVirtualGamepadKey(key, pressed); return; }
     if (!key) return;
 
     // Input rate guard: drop implausibly fast repeat presses.
@@ -1064,6 +1071,99 @@ static NSString *KeyNameForEvent(id event) {
     return nil;
 }
 
+// Directly-launched Catalyst processes are not always activated or given a key
+// window, especially after a legacy window-controller path. Bring the game
+// window forward and make it key so normal mouse clicks reach UIKit.
+// Some Catalyst apps on current macOS render inside a legacy window but never
+// receive UIKit touches from a mouse click. Let the native event through; only
+// if no UIEvent touch arrives shortly afterwards, synthesize one at the click.
+extern void PearInstallMouseToTouchFallback(void);
+extern void PearInstallLegacyWindowFix(void);
+extern void PearInstallFPSHUD(void);
+
+static void ActivateMainWindowOnce(void) {
+    // A background launch must never promote its window over another app.
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    {
+        Class appClass = NSClassFromString(@"NSApplication");
+        id nsapp = [appClass respondsToSelector:@selector(sharedApplication)]
+            ? ((id (*)(id, SEL))objc_msgSend)(appClass, @selector(sharedApplication)) : nil;
+        if (!nsapp || ![nsapp respondsToSelector:@selector(isActive)] ||
+            !((BOOL (*)(id, SEL))objc_msgSend)(nsapp, @selector(isActive))) return;
+        // Never call activateIgnoringOtherApps: the launcher already activated
+        // the app, and stealing focus from another app is not acceptable.
+        id best = nil;
+        CGFloat bestArea = 0;
+        for (id window in [nsapp windows]) {
+            if ([window respondsToSelector:@selector(isVisible)]
+                && !((BOOL (*)(id, SEL))objc_msgSend)(window, @selector(isVisible))) continue;
+            NSRect frame = [window respondsToSelector:@selector(frame)]
+                ? ((NSRect (*)(id, SEL))objc_msgSend)(window, @selector(frame)) : NSZeroRect;
+            CGFloat area = frame.size.width * frame.size.height;
+            if (area > bestArea) { bestArea = area; best = window; }
+        }
+        if (best && [best respondsToSelector:@selector(makeKeyAndOrderFront:)]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(best,
+                @selector(makeKeyAndOrderFront:), nil);
+            if ([best respondsToSelector:@selector(makeKeyWindow)]) {
+                ((void (*)(id, SEL))objc_msgSend)(best, @selector(makeKeyWindow));
+            }
+        }
+        UIWindow *key = nil;
+        CGFloat keyArea = 0;
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+                CGFloat area = window.bounds.size.width * window.bounds.size.height;
+                if (area > keyArea) { keyArea = area; key = window; }
+            }
+        }
+        if (key && !key.isKeyWindow) [key makeKeyAndVisible];
+        id appDelegate = UIApplication.sharedApplication.delegate;
+        UIWindow *appWindow = [appDelegate respondsToSelector:@selector(window)]
+            ? ((id (*)(id, SEL))objc_msgSend)(appDelegate, @selector(window)) : nil;
+        PearLog(@"[PearRuntime][window] activation state=%ld key=%@ size=%.0fx%.0f root=%@",
+                (long)UIApplication.sharedApplication.applicationState,
+                key ? NSStringFromClass(key.class) : @"nil", keyArea > 0 ? key.bounds.size.width : 0,
+                keyArea > 0 ? key.bounds.size.height : 0,
+                key.rootViewController ? NSStringFromClass(key.rootViewController.class) : @"nil");
+        PearLog(@"[PearRuntime][window] app delegate=%@ window=%@ root=%@ hidden=%d",
+                NSStringFromClass([appDelegate class]),
+                appWindow ? NSStringFromClass([appWindow class]) : @"nil",
+                appWindow.rootViewController ? NSStringFromClass(appWindow.rootViewController.class) : @"nil",
+                appWindow.hidden);
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+                PearLog(@"[PearRuntime][window] scene window=%@ root=%@ hidden=%d key=%d bounds=%@",
+                        NSStringFromClass(window.class),
+                        window.rootViewController ? NSStringFromClass(window.rootViewController.class) : @"nil",
+                        window.hidden, window.isKeyWindow, NSStringFromCGRect(window.bounds));
+            }
+        }
+        if (!key && appWindow) {
+            appWindow.hidden = NO;
+            [appWindow makeKeyAndVisible];
+            PearLog(@"[PearRuntime][window] no scene window; using app window");
+        }
+    }
+}
+
+static void ActivateMainWindow(void) {
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
+            ActivateMainWindowOnce();
+        }];
+    // The window may not exist yet when the runtime loads, so retry a few
+    // times instead of relying on a single fixed delay.
+    for (NSNumber *delay in @[@1.0, @2.5, @5.0]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ ActivateMainWindowOnce(); });
+    }
+}
+
+
 static void InstallKeyEventSilencer(void) {
     if (gBindings.count == 0) return;
     Class eventClass = NSClassFromString(@"NSEvent");
@@ -1091,7 +1191,7 @@ static void InstallKeyboard(void) {
         gCombinedKeyChanged = ^(GCKeyboardInput *input, GCControllerButtonInput *button,
                                 GCKeyCode keyCode, BOOL pressed) {
             PearKeyChangedBlock game = gGameKeyChanged;
-            if (game) game(input, button, keyCode, pressed);
+            if (game && !PearVirtualGamepadEnabled()) game(input, button, keyCode, pressed);
             HandleKeyPress(keyCode, pressed);
         };
     }
@@ -1126,7 +1226,7 @@ static void InstallMouse(void) {
     if (!gCombinedMouseMoved) {
         gCombinedMouseMoved = ^(GCMouseInput *input, float dx, float dy) {
             PearMouseMovedBlock game = gGameMouseMoved;
-            if (game) game(input, dx, dy);
+            if (game && !PearVirtualGamepadEnabled()) game(input, dx, dy);
             UpdateMouseLook(dx, dy);
         };
     }
@@ -1314,6 +1414,11 @@ static void WatchKeymap(NSString *path) {
         unsetenv("PEAR_LAUNCHER_INJECTION");
     }
 
+    PearInstallLegacyWindowFix();
+    if (!PearVirtualGamepadEnabled()) PearInstallMouseToTouchFallback();
+    PearInstallFPSHUD();
+    ActivateMainWindow();
+
     // Skip this bootstrap for input debugging. Other shims have independent
     // initializers, so this is not a global no-hooks switch.
     if (NSProcessInfo.processInfo.environment[@"PEAR_DISABLE"]) {
@@ -1323,7 +1428,7 @@ static void WatchKeymap(NSString *path) {
 
     InstallIOSOnMacCompatibility();
 
-    NSString *keymapPath = NSProcessInfo.processInfo.environment[@"PEAR_KEYMAP"];
+    NSString *keymapPath = PearVirtualGamepadEnabled() ? nil : NSProcessInfo.processInfo.environment[@"PEAR_KEYMAP"];
     ApplyKeymap(keymapPath);
     WatchKeymap(keymapPath);
 
@@ -1336,7 +1441,8 @@ static void WatchKeymap(NSString *path) {
 
     // Input translation is opt-in: with no keymap (the app did not enable the
     // keymapper) this bootstrap installs no keymapper input handlers.
-    if (gBindings.count > 0) {
+    PearInstallVirtualGamepad();
+    if (gBindings.count > 0 || PearVirtualGamepadEnabled()) {
         InstallMouse();
         InstallKeyboard();
     } else {
@@ -1534,6 +1640,32 @@ static void LogViewTree(void) {
                   window.isKeyWindow, window.alpha, NSStringFromCGRect(window.frame));
             dump(window, 1);
         }
+
+        // The Catalyst scene bridge is an AppKit view hierarchy; a valid
+        // UIKit window can still be detached from or clipped by that bridge.
+        Class nsAppClass = NSClassFromString(@"NSApplication");
+        id nsApp = [nsAppClass respondsToSelector:@selector(sharedApplication)]
+            ? ((id (*)(id, SEL))objc_msgSend)(nsAppClass, @selector(sharedApplication)) : nil;
+        __block void (^dumpNative)(id, int) = nil;
+        dumpNative = ^(id view, int depth) {
+            if (!view || depth > 20) return;
+            NSRect frame = ((NSRect (*)(id, SEL))objc_msgSend)(view, @selector(frame));
+            NSRect bounds = ((NSRect (*)(id, SEL))objc_msgSend)(view, @selector(bounds));
+            BOOL hidden = ((BOOL (*)(id, SEL))objc_msgSend)(view, @selector(isHidden));
+            id nativeLayer = [view respondsToSelector:@selector(layer)]
+                ? ((id (*)(id, SEL))objc_msgSend)(view, @selector(layer)) : nil;
+            PearLog(@"[PearRuntime][native-view] layer=%@ sublayers=%lu", nativeLayer ? NSStringFromClass([nativeLayer class]) : @"nil", (unsigned long)[nativeLayer sublayers].count);
+            PearLog(@"[PearRuntime][native-view] depth=%d class=%@ frame=%@ bounds=%@ hidden=%d",
+                    depth, NSStringFromClass([view class]), NSStringFromRect(frame), NSStringFromRect(bounds), hidden);
+            for (id child in [view subviews]) dumpNative(child, depth + 1);
+        };
+        for (id window in [nsApp windows]) {
+            NSRect frame = ((NSRect (*)(id, SEL))objc_msgSend)(window, @selector(frame));
+            PearLog(@"[PearRuntime][native-view] window=%@ frame=%@ visible=%d",
+                    NSStringFromClass([window class]), NSStringFromRect(frame), (int)[window isVisible]);
+            dumpNative([window contentView], 0);
+        }
+        dumpNative = nil;
 
         __block void (^dumpLayer)(CALayer *, int) = nil;
         dumpLayer = ^(CALayer *layer, int depth) {

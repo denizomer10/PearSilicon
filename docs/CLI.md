@@ -72,8 +72,12 @@ pearsilicon info <id|name>      Paths, version, keymap, runtime, ODR folder, pid
 pearsilicon uninstall <id|name> Remove an app and its keymap
 pearsilicon keymap <id|name>    Print the keymap (--path, --generate, --set FILE)
 pearsilicon keys <id|name> [on|off]  Print or set the keymapper toggle
-pearsilicon hud <id|name> [on|off]   Print or set the Metal HUD/FPS overlay
+pearsilicon hud <id|name> [on|off]   Print or set the performance HUD/FPS overlay
 pearsilicon pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
+pearsilicon compat <id|name> [--json]  Show the detected compatibility profile
+pearsilicon legacy <id|name> [on|off|auto]  Override the legacy window bridge
+pearsilicon mousetouch <id|name> [on|off|auto]  Override mouse-to-touch fallback
+pearsilicon refresh-runtime <id|name>  Refresh one stopped iOS app's runtime
 pearsilicon logs <id|name>      Print or follow the log (--follow, --system)
 pearsilicon paths               Show the Application Support layout
 pearsilicon storage [move <folder>|remove-previous]  Show storage or relocate the managed library
@@ -123,6 +127,10 @@ pearsilicon keymap com.example.game --set ./my-keymap.json
 pearsilicon keys com.example.game on
 pearsilicon hud com.example.game on
 pearsilicon pointerlock com.example.game off
+pearsilicon compat com.example.game --json
+pearsilicon legacy com.example.game auto
+pearsilicon mousetouch com.example.game off
+pearsilicon refresh-runtime com.example.game
 pearsilicon run ~/Downloads/App.app --metal-hud
 pearsilicon list --json
 pearsilicon doctor
@@ -170,6 +178,13 @@ A starter keymap is generated if the app has none (disable with `--no-keymap`).
 The keymapper itself stays opt-in: pass `--keys`, or enable it for the app in
 the GUI. Without it, no keymap path is passed and the keymapper's keyboard/mouse
 handlers are not installed. Other compatibility hooks can still run.
+
+The GUI's per-app **Keyboard Mouse to Gamepad Inputs** toggle is a separate
+path. The game receives a hidden virtual controller, and the keyboard/mouse
+mapping configured for that app is passed as `PEAR_VIRTUAL_GAMEPAD_MAP`; the CLI
+reads the same saved setting, so there is no separate flag. While it is on, the
+touch keymapper and native pointer lock are not requested. Click the game to
+capture the mouse; Escape releases it.
 
 ---
 
@@ -497,3 +512,7 @@ Default managed layout (a selected storage root replaces the top-level path):
 
 The GUI listens for `com.pearsilicon.libraryChanged` and refreshes its library
 when the CLI installs or removes an app, so an open window stays in sync.
+
+### Mouse input and pointer lock
+
+Pointer lock defaults to off for apps without a saved preference. Enable it for a game that needs relative mouse input using `pointerlock <id> on`; explicit per-app choices remain in effect. Legacy window bridging and **mouse-to-touch fallback** are detected automatically from the game's `Info.plist`. `compat <id>` shows the profile and effective state; `legacy` and `mousetouch` accept `on`, `off` or `auto` to store or clear a manual override. Overrides are preserved for existing installations but no longer appear in the GUI. Both settings take effect on relaunch. The selected app must be stopped before refreshing its runtime. A runtime refresh stages and signs a copy of the app; game data is kept separately.

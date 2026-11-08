@@ -23,15 +23,7 @@
 static _Atomic BOOL gInterfaceOrientationRead = NO;
 
 static UIWindow *PearMainWindow(void) {
-    UIWindow *first = nil;
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (first == nil) first = window;
-            if (window.isKeyWindow) return window;
-        }
-    }
-    return first;
+    return PearPrimaryWindow();
 }
 
 /// A legacy GL surface can be larger than its window. When the GL shim fits it,

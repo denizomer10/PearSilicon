@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -88,6 +89,8 @@ final class AppState: ObservableObject {
     /// Bundle ids allowed to take pointer lock (needed for mouse-look camera
     /// control in some games).
     @Published private(set) var pointerLockAllowedApps: Set<String> = []
+    @Published private(set) var virtualGamepadApps: Set<String> = []
+    @Published private(set) var virtualGamepadMappings: [String: VirtualGamepadMapping] = [:]
 
 
     /// Default for apps without an explicit setting (also default OFF).
@@ -250,28 +253,24 @@ final class AppState: ObservableObject {
         runningApps[app.id]?.isTerminated == false
     }
 
-    /// Stops a running game (terminates the process) and removes its overlay.
-    /// The Stop control disappears immediately; the status line is cleared once
-    /// the process is actually gone.
+    /// Stops a running game immediately and removes its overlay.
+    /// SIGKILL is deliberate: a hung or input-starved title must not linger and
+    /// keep the window alive. The Stop control disappears right away.
     func stop(_ app: InstalledApp) {
         guard let running = runningApps[app.id] else { return }
         overlays[app.id]?.detach()
         overlays[app.id] = nil
         runningApps[app.id] = nil // hide Stop right away
         stoppingApps.insert(app.id)
-        running.terminate()
+        let pid = running.processIdentifier
+        if pid > 0, kill(pid, SIGKILL) != 0, errno != ESRCH {
+            running.forceTerminate()
+        }
         statusMessage = "Stopping \(app.displayName)…"
 
-        // Reconcile: notifications normally arrive, but a game can take a moment
-        // (or ignore SIGTERM). Escalate, then clear the status.
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 250_000_000)
             guard let self else { return }
-            if let still = NSRunningApplication(processIdentifier: running.processIdentifier),
-               !still.isTerminated {
-                still.forceTerminate()
-            }
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
             self.refreshRunningApps()
             self.stoppingApps.remove(app.id)
             if self.statusMessage.hasPrefix("Stopping ") { self.statusMessage = L10n.ready }
@@ -333,6 +332,8 @@ final class AppState: ObservableObject {
         var enabled: Set<String> = []
         var hud: Set<String> = []
         var pointerLock: Set<String> = []
+        var virtualPads: Set<String> = []
+        var virtualMappings: [String: VirtualGamepadMapping] = [:]
         for app in installedApps {
             let key = "keymapper.enabled." + app.id
             if let stored = AppSettings.defaults.object(forKey: key) as? Bool, stored {
@@ -341,6 +342,8 @@ final class AppState: ObservableObject {
             if AppSettings.defaults.bool(forKey: "metalHUD.enabled." + app.id) {
                 hud.insert(app.id)
             }
+            if AppSettings.defaults.bool(forKey: "virtualGamepad.enabled." + app.id) { virtualPads.insert(app.id) }
+            virtualMappings[app.id] = AppSettings.virtualGamepadMapping(for: app.id)
             if AppSettings.pointerLockAllowed(for: app.id) {
                 pointerLock.insert(app.id)
             }
@@ -348,6 +351,8 @@ final class AppState: ObservableObject {
         keymapperEnabledApps = enabled
         metalHUDEnabledApps = hud
         pointerLockAllowedApps = pointerLock
+        virtualGamepadApps = virtualPads
+        virtualGamepadMappings = virtualMappings
     }
 
     func isKeymapperEnabled(for app: InstalledApp) -> Bool {
@@ -414,6 +419,51 @@ final class AppState: ObservableObject {
     func setLegacyFullscreen(_ fullscreen: Bool, for app: InstalledApp) {
         objectWillChange.send()
         AppSettings.setLegacyFullscreen(fullscreen, for: app.id)
+    }
+
+    // MARK: - Automatic compatibility
+
+    /// Detection is cached by `AppCompatibility`; this stays cheap enough to
+    /// call from a SwiftUI body.
+    func compatibility(for app: InstalledApp) -> AppCompatibility {
+        AppCompatibility.detect(bundleURL: app.bundleURL)
+    }
+
+    func isLegacyBridgeEnabled(for app: InstalledApp) -> Bool {
+        AppSettings.isLegacyBridgeEnabled(for: app.id, compatibility: compatibility(for: app))
+    }
+
+    func isMouseTouchFallbackEnabled(for app: InstalledApp) -> Bool {
+        AppSettings.isMouseTouchFallbackEnabled(for: app.id, compatibility: compatibility(for: app))
+    }
+
+    func hasCompatibilityOverride(for app: InstalledApp) -> Bool {
+        AppSettings.hasCompatibilityOverride(for: app.id, compatibility: compatibility(for: app))
+    }
+
+    /// Drops manual overrides so the app follows detection again.
+    func clearCompatibilityOverrides(for app: InstalledApp) {
+        AppSettings.clearCompatibilityOverrides(for: app.id)
+        objectWillChange.send()
+        statusMessage = "Compatibility reset to automatic for \(app.displayName)"
+    }
+
+    func isVirtualGamepadEnabled(for app: InstalledApp) -> Bool {
+        virtualGamepadApps.contains(app.id)
+    }
+
+    func setVirtualGamepadEnabled(_ enabled: Bool, for app: InstalledApp) {
+        AppSettings.defaults.set(enabled, forKey: "virtualGamepad.enabled." + app.id)
+        if enabled { virtualGamepadApps.insert(app.id) } else { virtualGamepadApps.remove(app.id) }
+    }
+
+    func virtualGamepadMapping(for app: InstalledApp) -> VirtualGamepadMapping {
+        virtualGamepadMappings[app.id] ?? .standard
+    }
+
+    func setVirtualGamepadMapping(_ mapping: VirtualGamepadMapping, for app: InstalledApp) {
+        AppSettings.setVirtualGamepadMapping(mapping, for: app.id)
+        virtualGamepadMappings[app.id] = mapping
     }
 
     // MARK: - Selection
@@ -1056,7 +1106,9 @@ final class AppState: ObservableObject {
 
         // Input translation is opted in per game and default OFF. When disabled,
         // no keymap is passed, so the runtime installs no input handlers.
-        let enabled = isKeymapperEnabled(for: app)
+        // Gamepad mode owns the input path, so the touch keymap is not passed.
+        let virtualGamepad = isVirtualGamepadEnabled(for: app)
+        let enabled = isKeymapperEnabled(for: app) && !virtualGamepad
         let keymapURL = enabled ? keymapStore.fileURL(for: app.id) : nil
 
         do {
@@ -1065,7 +1117,9 @@ final class AppState: ObservableObject {
                 libraryURL: libraryURL,
                 keymapURL: keymapURL,
                 metalHUDEnabled: isMetalHUDEnabled(for: app),
-                pointerLockAllowed: isPointerLockAllowed(for: app)
+                pointerLockAllowed: isPointerLockAllowed(for: app),
+                virtualGamepad: virtualGamepad,
+                virtualGamepadMapping: virtualGamepadMapping(for: app)
             )
             statusMessage = L10n.launching(app.displayName)
             launchingAppID = app.id

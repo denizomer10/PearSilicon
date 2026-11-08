@@ -22,13 +22,17 @@ static BOOL PearPointerDebug(void) {
 static NSMutableSet<NSValue *> *gHandledPointerLockMethods = nil;
 
 static NSUInteger PearDisablePointerLock(void) {
-    if (NSProcessInfo.processInfo.environment[@"PEAR_ALLOW_POINTER_LOCK"]) return 0;
+    if (NSProcessInfo.processInfo.environment[@"PEAR_ALLOW_POINTER_LOCK"].boolValue) return 0;
     if (!gHandledPointerLockMethods) gHandledPointerLockMethods = [NSMutableSet set];
 
     SEL selector = NSSelectorFromString(@"prefersPointerLocked");
-    IMP replacement = imp_implementationWithBlock(^BOOL(id self) {
-        (void)self;
-        return NO;
+    static IMP replacement;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        replacement = imp_implementationWithBlock(^BOOL(id self) {
+            (void)self;
+            return NO;
+        });
     });
 
     __block NSUInteger swizzled = 0;
@@ -38,9 +42,14 @@ static NSUInteger PearDisablePointerLock(void) {
         Class cls = object_getClass(controller);
         Method method = class_getInstanceMethod(cls, selector);
         if (method) {
-            NSValue *key = [NSValue valueWithPointer:method];
+            NSValue *key = [NSValue valueWithPointer:(__bridge const void *)cls];
             if (![gHandledPointerLockMethods containsObject:key]) {
-                method_setImplementation(method, replacement);
+                // Add an override to the concrete controller instead of mutating
+                // an inherited Method on UIKit's superclass.
+                if (!class_addMethod(cls, selector, replacement, method_getTypeEncoding(method))) {
+                    Method own = class_getInstanceMethod(cls, selector);
+                    method_setImplementation(own, replacement);
+                }
                 [gHandledPointerLockMethods addObject:key];
                 swizzled++;
                 if (PearPointerDebug()) {
@@ -59,6 +68,8 @@ static NSUInteger PearDisablePointerLock(void) {
             visit(window.rootViewController);
         }
     }
+
+    visit = nil; // Break the recursive block's retain cycle.
 
     if (swizzled > 0) {
         PearLog(@"[PearRuntime][pointer] pointer lock disabled (%lu method%s)",
@@ -90,6 +101,7 @@ static void PearRefreshPointerPreference(void) {
         }
     }
 
+    visit = nil;
     if (PearPointerDebug()) {
         PearLog(@"[PearRuntime][pointer] refresh requested on %lu controller%s", (unsigned long)updated,
                 updated == 1 ? "" : "s");
@@ -99,7 +111,7 @@ static void PearRefreshPointerPreference(void) {
 __attribute__((constructor))
 static void PearPointerLockShimInit(void) {
     @autoreleasepool {
-        if (NSProcessInfo.processInfo.environment[@"PEAR_ALLOW_POINTER_LOCK"]) return;
+        if (NSProcessInfo.processInfo.environment[@"PEAR_ALLOW_POINTER_LOCK"].boolValue) return;
 
         // Do not walk the Objective-C class list from a dyld initializer: Swift
         // classes may not be realized yet, and some apps have metadata that is

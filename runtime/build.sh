@@ -50,6 +50,26 @@ cat > "$ROOT/runtime/compile_commands.json" <<JSON
   },
   {
     "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/MouseTouchShim.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c MouseTouchShim.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/VirtualGamepadShim.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c VirtualGamepadShim.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/LegacyWindowShim.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c LegacyWindowShim.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
+    "file": "$ROOT/runtime/LegacyDirectTouch.mm",
+    "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c LegacyDirectTouch.mm"
+  },
+  {
+    "directory": "$ROOT/runtime",
     "file": "$ROOT/runtime/BeepShim.mm",
     "command": "$CXX -target arm64-apple-ios15.0-macabi -isysroot $SDK -iframework $SDK/System/iOSSupport/System/Library/Frameworks -std=c++17 -fobjc-arc -I$ROOT/runtime/include -include PearRuntime.h -c BeepShim.mm"
   },
@@ -141,6 +161,10 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/MetalLayerShim.mm" \
   "$ROOT/runtime/TouchSynthesizer.mm" \
   "$ROOT/runtime/PointerLockShim.mm" \
+  "$ROOT/runtime/MouseTouchShim.mm" \
+  "$ROOT/runtime/LegacyWindowShim.mm" \
+  "$ROOT/runtime/LegacyDirectTouch.mm" \
+  "$ROOT/runtime/VirtualGamepadShim.mm" \
   "$ROOT/runtime/BeepShim.mm" \
   "$ROOT/runtime/ODRShim.mm" \
   "$ROOT/runtime/ServicesShim.mm" \
@@ -150,6 +174,7 @@ xcrun --sdk macosx clang++ \
   "$ROOT/runtime/TrackingShim.mm" \
   "$ROOT/runtime/SandboxShim.mm" \
   "$ROOT/runtime/GLShim.mm" \
+  "$ROOT/runtime/FPSHUD.mm" \
   "$ROOT/runtime/WebInputShim.mm" \
   "$ROOT/runtime/FoundationShim.mm" \
   "$ROOT/runtime/HostService.mm"
@@ -181,12 +206,25 @@ SWIFTC="$(xcrun --find swiftc)"
 "$CLANG" -c -target "$CLANG_TARGET" -isysroot "$SDK" \
   "$ROOT/runtime/swift/PearSwiftUIKitSupport.c" \
   -o "$OUT_DIR/PearSwiftUIKitSupport.o"
+# The numeric raw-representable ABI must live in the `UIKit` module, not just
+# in this dylib. Compile it as its own module and alias the system headers so
+# the mangled protocol/conformance/witness symbols match the original overlay.
 "$SWIFTC" -target "$CLANG_TARGET" -sdk "$SDK" -F "$IOS_FRAMEWORKS" \
-  -emit-library -module-name PearSwiftUIKit \
+  -parse-as-library -emit-object -module-name PearSwiftUIKit \
+  -o "$OUT_DIR/PearSwiftUIKit.o" \
+  "$ROOT/runtime/swift/PearSwiftUIKit.swift"
+"$SWIFTC" -target "$CLANG_TARGET" -sdk "$SDK" -F "$IOS_FRAMEWORKS" \
+  -parse-as-library -emit-object -module-name UIKit \
+  -module-alias AppleUIKit=UIKit \
+  -o "$OUT_DIR/PearUIKitNumeric.o" \
+  "$ROOT/runtime/swift/PearUIKitNumeric.swift"
+"$SWIFTC" -target "$CLANG_TARGET" -sdk "$SDK" -F "$IOS_FRAMEWORKS" \
+  -parse-as-library -emit-library \
   -Xlinker -install_name -Xlinker @rpath/libswiftUIKit.dylib \
   -Xlinker -undefined -Xlinker dynamic_lookup \
   -o "$SWIFT_OVERLAY" \
-  "$ROOT/runtime/swift/PearSwiftUIKit.swift" \
+  "$OUT_DIR/PearSwiftUIKit.o" \
+  "$OUT_DIR/PearUIKitNumeric.o" \
   "$OUT_DIR/PearSwiftUIKitSupport.o"
 file "$SWIFT_OVERLAY"
 

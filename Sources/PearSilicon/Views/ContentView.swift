@@ -8,11 +8,10 @@ import UniformTypeIdentifiers
 /// bundles, and Wine games run in private prefixes.
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showingImporter = false
     @State private var wineExecutablePicker: WineExecutablePicker?
     @State private var alert: AlertPayload?
-    @State private var platformSwitchOffset: CGSize = .zero
-    @GestureState private var platformSwitchDrag: CGSize = .zero
 
     var body: some View {
         ZStack {
@@ -20,13 +19,13 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 topBar
                 Rectangle()
-                    .fill(.white.opacity(0.06))
+                    .fill(Color.primary.opacity(0.09))
                     .frame(height: 1)
                 HStack(spacing: 0) {
                     sidebar
                         .frame(width: 310)
                     Rectangle()
-                        .fill(.white.opacity(0.06))
+                        .fill(Color.primary.opacity(0.09))
                         .frame(width: 1)
                     detail
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -94,7 +93,9 @@ struct ContentView: View {
 
     private var backdrop: some View {
         LinearGradient(
-            colors: [Color(red: 0.05, green: 0.07, blue: 0.12), Color(red: 0.02, green: 0.03, blue: 0.06)],
+            colors: colorScheme == .dark
+                ? [Color(red: 0.05, green: 0.07, blue: 0.12), Color(red: 0.02, green: 0.03, blue: 0.06)]
+                : [Color(nsColor: .windowBackgroundColor), Color(nsColor: .controlBackgroundColor)],
             startPoint: .topLeading, endPoint: .bottomTrailing
         )
         .ignoresSafeArea()
@@ -112,14 +113,14 @@ struct ContentView: View {
     private var topBar: some View {
         HStack(spacing: 16) {
             HStack(spacing: 10) {
-                Image("PearLogo", bundle: .module)
+                PearBrand.logo
                     .resizable()
                     .interpolation(.high)
                     .frame(width: 30, height: 30)
                     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+                            .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
                     )
                     .accessibilityLabel("PearSilicon")
                 Text("PearSilicon")
@@ -178,8 +179,8 @@ struct ContentView: View {
                 .background {
                     if state.platform == platform {
                         Capsule()
-                            .fill(.white.opacity(0.14))
-                            .overlay(Capsule().strokeBorder(.white.opacity(0.16), lineWidth: 1))
+                            .fill(Color.primary.opacity(0.10))
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
                             .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
                     }
                 }
@@ -187,25 +188,9 @@ struct ContentView: View {
         }
         .padding(4)
         .glassEffect(.regular.interactive(), in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
-        .offset(
-            x: platformSwitchOffset.width + platformSwitchDrag.width,
-            y: platformSwitchOffset.height + platformSwitchDrag.height
-        )
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 6)
-                .updating($platformSwitchDrag) { value, state, _ in
-                    state = value.translation
-                }
-                .onEnded { value in
-                    platformSwitchOffset = CGSize(
-                        width: platformSwitchOffset.width + value.translation.width,
-                        height: platformSwitchOffset.height + value.translation.height
-                    )
-                }
-        )
-        .help("Click a platform or drag the glass switch to move it")
+        .help("Switch between iOS, Mac and Wine libraries")
     }
 
     // MARK: - Sidebar
@@ -241,6 +226,7 @@ struct ContentView: View {
             }
         }
         .padding(14)
+        .background(.ultraThinMaterial.opacity(0.22))
     }
 
     @ViewBuilder
@@ -248,8 +234,8 @@ struct ContentView: View {
         let apps = filtered(state.installedApps)
         if apps.isEmpty {
             emptySidebar(
-                title: "No iOS apps",
-                detail: "Drop an .ipa here or click + to install one."
+                title: state.searchText.isEmpty ? "No iOS apps" : "No matching apps",
+                detail: state.searchText.isEmpty ? "Drop an .ipa here or click + to install one." : "Try a different search."
             )
         } else {
             ForEach(apps) { app in
@@ -282,8 +268,8 @@ struct ContentView: View {
         let entries = filtered(state.platformEntries)
         if entries.isEmpty {
             emptySidebar(
-                title: state.platform == .macOS ? "No Mac apps" : "No Wine games",
-                detail: state.platform == .macOS
+                title: !state.searchText.isEmpty ? "No matching results" : (state.platform == .macOS ? "No Mac apps" : "No Wine games"),
+                detail: !state.searchText.isEmpty ? "Try a different search." : state.platform == .macOS
                     ? "Drop a native .app here or click + to copy one into the library."
                     : (state.wineEngines.isEmpty
                        ? "Register a Wine engine in Settings, then add a Windows game."
@@ -324,10 +310,10 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(selected ? Color.white.opacity(0.12) : Color.clear)
+                    .fill(selected ? Color.accentColor.opacity(colorScheme == .dark ? 0.22 : 0.14) : Color.clear)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(selected ? Color.white.opacity(0.14) : Color.clear, lineWidth: 1)
+                            .strokeBorder(selected ? Color.accentColor.opacity(0.35) : Color.clear, lineWidth: 1)
                     )
             }
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -379,14 +365,40 @@ struct ContentView: View {
     }
 
     private var placeholder: some View {
-        ContentUnavailableView(
-            state.platform == .iOS ? "Select an iOS app"
-                : (state.platform == .macOS ? "Select a Mac app" : "Select a Wine game"),
-            systemImage: state.platform.symbol,
-            description: Text(state.platform == .wine
-                ? "Windows games run in a private prefix with their saves stored in the game's own folder."
-                : "Click + to install, or drop a package into the window.")
-        )
+        VStack(spacing: 18) {
+            PearBrand.logo
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 104, height: 104)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.30), radius: 22, y: 10)
+
+            VStack(spacing: 6) {
+                Text(state.platform == .iOS ? "Select an iOS app"
+                     : (state.platform == .macOS ? "Select a Mac app" : "Select a Wine game"))
+                    .font(.system(.title2, design: .rounded).weight(.semibold))
+                Text(state.platform == .wine
+                     ? "Windows games run in a private prefix with their saves stored in the game's own folder."
+                     : "Click + to install, or drop a package into the window.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+            }
+
+            HStack(spacing: 7) {
+                Image(systemName: state.platform.symbol)
+                Text("PearSilicon")
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.tertiary)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Import
@@ -585,8 +597,11 @@ struct StatusBar: View {
                 .truncationMode(.middle)
             Spacer()
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .glassEffect(.regular, in: Rectangle())
+        .background(.ultraThinMaterial.opacity(0.45))
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
+        }
     }
 }

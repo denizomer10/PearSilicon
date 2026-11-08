@@ -21,8 +21,32 @@
 #import <string.h>
 #import <math.h>
 #import "PearRuntime.h"
+#import "PearTouchGeometry.h"
+
+extern void PearRecordFramePresented(void);
 
 static BOOL PearGLDebug(void);
+
+static CGSize PearDeclaredDrawableSize(CGSize size) {
+    static BOOL landscape, portrait;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+        // A conflicting phone/tablet declaration is deliberately ambiguous.
+        for (NSString *key in @[@"UISupportedInterfaceOrientations", @"UISupportedInterfaceOrientations~ipad"]) {
+            id orientations = info[key];
+            if (![orientations isKindOfClass:NSArray.class]) continue;
+            for (id value in orientations) {
+                if (![value isKindOfClass:NSString.class]) continue;
+                if ([value isEqualToString:@"UIInterfaceOrientationLandscapeLeft"] ||
+                    [value isEqualToString:@"UIInterfaceOrientationLandscapeRight"]) landscape = YES;
+                if ([value isEqualToString:@"UIInterfaceOrientationPortrait"] ||
+                    [value isEqualToString:@"UIInterfaceOrientationPortraitUpsideDown"]) portrait = YES;
+            }
+        }
+    });
+    return PearOrientDrawableSize(size, landscape, portrait);
+}
 
 static void *OpenGLESHandle(void) {
     static void *handle;
@@ -44,6 +68,7 @@ static CGSize gNativeDrawableSize = { 0, 0 };
 static __weak CALayer *gDrawableLayer;
 static int gLastCropViewport[4] = { -1, -1, -1, -1 };
 static int gLastPresentViewport[4] = { -1, -1, -1, -1 };
+static uint64_t gPresentCount = 0;
 static BOOL gCropApplied = NO;
 
 static void PearFitDrawable(CALayer *layer);
@@ -57,6 +82,32 @@ static void PearUpdateDrawableCrop(void) {
     if (getenv("PEAR_NO_GL_VIEWPORT_FIT")) return;
     CALayer *layer = gDrawableLayer;
     if (!layer) return;
+
+    gPresentCount++;
+    if (PearGLDebug() && gPresentCount % 120 == 0) {
+        typedef void (*PearGetIntegerv)(int, int *);
+        typedef void (*PearReadPixels)(int, int, int, int, unsigned, unsigned, void *);
+        static PearGetIntegerv getIntegervDebug;
+        static PearReadPixels readPixelsDebug;
+        if (!getIntegervDebug) getIntegervDebug = (PearGetIntegerv)dlsym(OpenGLESHandle(), "glGetIntegerv");
+        if (!readPixelsDebug) readPixelsDebug = (PearReadPixels)dlsym(OpenGLESHandle(), "glReadPixels");
+        int vp[4] = { 0, 0, 0, 0 };
+        unsigned char center[4] = { 0, 0, 0, 0 };
+        unsigned char corner[4] = { 0, 0, 0, 0 };
+        if (getIntegervDebug && readPixelsDebug) {
+            getIntegervDebug(0x0BA2 /* GL_VIEWPORT */, vp);
+            if (vp[2] > 0 && vp[3] > 0) {
+                readPixelsDebug(vp[0] + vp[2] / 2, vp[1] + vp[3] / 2, 1, 1,
+                                0x1908 /* GL_RGBA */, 0x1401 /* GL_UNSIGNED_BYTE */, center);
+                readPixelsDebug(vp[0] + 4, vp[1] + vp[3] - 4, 1, 1,
+                                0x1908, 0x1401, corner);
+            }
+        }
+        PearLog(@"[PearRuntime][gl] present #%llu center=%02x%02x%02x%02x corner=%02x%02x%02x%02x",
+                (unsigned long long)gPresentCount,
+                center[0], center[1], center[2], center[3],
+                corner[0], corner[1], corner[2], corner[3]);
+    }
 
     // The window can be resized (or rotated) after the renderbuffer was
     // created. Re-fit on every present so the visible scale follows the window;
@@ -163,15 +214,7 @@ static UIWindow *PearGLWindowForLayer(CALayer *layer) {
 }
 
 static UIWindow *PearGLKeyWindow(void) {
-    UIWindow *first = nil;
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (first == nil) first = window;
-            if (window.isKeyWindow) return window;
-        }
-    }
-    return first;
+    return PearPrimaryWindow();
 }
 
 static CGSize gLastFitWindowSize = { 0, 0 };
@@ -198,32 +241,8 @@ static BOOL gTouchRemapInstalled = NO;
 /// drawable, and applying the reference fit gives the window point the engine
 /// expects. Returns `point` unchanged when no fit/reference is available.
 static CGPoint PearRemapWindowPoint(CGPoint point, CGSize currentWindow) {
-    CGSize native = gNativeDrawableSize;
-    CGSize reference = gReferenceWindowSize;
-    if (native.width < 1 || native.height < 1) return point;
-    if (reference.width < 1 || reference.height < 1) return point;
-    if (currentWindow.width < 1 || currentWindow.height < 1) return point;
-
-    CGFloat currentScale = MIN(currentWindow.width / native.width,
-                               currentWindow.height / native.height);
-    CGFloat referenceScale = MIN(reference.width / native.width,
-                                 reference.height / native.height);
-    if (currentScale <= 0 || referenceScale <= 0) return point;
-    if (fabs(currentScale - referenceScale) < 0.001 &&
-        fabs(currentWindow.width - reference.width) < 0.5 &&
-        fabs(currentWindow.height - reference.height) < 0.5) {
-        return point;
-    }
-
-    CGPoint currentOrigin = CGPointMake((currentWindow.width - native.width * currentScale) * 0.5,
-                                        (currentWindow.height - native.height * currentScale) * 0.5);
-    CGPoint referenceOrigin = CGPointMake((reference.width - native.width * referenceScale) * 0.5,
-                                          (reference.height - native.height * referenceScale) * 0.5);
-
-    CGPoint inDrawable = CGPointMake((point.x - currentOrigin.x) / currentScale,
-                                     (point.y - currentOrigin.y) / currentScale);
-    return CGPointMake(referenceOrigin.x + inDrawable.x * referenceScale,
-                       referenceOrigin.y + inDrawable.y * referenceScale);
+    return PearMapFittedTouch(point, gNativeDrawableSize, gReferenceWindowSize,
+                              currentWindow, gFitApplied);
 }
 
 /// Legacy GL titles ask for `locationInView:window` (or `nil`, which means the
@@ -249,7 +268,8 @@ static void PearInstallTouchRemap(void) {
         // bounds match the window) is the same space for a full-window GL app.
         CGSize windowSize = CGSizeZero;
         if (!view) {
-            UIView *glView = gDrawableLayer.delegate;
+            id delegate = gDrawableLayer.delegate;
+            UIView *glView = [delegate isKindOfClass:UIView.class] ? (UIView *)delegate : nil;
             UIWindow *window = glView.window ?: PearGLKeyWindow();
             if (window) windowSize = window.bounds.size;
         } else if ([view isKindOfClass:UIWindow.class]) {
@@ -451,6 +471,13 @@ static void PearInstallEAGLHook(void) {
     method_setImplementation(method, imp_implementationWithBlock(^BOOL(id self, NSUInteger target, id drawable) {
         if ([drawable isKindOfClass:CALayer.class]) {
             CALayer *layer = (CALayer *)drawable;
+            CGSize oriented = PearDeclaredDrawableSize(layer.bounds.size);
+            if ([NSThread isMainThread] && !CGSizeEqualToSize(oriented, layer.bounds.size)) {
+                if (PearGLDebug()) PearLog(@"[PearRuntime][gl] corrected fixed-orientation drawable %@ -> %@", NSStringFromCGSize(layer.bounds.size), NSStringFromCGSize(oriented));
+                CGRect bounds = layer.bounds;
+                bounds.size = oriented;
+                layer.bounds = bounds;
+            }
             if (PearGLDebug()) {
                 PearLog(@"[PearRuntime][gl] renderbufferStorage fromDrawable bounds=%@ pos=%@ contentsScale=%.2f",
                         NSStringFromCGRect(layer.bounds), NSStringFromCGPoint(layer.position), layer.contentsScale);
@@ -482,7 +509,22 @@ static void PearInstallEAGLHook(void) {
         } else if (PearGLDebug()) {
             PearLog(@"[PearRuntime][gl] renderbufferStorage fromDrawable %@", NSStringFromClass([drawable class]));
         }
-        return ((BOOL (*)(id, SEL, NSUInteger, id))original)(self, selector, target, drawable);
+        BOOL result = ((BOOL (*)(id, SEL, NSUInteger, id))original)(self, selector, target, drawable);
+        if (result && [drawable isKindOfClass:CALayer.class]) {
+            typedef void (*GetRenderbufferParameter)(unsigned int, unsigned int, int *);
+            static GetRenderbufferParameter query;
+            if (!query) query = (GetRenderbufferParameter)dlsym(OpenGLESHandle(), "glGetRenderbufferParameteriv");
+            if (query) {
+                int width = 0, height = 0;
+                query((unsigned int)target, 0x8D42 /* GL_RENDERBUFFER_WIDTH */, &width);
+                query((unsigned int)target, 0x8D43 /* GL_RENDERBUFFER_HEIGHT */, &height);
+                if (width > 0 && height > 0) {
+                    gGLDrawableSize = CGSizeMake(width, height);
+                    if (PearGLDebug()) PearLog(@"[PearRuntime][gl] allocated renderbuffer=%dx%d", width, height);
+                }
+            }
+        }
+        return result;
     }));
 
     PearLog(@"[PearRuntime][gl] EAGL drawable fit installed");
@@ -496,7 +538,9 @@ static void PearInstallEAGLHook(void) {
         IMP presentOriginal = method_getImplementation(presentMethod);
         method_setImplementation(presentMethod, imp_implementationWithBlock(^BOOL(id self, NSUInteger target) {
             PearUpdateDrawableCrop();
-            return ((BOOL (*)(id, SEL, NSUInteger))presentOriginal)(self, presentSelector, target);
+            BOOL presented = ((BOOL (*)(id, SEL, NSUInteger))presentOriginal)(self, presentSelector, target);
+            if (presented) PearRecordFramePresented();
+            return presented;
         }));
         PearLog(@"[PearRuntime][gl] EAGL present hook installed");
     }

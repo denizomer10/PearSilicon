@@ -112,10 +112,15 @@ final class PackageInstaller: @unchecked Sendable {
 
         // 2) find Payload/*.app
         let payload = tempDir.appendingPathComponent("Payload", isDirectory: true)
-        guard let app = try fileManager.contentsOfDirectory(
-            at: payload, includingPropertiesForKeys: nil
-        ).first(where: { $0.pathExtension == "app" }) else {
-            throw PearError.invalidPackage("no .app inside Payload")
+        guard fileManager.fileExists(atPath: payload.path) else {
+            throw PearError.invalidPackage("Missing Payload folder; choose an IPA containing a single app")
+        }
+        let apps = try fileManager.contentsOfDirectory(at: payload, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension.lowercased() == "app" }
+        guard apps.count == 1, let app = apps.first else {
+            throw PearError.invalidPackage(apps.isEmpty
+                ? "No .app inside Payload"
+                : "The IPA contains multiple apps in Payload; the intended app is ambiguous")
         }
 
         return try await installBundle(at: app, mode: mode)
@@ -135,12 +140,14 @@ final class PackageInstaller: @unchecked Sendable {
         let tailSize = min(fileSize, 65_557) // EOCD + maximum comment
         try handle.seek(toOffset: fileSize - tailSize)
         let tail = try handle.read(upToCount: Int(tailSize)) ?? Data()
-        guard let eocd = tail.range(of: Data([0x50, 0x4B, 0x05, 0x06]), options: .backwards) else {
-            throw PearError.invalidPackage("\(url.lastPathComponent): ZIP end record is missing")
+        // The comment itself may contain the EOCD signature. Only a record
+        // whose declared comment reaches the end of the file is a candidate.
+        let eocdOffset = stride(from: tail.count - 22, through: 0, by: -1).first { offset in
+            tail.u32(at: offset) == 0x0605_4B50 &&
+                Int(tail.u16(at: offset + 20)) == tail.count - offset - 22
         }
-        let eocdOffset = eocd.lowerBound
-        guard eocdOffset + 22 <= tail.count else {
-            throw PearError.invalidPackage("\(url.lastPathComponent): truncated ZIP end record")
+        guard let eocdOffset else {
+            throw PearError.invalidPackage("\(url.lastPathComponent): ZIP end record is missing or invalid")
         }
 
         var entries = UInt64(tail.u16(at: eocdOffset + 10))
@@ -156,7 +163,7 @@ final class PackageInstaller: @unchecked Sendable {
                 throw PearError.invalidPackage("\(url.lastPathComponent): ZIP64 locator is invalid")
             }
             let zip64Offset = tail.u64(at: locator + 8)
-            guard zip64Offset + 56 <= fileSize else {
+            guard zip64Offset <= fileSize, fileSize - zip64Offset >= 56 else {
                 throw PearError.invalidPackage("\(url.lastPathComponent): ZIP64 end record is missing")
             }
             try handle.seek(toOffset: zip64Offset)
@@ -944,6 +951,16 @@ final class PackageInstaller: @unchecked Sendable {
         updated["CFBundleSupportedPlatforms"] = ["MacOSX"]
         updated["DTPlatformName"] = "macosx"
         updated["LSMinimumSystemVersion"] = "15.0"
+        // Before iOS 17, an absent indirect-input key meant direct touches.
+        // Preserve that legacy behavior when old games run on a newer host;
+        // never override an explicit choice or guess when SDK metadata is absent.
+        if updated["UIApplicationSupportsIndirectInputEvents"] == nil,
+           let sdk = updated["DTSDKName"] as? String,
+           sdk.lowercased().hasPrefix("iphoneos"),
+           let major = Int(sdk.dropFirst("iphoneos".count).split(separator: ".").first ?? ""),
+           major > 0, major < 17 {
+            updated["UIApplicationSupportsIndirectInputEvents"] = false
+        }
         // Xcode's Game Controllers capability writes these keys. iOS-on-Mac
         // apps that ship without them are not treated as controller-supporting
         // by the system, so hardware pads enumerate but input is not routed.

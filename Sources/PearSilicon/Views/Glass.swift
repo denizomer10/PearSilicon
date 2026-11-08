@@ -29,3 +29,41 @@ struct SectionTitle: View {
             .kerning(0.6)
     }
 }
+
+/// Small tinted capsule for state such as "Running" or "Automatic".
+struct StatusPill: View {
+    enum Tone {
+        case positive
+        case warning
+        case neutral
+
+        var color: Color {
+            switch self {
+            case .positive: .green
+            case .warning: .orange
+            case .neutral: .secondary
+            }
+        }
+    }
+
+    let text: String
+    var tone: Tone = .neutral
+    var symbol: String?
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 7, weight: .bold))
+            }
+            Text(text)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(tone.color)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(tone.color.opacity(0.14)))
+        .overlay(Capsule().strokeBorder(tone.color.opacity(0.28), lineWidth: 1))
+        .fixedSize()
+    }
+}

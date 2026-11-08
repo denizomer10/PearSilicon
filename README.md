@@ -40,7 +40,7 @@ authorized to run.
 
 | Platform | What it does |
 | --- | --- |
-| **iOS Apps (64-bit & 32-bit)** | IPA / device `.app` import; native Catalyst preparation for 64-bit apps and automatic **[PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine)** execution for 32-bit iOS games |
+| **iOS Apps (64-bit & 32-bit)** | IPA / device `.app` import; Catalyst runtime shims, performance HUD, pointer lock and opt-in keymapper for 64-bit apps, plus automatic **[PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine)** execution for 32-bit iOS games |
 | **Mac Apps** | Copy-only `.app` import with redirected data, launched natively |
 | **Wine Games** | Per-game prefixes, private data, verified engines, DXVK or DXMT graphics |
 | **Library** | iOS, Mac and Wine tabs; movable library; per-entry `.pearbackup` backups |
@@ -84,8 +84,9 @@ Download the newest development build from
 move `PearSilicon.app` to `/Applications`, and open it.
 
 Each development build is its own prerelease; release notes identify its version,
-tested commit and scope. If macOS blocks the first launch, use
-**System Settings → Privacy & Security → Open Anyway** or right-click → **Open**.
+tested commit and scope. Release notes are written in English by default. If macOS
+blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**
+or right-click → **Open**.
 
 ### Build from source
 
@@ -143,6 +144,13 @@ tap, hold, joystick, mouse-look and swipe.
 - Genshin Impact’s iOS build does not expose its native controller mode on Mac;
   its Control Type remains “Touchscreen”. Controller keymapper bindings still
   drive its touch controls.
+- **Keyboard Mouse to Gamepad Inputs** is a separate per-app toggle for games
+  with native controller support. The game receives a hidden virtual controller;
+  every A/B/X/Y, shoulder, trigger, D-pad, MENU/OPTIONS and stick control can be
+  rebound to a key or mouse button, along with the left-stick keys. Click the
+  game to capture the mouse and Escape releases it. Mouse sensitivity and an
+  invert-vertical-look switch are included. This mode does not use the touch
+  keymapper or native pointer lock.
 
 Configure bindings in the in-app **Keymap** tab.
 
@@ -160,6 +168,24 @@ The **Performance HUD (FPS)** switch in a 32-bit app's settings sets
 OpenGL ES renderer. Metal's `MTL_HUD_ENABLED` cannot apply here because these
 titles never touch Metal, so the engine draws an equivalent overlay and logs the
 same numbers to the app log.
+
+## Automatic compatibility
+
+Older scene-less apps built with an iOS SDK before 15 need a window re-attach
+and synthesized touches to receive mouse input. PearSilicon detects this per
+game from its `Info.plist` (no scene manifest plus `DTSDKName` major below 15)
+and applies the bridges automatically — there is nothing to configure.
+
+The **Compatibility** card on a game's detail page shows the detected profile
+and the effective *Window bridge* and *Mouse→touch* state. Existing manual
+values are preserved but hidden; when an override is stored, the card offers
+**Use automatic**. Automation for scripted setups is available from the CLI:
+
+```sh
+pearsilicon compat com.example.game
+pearsilicon legacy com.example.game auto
+pearsilicon mousetouch com.example.game off
+```
 
 ## Wine, engines and graphics
 
