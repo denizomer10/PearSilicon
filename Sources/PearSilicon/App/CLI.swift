@@ -332,6 +332,8 @@ enum CLI {
             // Do not initialize CLIPaths: validation must not migrate or create app data.
             try PackageInstaller(libraryURL: url.deletingLastPathComponent())
                 .validateBundleForPreparation(at: url)
+        } else if BinaryPatcher.fileIsLegacy32BitARM(url) {
+            try BinaryPatcher.validateLegacy32BitARM(at: url)
         } else {
             try BinaryPatcher.validateForPreparation(at: url)
         }
@@ -500,7 +502,11 @@ enum CLI {
         print("  keymap: \(keymapState(enabled: enabled, hasFile: hasKeymap, url: keymapURL))")
         print("  metal HUD: \(hudEnabled ? "on" : "off")")
         print("  pointer lock: \(pointerLock ? "allowed" : "disabled")")
-        print("  mode: \(mode == .compatibilityEnvironment ? "environment-injected in-process runtime + local KV/device-profile host" : "in-process runtime via LC_LOAD_DYLIB")")
+        if AppLauncher.isLegacy32BitApp(app) {
+            print("  mode: PearLegacyEngine (32-bit iOS compatibility layer)")
+        } else {
+            print("  mode: \(mode == .compatibilityEnvironment ? "environment-injected in-process runtime + local KV/device-profile host" : "in-process runtime via LC_LOAD_DYLIB")")
+        }
         print("  container: iOS-like filesystem view (hooks + requested macOS sandbox profile)")
         if let logPath { print("  log:    \(logPath)") }
 
@@ -527,8 +533,9 @@ enum CLI {
             throw CLIError.message("usage: pearsilicon stop <bundle-id|name>")
         }
         let app = try resolveApp(query)
-        guard let running = NSRunningApplication
-            .runningApplications(withBundleIdentifier: app.id).first else {
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: app.id).first
+            ?? AppLauncher.legacyRunningPID(for: app.id).flatMap { NSRunningApplication(processIdentifier: $0) }
+        guard let running else {
             throw CLIError.message("\(app.displayName) is not running")
         }
 
@@ -562,6 +569,7 @@ enum CLI {
             }
         }
         if isGone() {
+            AppLauncher.clearLegacyRunning(appID: app.id, matchingPID: running.processIdentifier)
             print("stopped")
             return 0
         }
@@ -571,7 +579,10 @@ enum CLI {
 
     private static func listCommand(_ arguments: CLIArguments) throws -> Int32 {
         let apps = try allApps()
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        var running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        for app in apps where AppLauncher.legacyRunningPID(for: app.id) != nil {
+            running.insert(app.id)
+        }
 
         if arguments.flags.contains("json") {
             let rows: [[String: Any]] = apps.map { app in
@@ -618,7 +629,7 @@ enum CLI {
         let paths = CLIPaths.shared
         let store = KeymapStore(baseURL: paths.keymaps)
         let pid = NSRunningApplication.runningApplications(withBundleIdentifier: app.id)
-            .first?.processIdentifier
+            .first?.processIdentifier ?? AppLauncher.legacyRunningPID(for: app.id)
 
         print("name:        \(app.displayName)")
         print("bundle id:   \(app.id)")

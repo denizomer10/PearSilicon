@@ -30,6 +30,29 @@ final class BinaryPatcherTests: XCTestCase {
         XCTAssertTrue(BinaryPatcher.isMachO64(makeMachO(platform: 2)))
     }
 
+    func testDetectsAndValidatesLegacy32BitARMExecutable() throws {
+        var seg = words(0x1, 56) // LC_SEGMENT
+        appendName("__TEXT", to: &seg)
+        seg.append(words(0x1000, 0x100, 0, 0x100, 7, 5, 0, 0))
+
+        var armv7 = words(0xFEEDFACE, 12, 9, 2, 2, UInt32(seg.count + 20), 0)
+        armv7.append(seg)
+        armv7.append(words(0x21, 20, 128, 64, 0)) // LC_ENCRYPTION_INFO cryptid=0
+        armv7.append(Data(count: 256 - armv7.count))
+        XCTAssertTrue(BinaryPatcher.isLegacy32BitARM(armv7))
+        let url = try writeTemporary(armv7)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try BinaryPatcher.validateLegacy32BitARM(at: url)
+
+        var encrypted = words(0xFEEDFACE, 12, 9, 2, 2, UInt32(seg.count + 20), 0)
+        encrypted.append(seg)
+        encrypted.append(words(0x21, 20, 128, 64, 1)) // LC_ENCRYPTION_INFO cryptid=1
+        encrypted.append(Data(count: 256 - encrypted.count))
+        let encryptedURL = try writeTemporary(encrypted)
+        defer { try? FileManager.default.removeItem(at: encryptedURL) }
+        assertInvalid({ try BinaryPatcher.validateLegacy32BitARM(at: encryptedURL) }, containing: ["encrypted", "cryptid 1"])
+    }
+
     func testPreflightAcceptsSupportedPlainMetadataWithoutWriting() throws {
         let images = [makeMachO(platform: 2), makeMachO(platform: 6), makeMachOWithVersionMin()]
         for data in images {

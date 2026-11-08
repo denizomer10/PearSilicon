@@ -92,13 +92,22 @@ final class PackageInstaller: @unchecked Sendable {
 
         // Even a CRC failure confined to an asset invalidates the extraction.
         // Shell.run rejects every nonzero status, including unzip's warning status.
+        // If Info-ZIP fails on valid UTF-8 filenames lacking the EFS flag (status 50),
+        // verify the archive integrity with `unzip -t` and extract via `ditto -x -k`.
         do {
             _ = try preparationTools.run("/usr/bin/unzip", ["-o", "-q", url.path, "-d", tempDir.path])
         } catch PearError.commandFailed(let tool, let status, let output) {
-            let diagnostic = output.range(of: "CRC", options: .caseInsensitive) == nil
-                ? output
-                : "Archive CRC check failed; re-download the package. No app was installed.\n" + output
-            throw PearError.commandFailed(tool: tool, status: status, output: diagnostic)
+            if status == 50,
+               (try? preparationTools.run("/usr/bin/unzip", ["-t", "-q", url.path])) != nil {
+                try? fileManager.removeItem(at: tempDir)
+                try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                _ = try preparationTools.run("/usr/bin/ditto", ["-x", "-k", "--noacl", url.path, tempDir.path])
+            } else {
+                let diagnostic = output.range(of: "CRC", options: .caseInsensitive) == nil
+                    ? output
+                    : "Archive CRC check failed; re-download the package. No app was installed.\n" + output
+                throw PearError.commandFailed(tool: tool, status: status, output: diagnostic)
+            }
         }
 
         // 2) find Payload/*.app
@@ -275,7 +284,17 @@ final class PackageInstaller: @unchecked Sendable {
         return installed
     }
 
+    func isLegacy32BitBundle(at bundleURL: URL) -> Bool {
+        guard let probe = try? makeInstalledApp(fromBundleAt: bundleURL) else { return false }
+        return BinaryPatcher.fileIsLegacy32BitARM(probe.executableURL)
+    }
+
     private func finalizeInstall(at staged: URL, mode: PreparationMode, targetBundleURL: URL) throws {
+        if isLegacy32BitBundle(at: staged) {
+            try prepareForMacOS(at: staged, mode: mode, targetBundleURL: targetBundleURL)
+            try validateBundleForPreparation(at: staged)
+            return
+        }
         try prepareForMacOS(at: staged, mode: mode, targetBundleURL: targetBundleURL)
         try signBundle(at: staged, mode: mode)
         _ = try preparationTools.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", staged.path])
@@ -332,6 +351,10 @@ final class PackageInstaller: @unchecked Sendable {
         let newRoot = targetBundleURL.standardizedFileURL.path
         guard oldRoot != newRoot else { return }
         try validateStagingIsolation(at: stagedBundleURL)
+        if isLegacy32BitBundle(at: stagedBundleURL) {
+            try validateBundleForPreparation(at: stagedBundleURL)
+            return
+        }
 
         let app = try makeInstalledApp(fromBundleAt: stagedBundleURL)
         var targets = Set<URL>([app.executableURL])
@@ -482,6 +505,12 @@ final class PackageInstaller: @unchecked Sendable {
         targetBundleURL: URL? = nil
     ) throws {
         try validateBundleForPreparation(at: bundleURL)
+        if isLegacy32BitBundle(at: bundleURL) {
+            removeLegacySignatureArtifacts(at: bundleURL)
+            ensureExecutableBits(at: bundleURL)
+            _ = try? preparationTools.run("/usr/bin/xattr", ["-cr", bundleURL.path])
+            return
+        }
         let target = targetBundleURL ?? bundleURL
         try patchInfoPlist(at: bundleURL)
         removeLegacySignatureArtifacts(at: bundleURL)
@@ -538,6 +567,9 @@ final class PackageInstaller: @unchecked Sendable {
         defer { if launchLease == nil { lease.release() } }
         try lease.validate(appID: app.id, libraryURL: libraryURL)
         try validateBundleForPreparation(at: app.bundleURL)
+        if isLegacy32BitBundle(at: app.bundleURL) {
+            return
+        }
         if !force, try preparationModeIsValid(at: app.bundleURL, mode: mode, targetBundleURL: app.bundleURL) {
             return
         }
@@ -567,6 +599,7 @@ final class PackageInstaller: @unchecked Sendable {
     func refreshRuntimeIfNeeded(
         for app: InstalledApp, sourceRuntimeDirectory: URL, launchLease: AppLaunchLease? = nil
     ) throws -> Bool {
+        if isLegacy32BitBundle(at: app.bundleURL) { return false }
         let mode = currentPreparationMode(for: app)
         guard mode != .nativeContainer else { return false }
         let installed = app.bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
@@ -584,8 +617,17 @@ final class PackageInstaller: @unchecked Sendable {
     /// Every regular file is inspected, including hidden and extensionless files.
     /// This deliberately creates no work, library, or transaction directories.
     func validateBundleForPreparation(at bundleURL: URL) throws {
+        let isLegacy32 = isLegacy32BitBundle(at: bundleURL)
         for file in try machOTargets(in: bundleURL) {
-            try validateBinaryForPreparation(at: file, in: bundleURL)
+            if isLegacy32 {
+                do {
+                    try BinaryPatcher.validateLegacy32BitARM(at: file)
+                } catch {
+                    throw preparationError(error, at: file, in: bundleURL)
+                }
+            } else {
+                try validateBinaryForPreparation(at: file, in: bundleURL)
+            }
         }
     }
 

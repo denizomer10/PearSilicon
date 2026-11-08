@@ -61,6 +61,48 @@ if [[ -d "$BUILD_DIR/MarketplaceKit.framework" ]]; then
   cp -R "$BUILD_DIR/MarketplaceKit.framework" "$OUT/Contents/Resources/"
 fi
 
+# --- 3a-legacy) Bundle PearLegacyEngine (32-bit iOS runtime) --------------
+if [[ -n "${PEAR_LEGACY_ENGINE_REPO:-}" ]]; then
+  LEGACY_REPO="${PEAR_LEGACY_ENGINE_REPO}"
+elif [[ -d "$HOME/PearLegacyEngine" ]]; then
+  LEGACY_REPO="$HOME/PearLegacyEngine"
+else
+  LEGACY_REPO="$HOME/Documents/PearLegacyEngine"
+fi
+LEGACY_BIN=""
+if [[ -n "${PEAR_LEGACY_ENGINE_PATH:-}" && -x "${PEAR_LEGACY_ENGINE_PATH}" ]]; then
+  LEGACY_BIN="${PEAR_LEGACY_ENGINE_PATH}"
+elif [[ -x "$BUILD_DIR/PearLegacyEngine/touchHLE" ]]; then
+  LEGACY_BIN="$BUILD_DIR/PearLegacyEngine/touchHLE"
+elif [[ -x "$LEGACY_REPO/target/release/touchHLE" ]]; then
+  LEGACY_BIN="$LEGACY_REPO/target/release/touchHLE"
+elif [[ -x "$LEGACY_REPO/target/debug/touchHLE" ]]; then
+  LEGACY_BIN="$LEGACY_REPO/target/debug/touchHLE"
+fi
+
+if [[ -n "$LEGACY_BIN" ]]; then
+  echo ">> Bundling PearLegacyEngine from $LEGACY_BIN"
+  LEGACY_STAGE="$BUILD_DIR/PearLegacyEngine"
+  mkdir -p "$LEGACY_STAGE"
+  if [[ "$LEGACY_BIN" != "$LEGACY_STAGE/touchHLE" ]]; then
+    cp "$LEGACY_BIN" "$LEGACY_STAGE/touchHLE"
+  fi
+  chmod +x "$LEGACY_STAGE/touchHLE"
+  if [[ -d "$LEGACY_REPO" ]]; then
+    [[ -f "$LEGACY_REPO/touchHLE_default_options.txt" ]] && cp "$LEGACY_REPO/touchHLE_default_options.txt" "$LEGACY_STAGE/"
+    if [[ -d "$LEGACY_REPO/touchHLE_dylibs" ]]; then
+      rm -rf "$LEGACY_STAGE/touchHLE_dylibs"
+      cp -R "$LEGACY_REPO/touchHLE_dylibs" "$LEGACY_STAGE/touchHLE_dylibs"
+    fi
+    if [[ -d "$LEGACY_REPO/touchHLE_fonts" ]]; then
+      rm -rf "$LEGACY_STAGE/touchHLE_fonts"
+      cp -R "$LEGACY_REPO/touchHLE_fonts" "$LEGACY_STAGE/touchHLE_fonts"
+    fi
+  fi
+  rm -rf "$OUT/Contents/Resources/PearLegacyEngine"
+  cp -R "$LEGACY_STAGE" "$OUT/Contents/Resources/PearLegacyEngine"
+fi
+
 # --- 3b) App icon from the repo logo -------------------------------------
 ICON_KEY=""
 if [[ -f "$ROOT/logo.png" ]]; then

@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 /// How an app is started.
@@ -57,6 +58,9 @@ final class AppLauncher: @unchecked Sendable {
         }
 
         try await Self.requireStopped(app)
+        if Self.isLegacy32BitApp(app) {
+            return try launchLegacy32Bit(app, extraEnvironment: extraEnvironment, activate: activate)
+        }
         let environmentMode = fileManager.fileExists(
             atPath: PackageInstaller.injectionMarkerURL(in: app.bundleURL).path
         )
@@ -160,10 +164,108 @@ final class AppLauncher: @unchecked Sendable {
 
     @MainActor
     static func requireStopped(_ app: InstalledApp) throws {
-        guard !NSRunningApplication.runningApplications(withBundleIdentifier: app.id)
-            .contains(where: { !$0.isTerminated }) else {
+        guard !isRunning(appID: app.id) else {
             throw PearError.launchFailed("This app is already running; close it before launching again or changing preparation mode")
         }
+    }
+
+    static func isLegacy32BitApp(_ app: InstalledApp) -> Bool {
+        BinaryPatcher.fileIsLegacy32BitARM(app.executableURL)
+    }
+
+    private static let legacyPIDLock = NSLock()
+    nonisolated(unsafe) private static var legacyRunningPIDs: [String: pid_t] = [:]
+
+    private static var logsDirectoryURL: URL {
+        AppPaths.supportRoot.appendingPathComponent("Logs", isDirectory: true)
+    }
+
+    private static func pidFileURL(for appID: String) -> URL {
+        logsDirectoryURL.appendingPathComponent("\(appID).legacy.pid")
+    }
+
+    private static func isProcessAlive(_ pid: pid_t) -> Bool {
+        guard pid > 0 else { return false }
+        if kill(pid, 0) == 0 || errno == EPERM {
+            if let running = NSRunningApplication(processIdentifier: pid) {
+                return !running.isTerminated
+            }
+            return true
+        }
+        return false
+    }
+
+    static func recordLegacyRunning(appID: String, pid: pid_t) {
+        legacyPIDLock.lock()
+        legacyRunningPIDs[appID] = pid
+        legacyPIDLock.unlock()
+        try? FileManager.default.createDirectory(at: logsDirectoryURL, withIntermediateDirectories: true)
+        try? Data("\(pid)\n".utf8).write(to: pidFileURL(for: appID), options: .atomic)
+    }
+
+    static func clearLegacyRunning(appID: String, matchingPID: pid_t? = nil) {
+        legacyPIDLock.lock()
+        if let matchingPID {
+            if legacyRunningPIDs[appID] == matchingPID {
+                legacyRunningPIDs.removeValue(forKey: appID)
+            }
+        } else {
+            legacyRunningPIDs.removeValue(forKey: appID)
+        }
+        legacyPIDLock.unlock()
+        let url = pidFileURL(for: appID)
+        if let matchingPID,
+           let content = try? String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+           let recorded = pid_t(content),
+           recorded != matchingPID {
+            return
+        }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    static func legacyRunningPID(for appID: String) -> pid_t? {
+        legacyPIDLock.lock()
+        let inMemory = legacyRunningPIDs[appID]
+        legacyPIDLock.unlock()
+        if let pid = inMemory {
+            if isProcessAlive(pid) { return pid }
+            clearLegacyRunning(appID: appID, matchingPID: pid)
+        }
+        let url = pidFileURL(for: appID)
+        if let content = try? String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+           let pid = pid_t(content) {
+            if isProcessAlive(pid) {
+                legacyPIDLock.lock()
+                legacyRunningPIDs[appID] = pid
+                legacyPIDLock.unlock()
+                return pid
+            }
+            try? FileManager.default.removeItem(at: url)
+        }
+        return nil
+    }
+
+    @MainActor
+    static func runningApplication(for appID: String) -> NSRunningApplication? {
+        if let running = NSRunningApplication.runningApplications(withBundleIdentifier: appID)
+            .first(where: { !$0.isTerminated }) {
+            return running
+        }
+        if let pid = legacyRunningPID(for: appID),
+           let running = NSRunningApplication(processIdentifier: pid),
+           !running.isTerminated {
+            return running
+        }
+        return nil
+    }
+
+    @MainActor
+    static func isRunning(appID: String) -> Bool {
+        if NSRunningApplication.runningApplications(withBundleIdentifier: appID)
+            .contains(where: { !$0.isTerminated }) {
+            return true
+        }
+        return legacyRunningPID(for: appID) != nil
     }
 
     @MainActor
@@ -450,5 +552,132 @@ final class AppLauncher: @unchecked Sendable {
         let stub = runtime.deletingLastPathComponent()
             .appendingPathComponent("MarketplaceKit.framework", isDirectory: true)
         return fileManager.fileExists(atPath: stub.path) ? stub : nil
+    }
+
+    // MARK: - PearLegacyEngine (32-bit iOS compatibility layer)
+
+    private func launchLegacy32Bit(
+        _ app: InstalledApp,
+        extraEnvironment: [String: String],
+        activate: Bool
+    ) throws -> NSRunningApplication? {
+        guard let engineURL = Self.legacyEngineExecutableURL() else {
+            throw PearError.missingRuntimeComponent("PearLegacyEngine (touchHLE)")
+        }
+        guard let resourceDir = Self.legacyEngineResourceDirectory(for: engineURL) else {
+            throw PearError.missingRuntimeComponent("PearLegacyEngine resources (touchHLE_dylibs / touchHLE_fonts / touchHLE_default_options.txt)")
+        }
+
+        var env = ProcessInfo.processInfo.environment
+        for key in ["PEAR_HOST_SOCKET", "PEAR_HOST_TOKEN", "PEAR_LAUNCHER_INJECTION", "DYLD_INSERT_LIBRARIES",
+                    "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_FRAMEWORK_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"] {
+            env.removeValue(forKey: key)
+        }
+        for (key, value) in extraEnvironment {
+            env[key] = value
+        }
+
+        let process = Process()
+        process.executableURL = engineURL
+        process.arguments = [app.bundleURL.path]
+        process.currentDirectoryURL = resourceDir
+        process.environment = env
+
+        try? fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        let logURL = logDirectory.appendingPathComponent("\(app.id).log")
+        fileManager.createFile(atPath: logURL.path, contents: nil)
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            process.standardOutput = handle
+            process.standardError = handle
+        } else {
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        }
+
+        let appID = app.id
+        process.terminationHandler = { proc in
+            Self.clearLegacyRunning(appID: appID, matchingPID: proc.processIdentifier)
+        }
+
+        try process.run()
+        let pid = process.processIdentifier
+        Self.recordLegacyRunning(appID: appID, pid: pid)
+
+        if activate {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows])
+            }
+        }
+        return NSRunningApplication(processIdentifier: pid)
+    }
+
+    /// Locates the PearLegacyEngine (`touchHLE`) 32-bit iOS compatibility binary.
+    static func legacyEngineExecutableURL() -> URL? {
+        let fileManager = FileManager.default
+        var candidates: [URL] = []
+
+        if let override = ProcessInfo.processInfo.environment["PEARSILICON_LEGACY_ENGINE"],
+           !override.isEmpty {
+            let url = URL(fileURLWithPath: override)
+            var isDir: ObjCBool = false
+            if fileManager.fileExists(atPath: url.path, isDirectory: &isDir) {
+                if isDir.boolValue {
+                    candidates.append(url.appendingPathComponent("touchHLE"))
+                    candidates.append(url.appendingPathComponent("target/release/touchHLE"))
+                    candidates.append(url.appendingPathComponent("target/debug/touchHLE"))
+                } else {
+                    candidates.append(url)
+                }
+            }
+        }
+
+        if let resources = Bundle.main.resourceURL {
+            candidates.append(resources.appendingPathComponent("PearLegacyEngine/touchHLE"))
+            candidates.append(resources.appendingPathComponent("touchHLE"))
+        }
+
+        if let exeDir = Bundle.main.executableURL?.deletingLastPathComponent() {
+            candidates.append(exeDir.appendingPathComponent("PearLegacyEngine/touchHLE"))
+            candidates.append(exeDir.appendingPathComponent("touchHLE"))
+            let repoRoot = exeDir.deletingLastPathComponent().deletingLastPathComponent()
+            candidates.append(repoRoot.appendingPathComponent("build/PearLegacyEngine/touchHLE"))
+            candidates.append(repoRoot.deletingLastPathComponent().appendingPathComponent("PearLegacyEngine/target/release/touchHLE"))
+            candidates.append(repoRoot.deletingLastPathComponent().appendingPathComponent("PearLegacyEngine/target/debug/touchHLE"))
+        }
+
+        let home = fileManager.homeDirectoryForCurrentUser
+        candidates.append(home.appendingPathComponent("PearLegacyEngine/target/release/touchHLE"))
+        candidates.append(home.appendingPathComponent("PearLegacyEngine/target/debug/touchHLE"))
+
+        for app in ["/Applications/PearSilicon.app", "\(home.path)/Applications/PearSilicon.app"] {
+            candidates.append(URL(fileURLWithPath: app)
+                .appendingPathComponent("Contents/Resources/PearLegacyEngine/touchHLE"))
+        }
+
+        candidates.append(AppPaths.supportRoot.appendingPathComponent("PearLegacyEngine/touchHLE"))
+
+        return candidates.first { fileManager.isExecutableFile(atPath: $0.path) }
+    }
+
+    /// Locates the directory containing `touchHLE_default_options.txt`,
+    /// `touchHLE_dylibs`, and `touchHLE_fonts` for a resolved engine executable.
+    static func legacyEngineResourceDirectory(for engineURL: URL) -> URL? {
+        let fileManager = FileManager.default
+        let exeDir = engineURL.deletingLastPathComponent()
+        let candidates = [
+            exeDir,
+            exeDir.deletingLastPathComponent(),
+            exeDir.deletingLastPathComponent().deletingLastPathComponent(),
+            Bundle.main.resourceURL?.appendingPathComponent("PearLegacyEngine", isDirectory: true),
+            Bundle.main.resourceURL,
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("PearLegacyEngine", isDirectory: true),
+            AppPaths.supportRoot.appendingPathComponent("PearLegacyEngine", isDirectory: true)
+        ].compactMap { $0 }
+
+        return candidates.first { dir in
+            fileManager.fileExists(atPath: dir.appendingPathComponent("touchHLE_default_options.txt").path)
+                && fileManager.fileExists(atPath: dir.appendingPathComponent("touchHLE_dylibs").path)
+                && fileManager.fileExists(atPath: dir.appendingPathComponent("touchHLE_fonts").path)
+        }
     }
 }

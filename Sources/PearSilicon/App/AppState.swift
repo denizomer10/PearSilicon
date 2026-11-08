@@ -220,6 +220,13 @@ final class AppState: ObservableObject {
                 map[bundleID] = running
             }
         }
+        for id in ids where map[id] == nil {
+            if let pid = AppLauncher.legacyRunningPID(for: id),
+               let running = NSRunningApplication(processIdentifier: pid),
+               !running.isTerminated {
+                map[id] = running
+            }
+        }
         runningApps = map
 
         // A launch is only "pending" until the app shows up as running. Once it
@@ -1114,7 +1121,7 @@ final class AppState: ObservableObject {
     /// Shows the keymapper overlay over `app` if it is currently running. Lets the
     /// UI be opened for a game launched outside the app (or after a relaunch).
     func openOverlay(for app: InstalledApp) {
-        guard let running = NSRunningApplication.runningApplications(withBundleIdentifier: app.id).first,
+        guard let running = AppLauncher.runningApplication(for: app.id),
               !running.isTerminated else {
             statusMessage = L10n.error("\(app.displayName) is not running")
             return

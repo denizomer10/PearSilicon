@@ -6,12 +6,15 @@ import Foundation
 enum BinaryPatcher {
 
     enum MachO {
+        static let magic32: UInt32 = 0xFEEDFACE
         static let magic64: UInt32 = 0xFEEDFACF
+        static let headerSize32 = 28
         static let headerSize = 32
         static let fatMagic: UInt32 = 0xCAFEBABE
         static let fatMagic64: UInt32 = 0xCAFEBABF
         static let fatArchSize = 20
         static let fatArchSize64 = 32
+        static let cpuTypeARM: UInt32 = 12
         static let cpuTypeARM64: UInt32 = 0x0100_000C
     }
 
@@ -22,6 +25,7 @@ enum BinaryPatcher {
     }
 
     enum LoadCommand {
+        static let segment32: UInt32 = 0x1
         static let segment64: UInt32 = 0x19
         static let symtab: UInt32 = 0x2
         static let loadDylib: UInt32 = 0x0C
@@ -50,11 +54,15 @@ enum BinaryPatcher {
         let cpuType: UInt32
         let cpuSubtype: UInt32
         let littleEndian64: Bool
+        let littleEndian32: Bool
         var end: Int { offset + size }
         var range: Range<Int> { offset..<end }
         var isPortableARM64: Bool {
             cpuType == MachO.cpuTypeARM64 && littleEndian64
                 && (cpuSubtype == 0 || cpuSubtype == 1) // ARM64_ALL / ARM64_V8, no capability bits
+        }
+        var isLegacy32BitARM: Bool {
+            cpuType == MachO.cpuTypeARM && littleEndian32
         }
     }
 
@@ -104,6 +112,95 @@ enum BinaryPatcher {
     /// their platform/encryption metadata does not affect preparation.
     static func validateForPreparation(at url: URL) throws {
         _ = try preparationImage(Data(contentsOf: url), name: url.lastPathComponent)
+    }
+
+    /// Returns true when the Mach-O image is a legacy 32-bit ARM (armv6/armv7/armv7s)
+    /// iOS image without any 64-bit ARM64 slice.
+    static func isLegacy32BitARM(_ data: Data) -> Bool {
+        guard looksLikeMachO(data),
+              let candidates = try? slices(data, name: "Mach-O image") else { return false }
+        guard !candidates.contains(where: { $0.isPortableARM64 }) else { return false }
+        return candidates.contains { $0.isLegacy32BitARM }
+    }
+
+    static func fileIsLegacy32BitARM(_ url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url) else { return false }
+        return isLegacy32BitARM(data)
+    }
+
+    /// Validates a legacy 32-bit ARM iOS Mach-O image for PearLegacyEngine execution:
+    /// requires a valid 32-bit little-endian ARM slice, valid load commands, at least
+    /// one 32-bit segment (`LC_SEGMENT`), and unencrypted payload (`cryptid == 0`).
+    static func validateLegacy32BitARM(at url: URL) throws {
+        let data = try Data(contentsOf: url)
+        try validateLegacy32BitARM(data, name: url.lastPathComponent)
+    }
+
+    static func validateLegacy32BitARM(_ data: Data, name: String = "Mach-O image") throws {
+        let candidates = try slices(data, name: name)
+        guard !candidates.contains(where: { $0.isPortableARM64 }) else {
+            throw invalid(name, "contains a 64-bit ARM64 slice; not a legacy 32-bit-only ARM image")
+        }
+        guard let selected = candidates.first(where: { $0.isLegacy32BitARM }) else {
+            throw invalid(name, "missing 32-bit ARM slice")
+        }
+        let base = selected.offset
+        let fileType = readU32(data, base + 12)
+        guard [UInt32(2), 6, 8].contains(fileType) else {
+            throw invalid(name, "unsupported 32-bit Mach-O file type (expected executable, dylib or bundle)")
+        }
+        let count = Int(readU32(data, base + 16))
+        let byteCount = Int(readU32(data, base + 20))
+        guard count > 0, byteCount >= 8,
+              byteCount <= selected.size - MachO.headerSize32,
+              count <= byteCount / 8 else {
+            throw invalid(name, "32-bit load commands exceed the Mach-O slice")
+        }
+        let end = base + MachO.headerSize32 + byteCount
+        var offset = base + MachO.headerSize32
+        var segmentCount = 0
+        for _ in 0..<count {
+            guard offset <= end - 8 else { throw invalid(name, "truncated 32-bit load command") }
+            let kind = readU32(data, offset)
+            let size = Int(readU32(data, offset + 4))
+            guard size >= 8, size % 4 == 0, size <= end - offset else {
+                throw invalid(name, "invalid 32-bit load-command size")
+            }
+            switch kind {
+            case LoadCommand.segment32:
+                guard size >= 56 else { throw invalid(name, "truncated LC_SEGMENT command") }
+                let fileOffset = UInt64(readU32(data, offset + 32))
+                let fileSize = UInt64(readU32(data, offset + 36))
+                _ = try payloadRange(offset: fileOffset, size: fileSize, slice: selected, name: name)
+                let sections = Int(readU32(data, offset + 48))
+                guard sections <= (size - 56) / 68 else {
+                    throw invalid(name, "32-bit sections exceed their segment command")
+                }
+                segmentCount += 1
+            case LoadCommand.encryptionInfo:
+                guard size >= 20 else { throw invalid(name, "truncated LC_ENCRYPTION_INFO command") }
+                let cryptoff = UInt64(readU32(data, offset + 8))
+                let cryptsize = UInt64(readU32(data, offset + 12))
+                let cryptid = readU32(data, offset + 16)
+                guard cryptoff <= UInt64(selected.size), cryptsize <= UInt64(selected.size) - cryptoff else {
+                    throw invalid(name, "invalid 32-bit encryption range [\(hex(cryptoff)), \(hex(cryptoff + cryptsize)))")
+                }
+                if cryptid != 0 {
+                    throw invalid(name, "encrypted 32-bit ARM range [\(hex(cryptoff)), \(hex(cryptoff + cryptsize))) (cryptid \(cryptid)); encrypted images cannot be run")
+                }
+            case LoadCommand.versionMinMacOSX:
+                throw invalid(name, "unsupported macOS 32-bit platform command")
+            default:
+                break
+            }
+            offset += size
+        }
+        guard offset == end else {
+            throw invalid(name, "32-bit load-command count does not match sizeofcmds")
+        }
+        guard segmentCount > 0 else {
+            throw invalid(name, "32-bit ARM image has no LC_SEGMENT commands")
+        }
     }
 
     /// Compatibility name for the old warning predicate. These are encryption
@@ -194,7 +291,8 @@ enum BinaryPatcher {
             throw invalid(name, "ARM64 slice requires a little-endian 64-bit Mach-O header")
         }
         return Slice(offset: offset, size: size, cpuType: cpu, cpuSubtype: subtype,
-                     littleEndian64: is64 && isLittleEndian)
+                     littleEndian64: is64 && isLittleEndian,
+                     littleEndian32: !is64 && isLittleEndian)
     }
 
     private static func selectedImage(_ data: Data, name: String) throws -> Image {

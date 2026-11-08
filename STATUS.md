@@ -16,29 +16,23 @@
   (`IOSAppService`, `PackageInstaller`, `AppLauncher`, `PlatformShim`) 32-bit
   armv7 IPA'ları çalıştıramıyor; PearLegacyEngine yürütücüsü buraya bağlanacak.
 
-### Durum (bu oturum)
+### Durum (bu oturum — tamamlandı, 2026-11-08)
 
-1. PearSilicon dalı oluşturuldu ve bu STATUS.md ile hedef kayda geçirildi.
-2. Motor dalları hazır: `codex/miku-flick` (UIWindow rootViewController,
-   `07339595`) ve `codex/es2-port` (boş, ES 2 çalışması buraya).
-3. **Kalan engel:** Miku Flick ES 2.0 istiyor. `EAGL initWithAPI:2` şu an `nil`
-   dönüyor; ardından `_glDeleteProgram` uygulanmadığı için süreç duruyor
-   (`/tmp/pearlegacy-miku-rootvc.log`). Oynanabilirlik henüz doğrulanmadı.
-4. HyperHLE karşılaştırması: Oyun çizim döngüsüne ulaşıyor ancak ES 2 bağlamı
-   **OpenGL 3.3 Core**; sunum gölgelendiricisi `#version 120` derlenemediği için
-   kare sunulmuyor (`/tmp/hyperhle-miku-baseline.log`). PearLegacyEngine'de ES 2
-   yolunu **OpenGL 2.1 uyumluluk bağlamı + GLSL 120** üzerine kurmak daha güvenli.
-5. PearSilicon entegrasyonu henüz yapılmadı.
-
-### Sıradaki adımlar
-
-1. `codex/es2-port`: ES 2.0 EAGL bağlamı, gölgelendirici/program API'leri ve
-   sunum yolunu ekle; `cargo build` + `cargo test`.
-2. Miku Flick'i başlat, gerçek kare/giriş al; engelleri sırayla kapat.
-3. Oyunu baştan sona oynanabilir doğrula (menü → şarkı seçimi → oynanış).
-4. Dalı fork'a push et (`denizomer10/PearLegacyEngine`).
-5. PearSilicon: iOS sekmesinde IPA seç → PearLegacyEngine ile çalıştır;
-   motor ikilisi/paketi uygulamaya göm veya indirilebilir yap.
+1. **PearLegacyEngine (`denizomer10/PearLegacyEngine`, commit `187462cc`):**
+   - `codex/es2-port` ve `codex/miku-flick` dalları güncellendi ve fork'a push edildi.
+   - OpenGL ES 2.0 uyumluluk bağlamı (OpenGL 2.1 + GLSL 120), shader/program/framebuffer/renderbuffer API'leri tamamlandı (`glGenFramebuffers` sıfır olmayan ID garantisi dahil).
+   - Miku Flick (`com.sega.MikuFlick`) başlangıç ve oyun içi çökmeleri giderildi:
+     - `___stack_chk_guard` ve `___stack_chk_fail` sembolleri eklendi.
+     - `NSString` geçersiz UTF-8 (`stringWithUTF8String:` / `initWithBytes:length:encoding:`) güvenli fallback ile düzeltildi.
+     - `AudioUnitGetProperty` / `AudioUnitSetProperty` global ve output scope özellikleri eklendi.
+     - `CFAbsoluteTimeGetCurrent`, `NSFileManager` (`createDirectoryAtPath:...`), `NSHTTPCookieStorage` ve `NSKeyedArchiver` / `NSKeyedUnarchiver` (`initForReadingWithData:`, `initForWritingWithMutableData:`, `decodeObjectForKey:`, `encodeObject:forKey:`, `finishEncoding`) gerçek arşivleme desteğiyle tamamlandı.
+   - Dokunma enjeksiyonu (`PEAR_TOUCH_SCRIPT`) ve kare yakalama (`PEAR_DUMP_FRAME`) ile oyun içi akış (SEGA logosu → başlık ekranı → ana menü → şarkı seçimi → 3D PV ve ritim notalarıyla aktif oynanış) baştan sona doğrulandı.
+2. **PearSilicon 32-bit iOS Entegrasyonu:**
+   - `BinaryPatcher`: 32-bit ARM Mach-O (`magic32 = 0xFEEDFACE`, `cpuTypeARM = 12`, `LC_SEGMENT`, şifresiz `LC_ENCRYPTION_INFO`) tespiti ve doğrulaması (`isLegacy32BitARM`, `fileIsLegacy32BitARM`, `validateLegacy32BitARM`) eklendi.
+   - `PackageInstaller`: 32-bit iOS uygulama paketlerinin (`isLegacy32BitBundle`) 64-bit Mac Catalyst yamalarına sokulmadan doğrulanıp `ios-apps/<bundleID>.app` altına kurulması ve EFS bayrağı eksik UTF-8 dosya adlarında (`mf01_icon_152ｘ152_Flatdesign.png`) `unzip -t` doğrulaması sonrası `ditto -x -k` fallback'i eklendi.
+   - `AppLauncher`, `IOSAppService`, `AppState`, `CLI`: 32-bit iOS uygulamalarının otomatik olarak `PearLegacyEngine` (`touchHLE`) üzerinden başlatılması, çalışma dizini (`touchHLE_dylibs`, `touchHLE_fonts`, `touchHLE_default_options.txt`) yönetimi ve PID takibi (`legacyRunningPID`, `runningApplication`, `stop`) eklendi.
+   - `scripts/build-app.sh`: `PearLegacyEngine` ikilisini ve kaynaklarını `PearSilicon.app/Contents/Resources/PearLegacyEngine/` içine otomatik paketleme adımı eklendi ve release paketi üretildi.
+   - Birim testleri (`BinaryPatcherTests`, `InstallerIntegrityTests`) eklendi; tüm `swift test` paketi ve `PearSilicon.app` üzerinden Miku Flick IPA kurulum + başlatma + durdurma akışı uçtan uca doğrulandı.
 
 ---
 

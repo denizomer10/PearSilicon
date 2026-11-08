@@ -60,6 +60,33 @@ final class InstallerIntegrityTests: XCTestCase {
         }
     }
 
+    func testLegacy32BitIOSBundleInstallsWithoutCatalystPatching() async throws {
+        let fixture = try IntegrityFixture()
+        defer { fixture.remove() }
+        var armv7 = Data()
+        let headerAndCommands: [UInt32] = [
+            0xFEEDFACE, 12, 9, 2, 2, 76, 0,
+            0x1, 56, 0x45545F5F, 0x00005458, 0, 0, 0x1000, 0x100, 0, 0x100, 7, 5, 0, 0,
+            0x21, 20, 128, 64, 0
+        ]
+        for word in headerAndCommands {
+            var le = word.littleEndian
+            withUnsafeBytes(of: &le) { armv7.append(contentsOf: $0) }
+        }
+        armv7.append(Data(count: 256 - armv7.count))
+        try armv7.write(to: fixture.source.appendingPathComponent("Game"))
+
+        let installer = fixture.installer()
+        try installer.validateBundleForPreparation(at: fixture.source)
+        let installed = try await installer.installBundle(at: fixture.source, mode: .compatibility)
+        XCTAssertEqual(installed.bundleURL, fixture.destination)
+        XCTAssertEqual(try Data(contentsOf: installed.executableURL), armv7)
+        XCTAssertTrue(AppLauncher.isLegacy32BitApp(installed))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: installed.bundleURL.appendingPathComponent("Frameworks/libPearRuntime.dylib").path
+        ))
+    }
+
     func testPreflightAllowsInternalFrameworkSymlinksWithoutWriting() throws {
         let fixture = try IntegrityFixture()
         defer { fixture.remove() }
