@@ -1,6 +1,6 @@
 # PearSilicon — Çalışma Durumu
 
-## Aktif hedef — PearLegacyEngine (32-bit iOS) ve Miku Flick (2026-11-07)
+## Aktif hedef — PearLegacyEngine (32-bit iOS) ve Miku Flick (2026-11-08)
 
 - PearSilicon çalışma dalı: `denizomer10-pear-legacy-engine`.
 - **Ana hedef:** Miku Flick'i (`com.sega.MikuFlick`) baştan sona oynanabilir hale
@@ -15,6 +15,29 @@
 - **PearSilicon tarafı:** mevcut iOS kurulum akışı
   (`IOSAppService`, `PackageInstaller`, `AppLauncher`, `PlatformShim`) 32-bit
   armv7 IPA'ları çalıştıramıyor; PearLegacyEngine yürütücüsü buraya bağlanacak.
+
+### Sanal gamepad dalı birleşimi (2026-11-08)
+
+`origin/denizomer10-virtual-gamepad-inputs` (`0.4.9`) dalı bu dala birleştirildi;
+artık tek dalda hem sanal gamepad girdi yolu hem 32-bit motor katmanı var.
+
+- **Sanal gamepad:** gizli `GCVirtualController` shim'i (`runtime/VirtualGamepadShim.mm`)
+  klavye/fare olaylarını `PEAR_VIRTUAL_GAMEPAD_MAP` eşlemesiyle denetleyici
+  öğelerine çevirir; `Keymap` sekmesindeki "Keyboard Mouse to Gamepad Inputs"
+  anahtarıyla açılır.
+- **Otomatik uyumluluk:** sahne bildirimi olmayan ve `DTSDKName` ana sürümü 15'in
+  altında derlenmiş oyunlarda pencere yeniden bağlama ve fare→dokunma köprüleri
+  `Info.plist`'ten tespit edilip kendiliğinden uygulanıyor.
+- **32-bit tarafta:** `PearLegacyEngine` arm64 çalışma zamanı dylib'i emüle edilen
+  uygulamaya enjekte edilemediği için sanal gamepad 32-bit başlıklarda devre dışı;
+  `Keymap` sekmesi bu durumda bilgi notu gösteriyor ve tuş eşlemeleri motorun
+  `PEAR_KEYMAP` yoluyla gerçek dokunmaya çevriliyor.
+- **Sürüm düzeltmesi:** yanlış numaralandırılan `v0.4.0` motor sürümü kaldırıldı;
+  yerine **PearLegacyEngine v0.5.0** yayınlandı ve PearSilicon **0.5.0 (22)**
+  olarak derlendi.
+- **Doğrulama:** `swift build -c release`, `swift test` 24/24,
+  `./scripts/build-app.sh release` başarılı; paket içindeki çalıştırıcı
+  `PearLegacyEngine v0.5.0` yazıyor.
 
 ### Durum (bu oturum — tamamlandı, 2026-11-08)
 
@@ -47,9 +70,9 @@
 
 ---
 
-Son güncelleme: 2026-11-07 · Dal: `denizomer10-pear-legacy-engine` (sanal gamepad dalı birleştirildi)
+Son güncelleme: 2026-11-08 · Dal: `denizomer10-pear-legacy-engine` (sanal gamepad dalı birleştirildi)
 Son commit: sanal gamepad dalı (`0.4.9`) + 32-bit motor katmanı birleşimi
-Uygulama paketi: **0.4.9 (21)** tabanı üzerine 32-bit motor katmanı
+Uygulama paketi: **0.5.0 (22)**; gömülü çalıştırıcı **PearLegacyEngine v0.5.0**
 Web sitesi: `pearsilicon-web` (release listesi indirme bağlantısı ve gerçek sürüm notları)
 
 Bir sonraki geliştirici/agent §0, §1 ve §4'ü okuyarak kaldığı yerden devam edebilir.

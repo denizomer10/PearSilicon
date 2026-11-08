@@ -16,7 +16,11 @@ struct KeymapEditorView: View {
             VStack(spacing: 16) {
                 toolbar
                 enableToggle
-                virtualGamepadSection
+                if state.isLegacy32Bit(app) {
+                    legacyInputNote
+                } else {
+                    virtualGamepadSection
+                }
 
                 HStack(alignment: .top, spacing: 16) {
                     KeymapCanvasView(keymap: $draft)
@@ -30,6 +34,24 @@ struct KeymapEditorView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: app.id) { load() }
+    }
+
+    // MARK: - 32-bit note
+
+    /// 32-bit titles run inside PearLegacyEngine, which replays the touch
+    /// keymapper's bindings itself; the host controller bridge is an arm64
+    /// runtime dylib and cannot be loaded into an emulated app.
+    private var legacyInputNote: some View {
+        Label(
+            "32-bit games run in PearLegacyEngine, so the bindings above are replayed as real touches. The virtual gamepad is not available here.",
+            systemImage: "info.circle"
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     // MARK: - Keyboard/mouse → gamepad
