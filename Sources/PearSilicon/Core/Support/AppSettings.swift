@@ -32,4 +32,25 @@ enum AppSettings {
     static func setPointerLockAllowed(_ allowed: Bool, for bundleID: String) {
         defaults.set(allowed, forKey: "pointerLock.enabled." + bundleID)
     }
+
+    // MARK: - PearLegacyEngine (32-bit iOS runtime) options
+
+    /// Resolution scale factor (`--scale-hack`) for a 32-bit iOS app (1...4).
+    static func legacyScaleHack(for bundleID: String) -> Int {
+        let value = defaults.integer(forKey: "legacy32.scaleHack." + bundleID)
+        return (1...4).contains(value) ? value : 2
+    }
+
+    static func setLegacyScaleHack(_ scale: Int, for bundleID: String) {
+        defaults.set(max(1, min(4, scale)), forKey: "legacy32.scaleHack." + bundleID)
+    }
+
+    /// Whether to start the 32-bit iOS app in fullscreen mode (`--fullscreen`).
+    static func legacyFullscreen(for bundleID: String) -> Bool {
+        defaults.bool(forKey: "legacy32.fullscreen." + bundleID)
+    }
+
+    static func setLegacyFullscreen(_ fullscreen: Bool, for bundleID: String) {
+        defaults.set(fullscreen, forKey: "legacy32.fullscreen." + bundleID)
+    }
 }

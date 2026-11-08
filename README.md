@@ -27,26 +27,33 @@
 ---
 
 PearSilicon prepares compatible arm64 iOS apps to run through Apple’s Mac
-Catalyst and `/System/iOSSupport` frameworks, manages native Mac apps, and runs
-Windows games in isolated Wine prefixes. An in-process runtime adds targeted
-compatibility shims and optional keyboard, mouse and controller mapping.
+Catalyst and `/System/iOSSupport` frameworks, runs legacy 32-bit (`armv7` /
+`armv6`) iOS games via the companion **[PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine)**
+runtime, manages native Mac apps, and runs Windows games in isolated Wine
+prefixes. An in-process runtime adds targeted compatibility shims and optional
+keyboard, mouse and controller mapping.
 
-It is **not** an iOS emulator, a UIKit reimplementation, or a Windows VM. Use it
-only with apps and games you are authorized to run.
+It is **not** a full OS virtual machine. Use it only with apps and games you are
+authorized to run.
 
 ## Highlights
 
 | Platform | What it does |
 | --- | --- |
-| **iOS Apps** | IPA / device `.app` preparation, Catalyst runtime shims, Metal HUD, pointer lock, opt-in keymapper |
+| **iOS Apps (64-bit & 32-bit)** | IPA / device `.app` import; native Catalyst preparation for 64-bit apps and automatic **[PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine)** execution for 32-bit iOS games |
 | **Mac Apps** | Copy-only `.app` import with redirected data, launched natively |
 | **Wine Games** | Per-game prefixes, private data, verified engines, DXVK or DXMT graphics |
 | **Library** | iOS, Mac and Wine tabs; movable library; per-entry `.pearbackup` backups |
 | **Input** | GameController pads, controller/keyboard keymapper, analog right-stick camera |
 | **Updates** | Explicit **Check for Updates**, staged verification, development builds |
 
-- **iOS:** installs an authorized IPA or `.app`, patches the copy to Mac Catalyst,
+- **iOS (64-bit):** installs an authorized IPA or `.app`, patches the copy to Mac Catalyst,
   re-signs it, and loads `libPearRuntime.dylib` inside the app process.
+- **iOS (32-bit via PearLegacyEngine):** automatically detects 32-bit ARM (`armv7` / `armv6`)
+  IPA and `.app` packages (such as *Miku Flick*), installs them cleanly into the
+  unified iOS library, and launches them in a game-named macOS `.app` host powered
+  by **[PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine)** with
+  SwiftUI controls for resolution scaling (`1x`–`4x`), fullscreen mode, and save data.
 - **Controllers:** Xbox, DualSense/DualShock, Switch Pro and other macOS
   GameController pads are discovered early; non-whitelisted identities are
   normalized, prepared apps receive capability keys, and the keymapper can drive
@@ -138,6 +145,21 @@ tap, hold, joystick, mouse-look and swipe.
   drive its touch controls.
 
 Configure bindings in the in-app **Keymap** tab.
+
+Keyboard keymaps apply to **32-bit iOS games too**. PearSilicon passes the
+active keymap to PearLegacyEngine through `PEAR_KEYMAP`, and the engine
+synthesises real touches from it (`tap`, `hold`, `swipe` and a dead-zoned
+`joystick`), so touch-only legacy titles such as Miku Flick are fully playable
+from the keyboard. Bindings with `source: "controller"` stay on the
+GameController bridge and are ignored by the engine.
+
+### Performance HUD on 32-bit titles
+
+The **Performance HUD (FPS)** switch in a 32-bit app's settings sets
+`PEAR_FPS_HUD=1`, which draws a frame-rate overlay with the engine's own
+OpenGL ES renderer. Metal's `MTL_HUD_ENABLED` cannot apply here because these
+titles never touch Metal, so the engine draws an equivalent overlay and logs the
+same numbers to the app log.
 
 ## Wine, engines and graphics
 

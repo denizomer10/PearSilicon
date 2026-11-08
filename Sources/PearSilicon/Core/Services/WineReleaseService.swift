@@ -138,6 +138,13 @@ actor WineReleaseService {
     func latest(channel: WineReleaseChannel) async throws -> WineReleaseCheck {
         do {
             return try await latestFromAPI(channel: channel)
+        } catch WineReleaseError.notFound {
+            // The API listed every recent release and none carried an asset for
+            // this channel. The Atom feed shows a strict subset of those
+            // releases, so re-querying it cannot find anything new.
+            throw WineReleaseError.notFound(
+                "No verified \(channel.title) macOS build was found in recent releases. Try another channel or register a local engine."
+            )
         } catch {
             // The unauthenticated GitHub API is limited to 60 requests/hour per
             // address. A shared connection can exhaust that without the user

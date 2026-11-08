@@ -59,7 +59,12 @@ final class AppLauncher: @unchecked Sendable {
 
         try await Self.requireStopped(app)
         if Self.isLegacy32BitApp(app) {
-            return try launchLegacy32Bit(app, extraEnvironment: extraEnvironment, activate: activate)
+            return try launchLegacy32Bit(
+                app,
+                keymapURL: keymapURL,
+                extraEnvironment: extraEnvironment,
+                activate: activate
+            )
         }
         let environmentMode = fileManager.fileExists(
             atPath: PackageInstaller.injectionMarkerURL(in: app.bundleURL).path
@@ -558,15 +563,19 @@ final class AppLauncher: @unchecked Sendable {
 
     private func launchLegacy32Bit(
         _ app: InstalledApp,
+        keymapURL: URL?,
         extraEnvironment: [String: String],
         activate: Bool
     ) throws -> NSRunningApplication? {
         guard let engineURL = Self.legacyEngineExecutableURL() else {
-            throw PearError.missingRuntimeComponent("PearLegacyEngine (touchHLE)")
+            throw PearError.missingRuntimeComponent("PearLegacyEngine")
         }
         guard let resourceDir = Self.legacyEngineResourceDirectory(for: engineURL) else {
-            throw PearError.missingRuntimeComponent("PearLegacyEngine resources (touchHLE_dylibs / touchHLE_fonts / touchHLE_default_options.txt)")
+            throw PearError.missingRuntimeComponent("PearLegacyEngine runtime resources")
         }
+
+        let sandboxRoot = AppPaths.legacyRoot
+        try? fileManager.createDirectory(at: sandboxRoot, withIntermediateDirectories: true)
 
         var env = ProcessInfo.processInfo.environment
         for key in ["PEAR_HOST_SOCKET", "PEAR_HOST_TOKEN", "PEAR_LAUNCHER_INJECTION", "DYLD_INSERT_LIBRARIES",
@@ -576,10 +585,39 @@ final class AppLauncher: @unchecked Sendable {
         for (key, value) in extraEnvironment {
             env[key] = value
         }
+        // The engine replays these bindings as synthetic touches, since an
+        // arm64 runtime dylib cannot be injected into an emulated 32-bit app.
+        if let keymapURL, fileManager.fileExists(atPath: keymapURL.path) {
+            env["PEAR_KEYMAP"] = keymapURL.path
+        }
+        env["PEAR_LEGACY_SANDBOX_ROOT"] = sandboxRoot.path
+        env["PEAR_LEGACY_RESOURCES_DIR"] = resourceDir.path
+        env["SDL_APP_NAME"] = app.displayName
+
+        let hostExecutableURL = try Self.prepareLegacyHostExecutable(
+            for: app,
+            engineURL: engineURL,
+            resourceDir: resourceDir
+        )
+
+        var args = [app.bundleURL.path]
+        let scaleHack = AppSettings.legacyScaleHack(for: app.id)
+        if scaleHack > 1 {
+            args.append("--scale-hack=\(scaleHack)")
+        }
+        if AppSettings.legacyFullscreen(for: app.id) {
+            args.append("--fullscreen")
+        }
+        if AppSettings.defaults.bool(forKey: "metalHUD.enabled." + app.id) {
+            // The engine renders through OpenGL ES, so Metal's HUD can't apply;
+            // it draws an equivalent FPS overlay and logs the same numbers.
+            env["PEAR_FPS_HUD"] = "1"
+            args.append("--print-fps")
+        }
 
         let process = Process()
-        process.executableURL = engineURL
-        process.arguments = [app.bundleURL.path]
+        process.executableURL = hostExecutableURL
+        process.arguments = args
         process.currentDirectoryURL = resourceDir
         process.environment = env
 
@@ -609,6 +647,95 @@ final class AppLauncher: @unchecked Sendable {
             }
         }
         return NSRunningApplication(processIdentifier: pid)
+    }
+
+    /// Creates a lightweight macOS `.app` host bundle for a 32-bit iOS game so
+    /// macOS WindowServer, menu bar, and Activity Monitor display only the
+    /// game's own name and icon with no engine branding.
+    private static func prepareLegacyHostExecutable(
+        for app: InstalledApp,
+        engineURL: URL,
+        resourceDir: URL
+    ) throws -> URL {
+        let fm = FileManager.default
+        let safeName = app.displayName
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let executableName = safeName.isEmpty ? app.executableName : safeName
+
+        let hostBundleURL = AppPaths.legacyRoot
+            .appendingPathComponent("Hosts", isDirectory: true)
+            .appendingPathComponent("\(app.id).app", isDirectory: true)
+        let contentsURL = hostBundleURL.appendingPathComponent("Contents", isDirectory: true)
+        let macOSURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
+        let resourcesURL = contentsURL.appendingPathComponent("Resources", isDirectory: true)
+
+        try fm.createDirectory(at: macOSURL, withIntermediateDirectories: true)
+        try fm.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
+
+        for resName in ["touchHLE_default_options.txt", "touchHLE_dylibs", "touchHLE_fonts"] {
+            let src = resourceDir.appendingPathComponent(resName)
+            let dst = resourcesURL.appendingPathComponent(resName)
+            if fm.fileExists(atPath: src.path), !fm.fileExists(atPath: dst.path) {
+                try? fm.createSymbolicLink(at: dst, withDestinationURL: src)
+            }
+        }
+
+        var iconFileName: String?
+        if let iconURL = app.iconURL, fm.fileExists(atPath: iconURL.path) {
+            let ext = iconURL.pathExtension.isEmpty ? "png" : iconURL.pathExtension
+            let destName = "AppIcon.\(ext)"
+            let destIcon = resourcesURL.appendingPathComponent(destName)
+            try? fm.removeItem(at: destIcon)
+            if (try? fm.copyItem(at: iconURL, to: destIcon)) != nil {
+                iconFileName = destName
+            }
+        }
+
+        let hostExeURL = macOSURL.appendingPathComponent(executableName)
+        let copyNeedsUpdate: Bool = {
+            guard fm.isExecutableFile(atPath: hostExeURL.path),
+                  let srcAttr = try? fm.attributesOfItem(atPath: engineURL.path),
+                  let dstAttr = try? fm.attributesOfItem(atPath: hostExeURL.path),
+                  let srcSize = srcAttr[.size] as? NSNumber,
+                  let dstSize = dstAttr[.size] as? NSNumber,
+                  let srcDate = srcAttr[.modificationDate] as? Date,
+                  let dstDate = dstAttr[.modificationDate] as? Date
+            else { return true }
+            return srcSize != dstSize || srcDate > dstDate
+        }()
+
+        if copyNeedsUpdate {
+            try? fm.removeItem(at: hostExeURL)
+            try fm.copyItem(at: engineURL, to: hostExeURL)
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hostExeURL.path)
+            _ = try? Shell.run("/usr/bin/codesign", ["--force", "--sign", "-", hostExeURL.path])
+        }
+
+        var plist: [String: Any] = [
+            "CFBundleDevelopmentRegion": "en",
+            "CFBundleExecutable": executableName,
+            "CFBundleIdentifier": app.id,
+            "CFBundleInfoDictionaryVersion": "6.0",
+            "CFBundleName": app.displayName,
+            "CFBundleDisplayName": app.displayName,
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": app.shortVersion,
+            "CFBundleVersion": app.bundleVersion,
+            "LSMinimumSystemVersion": "14.0",
+            "NSHighResolutionCapable": true
+        ]
+        if let iconFileName {
+            plist["CFBundleIconFile"] = iconFileName
+        }
+
+        let infoPlistURL = contentsURL.appendingPathComponent("Info.plist")
+        if let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) {
+            try? data.write(to: infoPlistURL, options: .atomic)
+        }
+
+        return hostExeURL
     }
 
     /// Locates the PearLegacyEngine (`touchHLE`) 32-bit iOS compatibility binary.

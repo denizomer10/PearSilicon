@@ -33,10 +33,21 @@
    - `AppLauncher`, `IOSAppService`, `AppState`, `CLI`: 32-bit iOS uygulamalarının otomatik olarak `PearLegacyEngine` (`touchHLE`) üzerinden başlatılması, çalışma dizini (`touchHLE_dylibs`, `touchHLE_fonts`, `touchHLE_default_options.txt`) yönetimi ve PID takibi (`legacyRunningPID`, `runningApplication`, `stop`) eklendi.
    - `scripts/build-app.sh`: `PearLegacyEngine` ikilisini ve kaynaklarını `PearSilicon.app/Contents/Resources/PearLegacyEngine/` içine otomatik paketleme adımı eklendi ve release paketi üretildi.
    - Birim testleri (`BinaryPatcherTests`, `InstallerIntegrityTests`) eklendi; tüm `swift test` paketi ve `PearSilicon.app` üzerinden Miku Flick IPA kurulum + başlatma + durdurma akışı uçtan uca doğrulandı.
+3. **Apple Silicon Derin Optimizasyon, Headless Motor ve SwiftUI Yeniden Tasarımı:**
+   - **PearLegacyEngine Headless & Marka Temizliği:** Eski SDL `app_picker` arayüzü devre dışı bırakılarak motor tamamen PearSilicon tarafından yönetilen headless/CLI çalışma zamanına dönüştürüldü. Pencere başlığı, SDL `SDL_APP_NAME` ipucu ve hata diyaloglarından `touchHLE` / motor adı kaldırılarak yalnızca oyunun kendi adının (`bundle.display_name()`) görünmesi sağlandı.
+   - **Apple Silicon Performans Optimizasyonları:** `Cargo.toml` içine `[profile.release]` (`opt-level = 3`, `lto = "thin"`, `codegen-units = 1`, `strip = "debuginfo"`) ve `.cargo/config.toml` içine `-C target-cpu=apple-m1` eklendi. `eagl.rs` içindeki `presentRenderbuffer` sıcak döngüsünde her karede yapılan `std::env::var("PEAR_DUMP_FRAME")` sistem çağrısı `LazyLock` ile önbelleğe alındı; `log.rs` içindeki `touchHLE::dyld` debug log spam'i ve çalışma dizininde gereksiz `touchHLE_log.txt` oluşturma davranışı kapatıldı.
+   - **SwiftUI 32-bit Kontrolleri ve macOS Host Sarmalayıcısı (`AppLauncher` & `AppDetailView`):** 32-bit oyunlar başlatılırken `Legacy32/Hosts/<bundleID>.app` altında oyunun kendi adı (`CFBundleName` / `CFBundleDisplayName` / çalıştırıcı adı) ve ikonuyla hafif bir macOS uygulama paketi oluşturularak macOS 26 menü çubuğu ve pencere başlığında yalnızca oyun adının görünmesi sağlandı. `AppDetailView` içine 32-bit mimari rozeti, çözünürlük ölçeği (`1x`–`4x`), tam ekran başlatma, FPS loglama ve Kayıt Verileri (`Save Data`) klasörünü açma kontrolleri eklendi.
+   - **Dokümantasyon:** `PearLegacyEngine/README.md` baştan aşağı PearSilicon'a bağımlı Apple Silicon 32-bit iOS motoru olarak yeniden yazıldı; `PearSilicon/README.md` güncellendi.
+
+4. **32-bit Keymapper ve Performans HUD'u (Miku Flick tam oynanabilirlik):**
+   - **Motor içi keymapper (`PearLegacyEngine/src/keymap.rs`, yeni):** 32-bit oyunlarda `PEAR_KEYMAP` daha önce yalnızca arm64 `PearRuntime.mm` dylib'i tarafından okunuyordu ve emüle edilen ARM32 sürece enjekte edilemiyordu. Bu yüzden keymapper motorun içine taşındı: bağımlılıksız (serde yok) bir `pear-keymap/v1` JSON ayrıştırıcısı, `tap` / `hold` / `swipe` / ölü bölgeli `joystick` eylemleri ve `FingerId::Keymap` parmak kimliği eklendi. Tuş basımları gerçek dokunma olaylarına dönüştürülüp UIKit'e teslim ediliyor; `space` (tap) ve `d` (joystick sağ) ile uçtan uca doğrulandı (`Finger Keymap(…) touch down/move/up` logları).
+   - **Performans HUD'u (`src/gles/present.rs`):** Metal HUD 32-bit oyunlarda çalışmıyor (motor OpenGL ES ile çiziyor). `PEAR_FPS_HUD=1` ile yedi parçalı segmentlerden oluşan, tahsis yapmayan bir FPS katmanı oyun görüntüsünün üzerine çiziliyor; renk eşikleri (≥50 yeşil, ≥28 amber, altı kırmızı) ve `LAST_FPS` atomiği ile hem `composition.rs` hem `eagl.rs` sayaçları besliyor.
+   - **PearSilicon bağlantısı:** `launchLegacy32Bit` artık `keymapURL` alıp `PEAR_KEYMAP` ayarlıyor; 32-bit ayarlarındaki "Log FPS" anahtarı **"Performance HUD (FPS)"** olarak yenilendi ve `PEAR_FPS_HUD=1` ile birlikte `--print-fps` geçiyor. `PEAR_DEBUG_MODULES` ile istenen modüller için ayrıntılı motor logları açılabiliyor.
+   - **Doğrulama:** `cargo test --release` 42/42, `swift test` 24/24, `./scripts/build-app.sh release` başarılı; HUD self-test okuması 320×480 görüntüde 687 katman pikseli sayarak katmanın gerçekten çizildiğini kanıtladı.
 
 ---
 
-Son güncelleme: 2026-11-01 10:30 · Dal: `feature/portable-multiplatform`
+Son güncelleme: 2026-11-02 12:00 · Dal: `denizomer10-pear-legacy-engine`
 Son commit: `6cc4894` (origin'a push edildi; sürüm `v0.4.3` ayrı release olarak yayınlandı)
 Uygulama paketi: `build/PearSilicon.app` **0.4.3 (15)**, `6cc4894`; ayrı `v0.4.3` release'ine yüklendi (SHA-256 `14b5c8d6…`)
 Web sitesi: `pearsilicon-web` `6e25918` (release listesi indirme bağlantısı ve gerçek sürüm notları)

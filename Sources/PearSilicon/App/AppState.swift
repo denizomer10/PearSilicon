@@ -392,6 +392,30 @@ final class AppState: ObservableObject {
         if allowed { pointerLockAllowedApps.insert(app.id) } else { pointerLockAllowedApps.remove(app.id) }
     }
 
+    // MARK: - PearLegacyEngine (32-bit iOS runtime) options
+
+    func isLegacy32Bit(_ app: InstalledApp) -> Bool {
+        AppLauncher.isLegacy32BitApp(app)
+    }
+
+    func legacyScaleHack(for app: InstalledApp) -> Int {
+        AppSettings.legacyScaleHack(for: app.id)
+    }
+
+    func setLegacyScaleHack(_ scale: Int, for app: InstalledApp) {
+        objectWillChange.send()
+        AppSettings.setLegacyScaleHack(scale, for: app.id)
+    }
+
+    func isLegacyFullscreen(for app: InstalledApp) -> Bool {
+        AppSettings.legacyFullscreen(for: app.id)
+    }
+
+    func setLegacyFullscreen(_ fullscreen: Bool, for app: InstalledApp) {
+        objectWillChange.send()
+        AppSettings.setLegacyFullscreen(fullscreen, for: app.id)
+    }
+
     // MARK: - Selection
 
     var selectedApp: InstalledApp? {

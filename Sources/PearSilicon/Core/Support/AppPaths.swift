@@ -19,6 +19,18 @@ enum AppPaths {
         supportRoot.appendingPathComponent("Games", isDirectory: true)
     }
 
+    /// Root directory for PearLegacyEngine 32-bit iOS sandboxes and runtime hosts.
+    static var legacyRoot: URL {
+        supportRoot.appendingPathComponent("Legacy32", isDirectory: true)
+    }
+
+    /// Per-app sandbox directory (`Documents`, `Library`, `tmp`) for a 32-bit iOS app.
+    static func legacySandboxDirectory(for bundleID: String) -> URL {
+        legacyRoot
+            .appendingPathComponent("Saves", isDirectory: true)
+            .appendingPathComponent(bundleID, isDirectory: true)
+    }
+
     /// Optional per-app directory for On-Demand Resources that are not part of
     /// the app package. The runtime merges bundles found here into its local
     /// Addressables view, so content can be supplied without repackaging the

@@ -72,12 +72,12 @@ fi
 LEGACY_BIN=""
 if [[ -n "${PEAR_LEGACY_ENGINE_PATH:-}" && -x "${PEAR_LEGACY_ENGINE_PATH}" ]]; then
   LEGACY_BIN="${PEAR_LEGACY_ENGINE_PATH}"
-elif [[ -x "$BUILD_DIR/PearLegacyEngine/touchHLE" ]]; then
-  LEGACY_BIN="$BUILD_DIR/PearLegacyEngine/touchHLE"
 elif [[ -x "$LEGACY_REPO/target/release/touchHLE" ]]; then
   LEGACY_BIN="$LEGACY_REPO/target/release/touchHLE"
 elif [[ -x "$LEGACY_REPO/target/debug/touchHLE" ]]; then
   LEGACY_BIN="$LEGACY_REPO/target/debug/touchHLE"
+elif [[ -x "$BUILD_DIR/PearLegacyEngine/touchHLE" ]]; then
+  LEGACY_BIN="$BUILD_DIR/PearLegacyEngine/touchHLE"
 fi
 
 if [[ -n "$LEGACY_BIN" ]]; then
