@@ -111,6 +111,30 @@ registry into its running-apps map. Records live in
 each other's engine processes, and stale records are discarded when the pid is
 gone.
 
+### Pinned components and licenses
+
+The 32-bit path depends on two sibling repositories that are never vendored into
+this tree:
+
+| Component | Repository | Pin | License |
+| --- | --- | --- | --- |
+| PearLegacyEngine | `denizomer10/PearLegacyEngine` (`trunk`) | `96a1ea7a` (v0.7.2) | MPL-2.0, derived from touchHLE |
+| PearLegacyJIT | `denizomer10/PearLegacyJIT` (`master`) | `1fc35bfd` | 0BSD, derived from Dynarmic |
+
+`scripts/setup-legacy-engine.sh` resolves both checkouts
+(`PEAR_LEGACY_ENGINE_HOME` / `PEAR_DYNARMIC_ROOT`, defaulting to siblings of this
+repository), builds the engine with `--release`, and stages the release layout
+under `build/PearLegacyEngine/`: the `touchHLE` binary, `touchHLE_dylibs` (with
+the Metal-backed ANGLE runtime in `touchHLE_dylibs/angle`), `touchHLE_fonts` and
+`touchHLE_default_options.txt`. `--check` reports the resolved revisions without
+building; `--no-build` only re-stages. `scripts/build-app.sh` then copies that
+directory into `PearSilicon.app/Contents/Resources/PearLegacyEngine`.
+
+The engine is launched as a separate process and is not linked into
+PearSilicon, so MPL-2.0 applies to the engine's own files only. See
+[THIRD_PARTY_NOTICES](../THIRD_PARTY_NOTICES.md) for the redistribution terms and
+the guest-content policy.
+
 ## Mac Catalyst execution path
 
 1. The installer admits an IPA only after reading its ZIP central directory and

@@ -152,6 +152,19 @@ searched. In a source checkout the engine is also found next to the working
 directory, and `PEAR_LEGACY_ENGINE_HOME=/path/to/PearLegacyEngine` overrides
 everything. Requirements: Apple Silicon, macOS 26 or later.
 
+When building from source, stage the engine with its Metal-backed ANGLE runtime
+instead of downloading it:
+
+```sh
+./scripts/setup-legacy-engine.sh            # builds PearLegacyEngine + PearLegacyJIT, stages build/PearLegacyEngine
+./scripts/setup-legacy-engine.sh --check    # only report the resolved checkouts and pins
+```
+
+`scripts/build-app.sh release` picks that directory up and bundles it into the
+app. Pinned revisions and licenses are listed in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 Unlike 64-bit apps, the installed `.app` is kept byte-for-byte as shipped — no
 platform patch, runtime injection or re-signing — and each app keeps its guest
 storage in `Games/<bundleID>`, so saves stay with the library.
