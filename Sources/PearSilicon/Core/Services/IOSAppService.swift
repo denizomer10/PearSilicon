@@ -19,6 +19,16 @@ struct IOSAppService {
         metalHUDEnabled: Bool,
         pointerLockAllowed: Bool
     ) async throws -> NSRunningApplication? {
+        // 32-bit apps cannot be loaded by macOS at all, so none of the Catalyst
+        // preparation, runtime injection or launch paths apply: the engine runs
+        // the installed bundle as guest code.
+        if app.isLegacy32Bit {
+            let pid = try LegacyAppLauncher.shared.launch(
+                app, keymapURL: keymapURL, metalHUDEnabled: metalHUDEnabled
+            )
+            return NSRunningApplication(processIdentifier: pid)
+        }
+
         var extra: [String: String] = ["PEAR_IOS_SANDBOX": "1"]
         if metalHUDEnabled {
             extra["MTL_HUD_ENABLED"] = "1"

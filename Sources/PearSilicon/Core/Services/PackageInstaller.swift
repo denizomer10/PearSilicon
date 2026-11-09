@@ -225,7 +225,6 @@ final class PackageInstaller: @unchecked Sendable {
         guard fileManager.fileExists(atPath: sourceURL.path) else {
             throw PearError.packageNotFound(sourceURL.lastPathComponent)
         }
-        try validateBundleForPreparation(at: sourceURL)
         if isSimulatorBuild(at: sourceURL) {
             throw PearError.invalidPackage(
                 "\(sourceURL.lastPathComponent) is a simulator build. "
@@ -234,6 +233,13 @@ final class PackageInstaller: @unchecked Sendable {
         }
 
         let probe = try makeInstalledApp(fromBundleAt: sourceURL)
+        // A 32-bit binary is never loaded by macOS, so the arm64/Catalyst
+        // admission checks do not apply: PearLegacyEngine executes it as guest
+        // code instead of the system loader.
+        let isLegacy = probe.isLegacy32Bit
+        if !isLegacy {
+            try validateBundleForPreparation(at: sourceURL)
+        }
         guard !probe.id.isEmpty, probe.id != ".", probe.id != "..",
               !probe.id.contains("/"), !probe.id.contains("\\"), !probe.id.utf8.contains(0) else {
             throw PearError.invalidPackage("Info.plist: bundle identifier is not a safe library filename")
@@ -261,7 +267,7 @@ final class PackageInstaller: @unchecked Sendable {
         defer { try? fileManager.removeItem(at: transaction) }
         let staged = transaction.appendingPathComponent(destination.lastPathComponent, isDirectory: true)
         _ = try preparationTools.run("/usr/bin/ditto", ["--clone", sourceURL.path, staged.path])
-        try finalizeInstall(at: staged, mode: mode, targetBundleURL: destination)
+        try finalizeInstall(at: staged, mode: mode, targetBundleURL: destination, isLegacy: isLegacy)
         let installed = try makeInstalledApp(fromBundleAt: staged, targetBundleURL: destination)
         guard installed.id == probe.id else { throw PearError.invalidPackage("Bundle identifier changed during preparation") }
         try await preparationTools.requireStopped(probe)
@@ -275,7 +281,17 @@ final class PackageInstaller: @unchecked Sendable {
         return installed
     }
 
-    private func finalizeInstall(at staged: URL, mode: PreparationMode, targetBundleURL: URL) throws {
+    private func finalizeInstall(
+        at staged: URL, mode: PreparationMode, targetBundleURL: URL, isLegacy: Bool = false
+    ) throws {
+        if isLegacy {
+            // macOS never loads a 32-bit image: PearLegacyEngine executes it as
+            // guest code. Leave the bundle byte-for-byte as shipped - no platform
+            // patch, no runtime injection, no signature - and only restore the
+            // executable bit the archive may have dropped.
+            ensureExecutableBits(at: staged)
+            return
+        }
         try prepareForMacOS(at: staged, mode: mode, targetBundleURL: targetBundleURL)
         try signBundle(at: staged, mode: mode)
         _ = try preparationTools.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", staged.path])
@@ -534,6 +550,9 @@ final class PackageInstaller: @unchecked Sendable {
     /// the copy; no failed preparation or signature can alter the original.
     @MainActor
     func setPreparationMode(_ mode: PreparationMode, for app: InstalledApp, launchLease: AppLaunchLease? = nil, force: Bool = false) throws {
+        // 32-bit apps are never prepared for macOS; the legacy runtime runs the
+        // installed bundle exactly as shipped.
+        if app.isLegacy32Bit { return }
         let lease = try launchLease ?? AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
         defer { if launchLease == nil { lease.release() } }
         try lease.validate(appID: app.id, libraryURL: libraryURL)
@@ -568,7 +587,7 @@ final class PackageInstaller: @unchecked Sendable {
         for app: InstalledApp, sourceRuntimeDirectory: URL, launchLease: AppLaunchLease? = nil
     ) throws -> Bool {
         let mode = currentPreparationMode(for: app)
-        guard mode != .nativeContainer else { return false }
+        guard mode != .nativeContainer, !app.isLegacy32Bit else { return false }
         let installed = app.bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
         let installedRevision = try RuntimeRevision.fingerprint(in: installed)
         let sourceRevision = try RuntimeRevision.fingerprint(in: sourceRuntimeDirectory)
@@ -1093,7 +1112,12 @@ final class PackageInstaller: @unchecked Sendable {
             iconURL: iconURL.map { icon in
                 (targetBundleURL ?? bundleURL).appendingPathComponent(String(icon.path.dropFirst(bundleURL.path.count + 1)))
             },
-            installedAt: installedAt
+            installedAt: installedAt,
+            // Read from the bundle actually being inspected: targetBundleURL is a
+            // display path and does not exist yet while an install is staged.
+            isLegacy32Bit: LegacyIOSBinary.isLegacy32Bit(
+                executableAt: bundleURL.appendingPathComponent(executable)
+            )
         )
     }
 

@@ -220,6 +220,12 @@ final class AppState: ObservableObject {
                 map[bundleID] = running
             }
         }
+        // 32-bit apps run in a separate PearLegacyEngine process that carries no
+        // bundle identifier of its own, so its registry supplies their lifetime.
+        for (id, pid) in LegacyAppLauncher.shared.runningProcessIdentifiers where ids.contains(id) {
+            guard let running = NSRunningApplication(processIdentifier: pid), !running.isTerminated else { continue }
+            map[id] = running
+        }
         runningApps = map
 
         // A launch is only "pending" until the app shows up as running. Once it
@@ -1073,6 +1079,7 @@ final class AppState: ObservableObject {
         do {
             overlays[app.id]?.detach()
             overlays[app.id] = nil
+            LegacyAppLauncher.shared.terminate(app.id)
             try iosApps.uninstall(app)
             try? keymapStore.delete(for: app.id)
             installedApps.removeAll { $0.id == app.id }

@@ -90,6 +90,27 @@ compares the content fingerprint of each stopped iOS app's runtime directory wit
 the app's bundled runtime. Only differing apps are staged, prepared and re-signed;
 the app's own files and data are preserved.
 
+## 32-bit execution path (PearLegacyEngine)
+
+A Mach-O image with only 32-bit slices (armv6/armv7) is never loaded by macOS, so
+none of the Catalyst machinery applies. The installer detects that shape from the
+fat header during admission and:
+
+1. keeps the extracted bundle byte-for-byte — no `LC_LOAD_DYLIB` edit, no
+   `Frameworks/libPearRuntime.dylib`, no `codesign`, no platform patch — and only
+   restores the executable bit;
+2. records `InstalledApp.isLegacy32Bit`, which makes `setPreparationMode` and
+   `refreshRuntimeIfNeeded` no-ops for the app;
+3. launches `PearLegacyEngine`'s `touchHLE` as one host process per app, with
+   `PEAR_LEGACY_RESOURCES_DIR`, `PEAR_ANGLE_LIB_DIR`, `PEAR_LEGACY_SANDBOX_ROOT`
+   (`Games/<bundleID>`) and, when enabled, `PEAR_KEYMAP` and `MTL_HUD_ENABLED`.
+
+Because that process carries no bundle identifier, `AppState` merges a pid
+registry into its running-apps map. Records live in
+`Runtime/LegacyProcesses/<bundleID>.pid`, so the GUI and the CLI can see and stop
+each other's engine processes, and stale records are discarded when the pid is
+gone.
+
 ## Mac Catalyst execution path
 
 1. The installer admits an IPA only after reading its ZIP central directory and

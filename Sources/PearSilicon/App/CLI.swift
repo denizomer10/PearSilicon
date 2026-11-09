@@ -465,6 +465,23 @@ enum CLI {
             environment["PEAR_ALLOW_POINTER_LOCK"] = "1"
         }
 
+        // 32-bit apps run in PearLegacyEngine, so none of the Catalyst
+        // preparation, runtime injection or iOS-like filesystem view below applies.
+        if app.isLegacy32Bit {
+            let pid = try awaitBridge {
+                try await LegacyAppLauncher.shared.launch(
+                    app, keymapURL: keymapURL, metalHUDEnabled: hudEnabled
+                )
+            }
+            launchLease.release()
+            print("launched \(app.displayName) [\(app.id)] pid \(pid) via PearLegacyEngine")
+            print("  keymap: \(keymapState(enabled: enabled, hasFile: hasKeymap, url: keymapURL))")
+            print("  metal HUD: \(hudEnabled ? "on" : "off")")
+            print("  runtime: PearLegacyEngine (32-bit iOS)")
+            if arguments.flags.contains("wait") { waitForExit(pid: pid, name: app.displayName) }
+            return 0
+        }
+
         let nativeContainer = false
 
         // The iOS-like filesystem view is always applied.
@@ -527,6 +544,12 @@ enum CLI {
             throw CLIError.message("usage: pearsilicon stop <bundle-id|name>")
         }
         let app = try resolveApp(query)
+        // A 32-bit app runs inside a separately spawned engine process that has no
+        // bundle identifier, so its recorded pid is the only way to stop it here.
+        if app.isLegacy32Bit, LegacyAppLauncher.shared.terminate(app.id) {
+            print("stopped \(app.displayName) [\(app.id)]")
+            return 0
+        }
         guard let running = NSRunningApplication
             .runningApplications(withBundleIdentifier: app.id).first else {
             throw CLIError.message("\(app.displayName) is not running")

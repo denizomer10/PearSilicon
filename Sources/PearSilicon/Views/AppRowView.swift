@@ -9,10 +9,20 @@ struct AppRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.displayName)
                     .lineLimit(1)
-                Text(app.id)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(app.id)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if app.isLegacy32Bit {
+                        Text("32-bit")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(.quaternary, in: Capsule())
+                    }
+                }
             }
         }
         .padding(.vertical, 2)

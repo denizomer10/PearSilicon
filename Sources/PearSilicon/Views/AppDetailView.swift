@@ -102,6 +102,9 @@ struct AppDetailView: View {
                     infoRow(L10n.executable, app.executableName)
                     infoRow(L10n.version, "\(app.shortVersion) (\(app.bundleVersion))")
                     infoRow(L10n.minimumOS, app.minimumOSVersion ?? "—")
+                    infoRow("Runtime", app.isLegacy32Bit
+                        ? "PearLegacyEngine (32-bit iOS)"
+                        : "Mac Catalyst / iOSSupport")
                     infoRow(L10n.path, app.bundleURL.path, selectable: true)
                 }
             }
