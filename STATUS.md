@@ -21,6 +21,15 @@
   `touchHLE_default_options.txt`). `build-app.sh` bu klasörü pakete kopyalıyor.
 - Sürüm: PearSilicon **v0.7.0** (yapı 24), PearLegacyEngine **v0.7.2**
   (`84e3f1bd`, PearLegacyJIT `1fc35bfd` ile derlendi).
+  Yayın: https://github.com/denizomer10/PearSilicon/releases/tag/v0.7.0
+- Dal temizliği: uzakta yalnızca `main` kaldı. `codex/pear-legacy-engine`,
+  `denizomer10-pear-legacy-engine`, `denizomer10-virtual-gamepad-inputs`,
+  `feature/portable-multiplatform` (hepsi `main` içinde) ve
+  `denizomer10-reimagined-doodle` silindi. Sonuncusunun işlevleri `main`'de
+  yeniden uygulandığı için birleştirilmedi; tarihsel kayıt
+  `archive/reimagined-doodle` etiketinde (`3ba8d9c`) duruyor.
+  PearLegacyEngine tarafında `experimental/angle`, `codex/miku-flick`,
+  `codex/es2-port` silindi (`trunk` içinde).
 
 ## Tamamlandı — PearLegacyEngine entegrasyonu (2026-11-09)
 
