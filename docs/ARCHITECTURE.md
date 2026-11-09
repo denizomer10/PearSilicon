@@ -118,7 +118,7 @@ this tree:
 
 | Component | Repository | Pin | License |
 | --- | --- | --- | --- |
-| PearLegacyEngine | `denizomer10/PearLegacyEngine` (`trunk`) | `96a1ea7a` (v0.7.2) | MPL-2.0, derived from touchHLE |
+| PearLegacyEngine | `denizomer10/PearLegacyEngine` (`trunk`) | `84e3f1bd` (v0.7.2) | MPL-2.0, derived from touchHLE |
 | PearLegacyJIT | `denizomer10/PearLegacyJIT` (`master`) | `1fc35bfd` | 0BSD, derived from Dynarmic |
 
 `scripts/setup-legacy-engine.sh` resolves both checkouts

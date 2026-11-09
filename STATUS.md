@@ -1,5 +1,27 @@
 # PearSilicon — Çalışma Durumu
 
+## Tamamlandı — dal birleştirme, motor/JIT entegrasyonu ve sürüm (2026-11-09)
+
+- `codex/pear-legacy-engine` ile `denizomer10-pear-legacy-engine` karşılaştırılıp
+  tüm yeni değişiklikler birleştirildi ve `main`'e alındı. Sanal gamepad dalı ile
+  32 bit PearLegacyEngine dalı artık tek hatta.
+- Çakışmalar uygulanan (yayınlanmış) `denizomer10` hattı lehine çözüldü: gerçek
+  motor başlatma yolu `AppLauncher.launchLegacy32Bit` (PID kaydı, `Hosts/<id>.app`
+  paketleme, `PEAR_LEGACY_RESOURCES_DIR`) korundu. codex hattının ikinci,
+  kullanılmayan `LegacyIOSRuntime`/`LegacyAppLauncher` kopyası testleriyle birlikte
+  kaldırıldı. codex'in belge ve rozet katkıları (`docs/ARCHITECTURE.md`,
+  `docs/CLI.md`, `InstalledApp.isLegacy32Bit`, uygulama satırı rozeti) tutuldu.
+- Lisanslar: `THIRD_PARTY_NOTICES.md` eklendi — PearLegacyEngine MPL-2.0
+  (touchHLE türevi, ayrı süreç olarak çalıştırılır), PearLegacyJIT 0BSD
+  (Dynarmic türevi, motorun içine derlenir), ANGLE BSD-3-Clause. Sabitlenen
+  commit'ler `docs/ARCHITECTURE.md` içinde tablo hâlinde.
+- `scripts/setup-legacy-engine.sh` eklendi: iki depoyu bulur, motoru JIT fork'una
+  karşı derler ve `build/PearLegacyEngine/` altına yayın düzenini kurar
+  (`touchHLE`, `touchHLE_dylibs/angle` dahil, `touchHLE_fonts`,
+  `touchHLE_default_options.txt`). `build-app.sh` bu klasörü pakete kopyalıyor.
+- Sürüm: PearSilicon **v0.7.0** (yapı 24), PearLegacyEngine **v0.7.2**
+  (`84e3f1bd`, PearLegacyJIT `1fc35bfd` ile derlendi).
+
 ## Tamamlandı — PearLegacyEngine entegrasyonu (2026-11-09)
 
 32 bit iOS uygulamaları artık yalnızca IPA seçilerek kurulup PearLegacyEngine
@@ -7,8 +29,8 @@
 MikuFlick02.ipa` → `pearsilicon launch com.sega.MikuFlick02` → oyun çizim
 döngüsünde çalışıyor → `pearsilicon stop` temiz kapanış.
 
-- Motor sürümü: **PearLegacyEngine v0.7.1** (ANGLE/Metal, macOS 26, arm64).
-  Sürüm: https://github.com/denizomer10/PearLegacyEngine/releases/tag/v0.7.1
+- Motor sürümü: **PearLegacyEngine v0.7.2** (ANGLE/Metal, macOS 26, arm64).
+  Sürüm: https://github.com/denizomer10/PearLegacyEngine/releases/tag/v0.7.2
 - Kurulum yolu: motor `touchHLE <app>` olarak ayrı bir süreçte çalışır. Motor
   klasörü `PEAR_LEGACY_ENGINE_HOME` ile veya şu sırayla bulunur:
   `<destek kökü>/PearLegacyEngine`, uygulama paketi kaynakları, çalışma dizini
@@ -27,11 +49,10 @@ döngüsünde çalışıyor → `pearsilicon stop` temiz kapanış.
   arayüzde değişmeden çalışır.
 - Arayüzde 32 bit uygulamalar satırda `32-bit` rozeti ve ayrıntı görünümünde
   `Runtime: PearLegacyEngine (32-bit iOS)` bilgisiyle işaretlenir.
-- Testler: `Tests/PearSiliconTests/LegacyIOSRuntimeTests.swift` (mimari tespiti,
-  mach-o başlıkları, motor keşfi, `PEAR_LEGACY_ENGINE_HOME`) ve
-  `LegacyInstallTests.swift` (32 bit IPA kurulumu hazırlıksız geçer, 64 bit
-  paket hazırlık yolunu kullanmaya devam eder). Tüm paket: 289 XCTest + 37
-  Swift Testing, 0 hata.
+- Testler: mimari tespiti, mach-o başlıkları, motor keşfi
+  (`PEAR_LEGACY_ENGINE_HOME`), 32 bit IPA kurulumunun hazırlıksız geçmesi ve 64
+  bit paketlerin hazırlık yolunu kullanmaya devam etmesi kapsanıyor. Tüm paket:
+  314 XCTest (16 atlandı) + 24 Swift Testing, 0 hata.
 - Bilinen sınır: Asphalt 6 (`com.gameloft.Asphalt6ipad`, fat armv6+armv7)
   kurulup başlatılıyor, iki GL bağlamı da açılıyor (ES 1.1 + ES 2.0) ve oyun ana
   başlatmaya (`GLAppleMain::SetInitState`) kadar geliyor; ardından misafir kod

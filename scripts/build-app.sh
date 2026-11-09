@@ -10,8 +10,8 @@ cd "$ROOT"
 
 APP_NAME="PearSilicon"
 BUNDLE_ID="com.pearsilicon.app"
-APP_VERSION="0.6.0"
-APP_BUILD="23"
+APP_VERSION="0.7.0"
+APP_BUILD="24"
 COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 CONFIG="${1:-release}"
 BUILD_DIR="${PEAR_BUILD_DIR:-$ROOT/build}"
@@ -70,25 +70,32 @@ else
   LEGACY_REPO="$HOME/Documents/PearLegacyEngine"
 fi
 LEGACY_BIN=""
+LEGACY_STAGE="$BUILD_DIR/PearLegacyEngine"
+# A tree staged by scripts/setup-legacy-engine.sh is already in the release
+# layout (binary plus dylibs with ANGLE in touchHLE_dylibs/angle), so it is used
+# as-is: copying the source checkout's resources over it would drop ANGLE.
+LEGACY_FROM_STAGE=0
+if [[ -x "$LEGACY_STAGE/touchHLE" && -d "$LEGACY_STAGE/touchHLE_dylibs/angle" ]]; then
+  LEGACY_BIN="$LEGACY_STAGE/touchHLE"
+  LEGACY_FROM_STAGE=1
+fi
 if [[ -n "${PEAR_LEGACY_ENGINE_PATH:-}" && -x "${PEAR_LEGACY_ENGINE_PATH}" ]]; then
   LEGACY_BIN="${PEAR_LEGACY_ENGINE_PATH}"
-elif [[ -x "$LEGACY_REPO/target/release/touchHLE" ]]; then
+  LEGACY_FROM_STAGE=0
+elif [[ "$LEGACY_FROM_STAGE" == 0 && -x "$LEGACY_REPO/target/release/touchHLE" ]]; then
   LEGACY_BIN="$LEGACY_REPO/target/release/touchHLE"
-elif [[ -x "$LEGACY_REPO/target/debug/touchHLE" ]]; then
+elif [[ "$LEGACY_FROM_STAGE" == 0 && -x "$LEGACY_REPO/target/debug/touchHLE" ]]; then
   LEGACY_BIN="$LEGACY_REPO/target/debug/touchHLE"
-elif [[ -x "$BUILD_DIR/PearLegacyEngine/touchHLE" ]]; then
-  LEGACY_BIN="$BUILD_DIR/PearLegacyEngine/touchHLE"
 fi
 
 if [[ -n "$LEGACY_BIN" ]]; then
   echo ">> Bundling PearLegacyEngine from $LEGACY_BIN"
-  LEGACY_STAGE="$BUILD_DIR/PearLegacyEngine"
   mkdir -p "$LEGACY_STAGE"
   if [[ "$LEGACY_BIN" != "$LEGACY_STAGE/touchHLE" ]]; then
     cp "$LEGACY_BIN" "$LEGACY_STAGE/touchHLE"
   fi
   chmod +x "$LEGACY_STAGE/touchHLE"
-  if [[ -d "$LEGACY_REPO" ]]; then
+  if [[ "$LEGACY_FROM_STAGE" == 0 && -d "$LEGACY_REPO" ]]; then
     [[ -f "$LEGACY_REPO/touchHLE_default_options.txt" ]] && cp "$LEGACY_REPO/touchHLE_default_options.txt" "$LEGACY_STAGE/"
     if [[ -d "$LEGACY_REPO/touchHLE_dylibs" ]]; then
       rm -rf "$LEGACY_STAGE/touchHLE_dylibs"
@@ -98,6 +105,10 @@ if [[ -n "$LEGACY_BIN" ]]; then
       rm -rf "$LEGACY_STAGE/touchHLE_fonts"
       cp -R "$LEGACY_REPO/touchHLE_fonts" "$LEGACY_STAGE/touchHLE_fonts"
     fi
+  fi
+  if [[ ! -d "$LEGACY_STAGE/touchHLE_dylibs/angle" ]]; then
+    echo "WARNING: ANGLE is not staged in $LEGACY_STAGE/touchHLE_dylibs/angle" >&2
+    echo "         run scripts/setup-legacy-engine.sh, or set PEAR_ANGLE_LIB_DIR at runtime" >&2
   fi
   rm -rf "$OUT/Contents/Resources/PearLegacyEngine"
   cp -R "$LEGACY_STAGE" "$OUT/Contents/Resources/PearLegacyEngine"
