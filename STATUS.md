@@ -7,8 +7,8 @@
 MikuFlick02.ipa` → `pearsilicon launch com.sega.MikuFlick02` → oyun çizim
 döngüsünde çalışıyor → `pearsilicon stop` temiz kapanış.
 
-- Motor sürümü: **PearLegacyEngine v0.7.0** (ANGLE/Metal, macOS 26, arm64).
-  Sürüm: https://github.com/denizomer10/PearLegacyEngine/releases/tag/v0.7.0
+- Motor sürümü: **PearLegacyEngine v0.7.1** (ANGLE/Metal, macOS 26, arm64).
+  Sürüm: https://github.com/denizomer10/PearLegacyEngine/releases/tag/v0.7.1
 - Kurulum yolu: motor `touchHLE <app>` olarak ayrı bir süreçte çalışır. Motor
   klasörü `PEAR_LEGACY_ENGINE_HOME` ile veya şu sırayla bulunur:
   `<destek kökü>/PearLegacyEngine`, uygulama paketi kaynakları, çalışma dizini
