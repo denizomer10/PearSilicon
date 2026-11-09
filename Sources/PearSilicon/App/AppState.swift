@@ -201,6 +201,14 @@ final class AppState: ObservableObject {
             Task { @MainActor in self?.refreshRunningApps() }
         })
 
+        // A PearLegacyEngine process is a bare executable, so it can exit without
+        // a workspace notification; the launcher tells us instead.
+        workspaceObservers.append(NotificationCenter.default.addObserver(
+            forName: .legacyProcessExited, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshRunningApps() }
+        })
+
         // The CLI installs/removes apps in the same library. Refresh when it says
         // the library changed, so an open window stays in sync.
         workspaceObservers.append(DistributedNotificationCenter.default().addObserver(
@@ -258,7 +266,13 @@ final class AppState: ObservableObject {
         overlays[app.id] = nil
         runningApps[app.id] = nil // hide Stop right away
         stoppingApps.insert(app.id)
-        running.terminate()
+        if app.isLegacy32Bit {
+            // NSRunningApplication.terminate() targets an app by bundle
+            // identity; the engine process has none, so signal the pid.
+            LegacyAppLauncher.shared.terminate(app.id)
+        } else {
+            running.terminate()
+        }
         statusMessage = "Stopping \(app.displayName)…"
 
         // Reconcile: notifications normally arrive, but a game can take a moment

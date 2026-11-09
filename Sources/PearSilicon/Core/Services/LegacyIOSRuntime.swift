@@ -256,8 +256,12 @@ final class LegacyAppLauncher {
         process.terminationHandler = { [weak self] finished in
             Task { @MainActor in
                 Self.clearPID(for: appID)
-                guard let self, self.processes[appID] === finished else { return }
-                self.processes[appID] = nil
+                if let self, self.processes[appID] === finished {
+                    self.processes[appID] = nil
+                }
+                // The engine is a bare executable, so workspace notifications are
+                // not guaranteed; tell the UI it should re-read running state.
+                NotificationCenter.default.post(name: .legacyProcessExited, object: nil)
             }
         }
 
@@ -335,4 +339,9 @@ final class LegacyAppLauncher {
               let handle = try? FileHandle(forWritingTo: url) else { return nil }
         return handle
     }
+}
+
+extension Notification.Name {
+    /// Posted when a PearLegacyEngine process exits, however it was started.
+    static let legacyProcessExited = Notification.Name("com.pearsilicon.legacyProcessExited")
 }
