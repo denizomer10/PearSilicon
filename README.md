@@ -134,7 +134,7 @@ looks for it:
 
 ```sh
 curl -L -o /tmp/ple.tar.gz \
-  https://github.com/denizomer10/PearLegacyEngine/releases/latest/download/PearLegacyEngine-0.7.0-macos-arm64.tar.gz
+  https://github.com/denizomer10/PearLegacyEngine/releases/latest/download/PearLegacyEngine-0.7.1-macos-arm64.tar.gz
 mkdir -p "$HOME/Library/Application Support/PearSilicon"
 tar -xzf /tmp/ple.tar.gz -C "$HOME/Library/Application Support/PearSilicon"
 ```
