@@ -32,11 +32,19 @@ döngüsünde çalışıyor → `pearsilicon stop` temiz kapanış.
   `LegacyInstallTests.swift` (32 bit IPA kurulumu hazırlıksız geçer, 64 bit
   paket hazırlık yolunu kullanmaya devam eder). Tüm paket: 289 XCTest + 37
   Swift Testing, 0 hata.
-- Bilinen sınır: Asphalt 6 kurulup başlatılıyor ancak misafir kodda
-  (`PC=0x70ee0`) null sayfa erişimiyle düşüyor; bu bir motor/grafik hatası
-  değil, oyunun ağ/profil başlatma yolundaki eksik veri. Miku Flick ve
-  Miku Flick 02 çalışıyor. GTA VC (arm64) eski Catalyst yolunu kullanmaya
-  devam ediyor.
+- Bilinen sınır: Asphalt 6 (`com.gameloft.Asphalt6ipad`, fat armv6+armv7)
+  kurulup başlatılıyor, iki GL bağlamı da açılıyor (ES 1.1 + ES 2.0) ve oyun ana
+  başlatmaya (`GLAppleMain::SetInitState`) kadar geliyor; ardından misafir kod
+  `PC=0x70ee0` adresinde düşüyor. Kesme noktası:
+  `ldr r1,[sp,#0x28] / ldr r1,[r1] / ldr r1,[r1,#8]` — yani bir arama/çözümleme
+  null dönüyor ve sonucu `+8` ofsetinden okuyor. Motor/grafik hatası değil;
+  kaynak dosyalar `.dat` bloklarında olduğu için `Anim_ProjectorBeam.tga`,
+  `*.wav` gibi "bulunamadı" uyarıları normaldir, `--allow-network-access` da
+  sonucu değiştirmiyor. Miku Flick ve Miku Flick 02 çalışıyor. GTA VC (arm64)
+  eski Catalyst yolunu kullanmaya devam ediyor.
+- Motor tanılama: `open()` hataları artık misafir yolunu da yazıyor
+  (PearLegacyEngine `5b4654a0`); eksik kaynak ayıklaması bellek dökümü
+  gerektirmiyor.
 
 ---
 
