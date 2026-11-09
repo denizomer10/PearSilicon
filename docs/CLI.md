@@ -174,6 +174,24 @@ the same admission checks; explicit simulator Mach-O platforms and simulator
 bundle metadata are rejected. Use an iOS device build (`generic/platform=iOS`),
 which is the default destination for `pearsilicon build`.
 
+**32-bit apps skip the preparation pipeline entirely.** A bundle whose Mach-O
+contains only 32-bit slices (armv6/armv7) cannot be loaded by macOS, so the
+staged copy is installed byte-for-byte: no platform edit, no runtime library, no
+ad-hoc signing. Such apps run as guest code inside PearLegacyEngine, which must
+be installed separately — the first location searched is
+`<support root>/PearLegacyEngine`, and `PEAR_LEGACY_ENGINE_HOME` overrides it:
+
+```sh
+export PEAR_LEGACY_ENGINE_HOME="$PWD/../PearLegacyEngine"   # source checkout
+pearsilicon install ~/Downloads/MikuFlick02.ipa --launch
+pearsilicon stop com.sega.MikuFlick02
+```
+
+`list` and `info` mark these entries as 32-bit, and `stop` works on an engine
+process started by the GUI because running pids are recorded under
+`Runtime/LegacyProcesses/`. A missing engine is reported as a missing runtime
+component rather than a generic launch failure.
+
 A starter keymap is generated if the app has none (disable with `--no-keymap`).
 The keymapper itself stays opt-in: pass `--keys`, or enable it for the app in
 the GUI. Without it, no keymap path is passed and the keymapper's keyboard/mouse

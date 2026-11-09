@@ -15,6 +15,9 @@ struct InstalledApp: Identifiable, Hashable, Sendable {
     /// PNG ikonun bulunduğu yol (varsa).
     let iconURL: URL?
     let installedAt: Date
+    /// The executable is 32-bit (armv7), so macOS cannot load it and it runs
+    /// inside PearLegacyEngine instead of the Catalyst runtime.
+    var isLegacy32Bit: Bool = false
 
     var executableURL: URL {
         bundleURL.appendingPathComponent(executableName)

@@ -1,5 +1,51 @@
 # PearSilicon — Çalışma Durumu
 
+## Tamamlandı — PearLegacyEngine entegrasyonu (2026-11-09)
+
+32 bit iOS uygulamaları artık yalnızca IPA seçilerek kurulup PearLegacyEngine
+üzerinde çalıştırılabiliyor. Uçtan uca doğrulandı: `pearsilicon install
+MikuFlick02.ipa` → `pearsilicon launch com.sega.MikuFlick02` → oyun çizim
+döngüsünde çalışıyor → `pearsilicon stop` temiz kapanış.
+
+- Motor sürümü: **PearLegacyEngine v0.7.1** (ANGLE/Metal, macOS 26, arm64).
+  Sürüm: https://github.com/denizomer10/PearLegacyEngine/releases/tag/v0.7.1
+- Kurulum yolu: motor `touchHLE <app>` olarak ayrı bir süreçte çalışır. Motor
+  klasörü `PEAR_LEGACY_ENGINE_HOME` ile veya şu sırayla bulunur:
+  `<destek kökü>/PearLegacyEngine`, uygulama paketi kaynakları, çalışma dizini
+  ve ev dizini.
+- ANGLE dizini için hem yayın düzeni (`touchHLE_dylibs/angle`) hem kaynak
+  düzeni (`vendor/angle/out/MacMetal`) kabul edilir.
+- 32 bit paketler (armv6/armv7, arm64 yok) macOS/Catalyst kabul kontrollerini ve
+  hazırlık adımlarını atlar: paket birebir korunur; `prepareForMacOS`, runtime
+  enjeksiyonu, `codesign` ve platform yaması uygulanmaz. Yalnızca çalıştırma izni
+  geri verilir.
+- Her uygulama kendi emüle cihaz ağacını `Games/<bundleID>` altında tutar
+  (`PEAR_LEGACY_SANDBOX_ROOT`); kayıtlar uygulama başına kalır.
+- Çalışan motor süreçleri `Runtime/LegacyProcesses/<bundleID>.pid` dosyalarıyla
+  izlenir; böylece GUI ve CLI birbirinin başlattığı süreci görüp durdurabilir.
+  Başlatma/durdurma, Metal HUD ve keymapper kaplaması (`PEAR_KEYMAP`) mevcut
+  arayüzde değişmeden çalışır.
+- Arayüzde 32 bit uygulamalar satırda `32-bit` rozeti ve ayrıntı görünümünde
+  `Runtime: PearLegacyEngine (32-bit iOS)` bilgisiyle işaretlenir.
+- Testler: `Tests/PearSiliconTests/LegacyIOSRuntimeTests.swift` (mimari tespiti,
+  mach-o başlıkları, motor keşfi, `PEAR_LEGACY_ENGINE_HOME`) ve
+  `LegacyInstallTests.swift` (32 bit IPA kurulumu hazırlıksız geçer, 64 bit
+  paket hazırlık yolunu kullanmaya devam eder). Tüm paket: 289 XCTest + 37
+  Swift Testing, 0 hata.
+- Bilinen sınır: Asphalt 6 (`com.gameloft.Asphalt6ipad`, fat armv6+armv7)
+  kurulup başlatılıyor, iki GL bağlamı da açılıyor (ES 1.1 + ES 2.0) ve oyun ana
+  başlatmaya (`GLAppleMain::SetInitState`) kadar geliyor; ardından misafir kod
+  `PC=0x70ee0` adresinde düşüyor. Kesme noktası:
+  `ldr r1,[sp,#0x28] / ldr r1,[r1] / ldr r1,[r1,#8]` — yani bir arama/çözümleme
+  null dönüyor ve sonucu `+8` ofsetinden okuyor. Motor/grafik hatası değil;
+  kaynak dosyalar `.dat` bloklarında olduğu için `Anim_ProjectorBeam.tga`,
+  `*.wav` gibi "bulunamadı" uyarıları normaldir, `--allow-network-access` da
+  sonucu değiştirmiyor. Miku Flick ve Miku Flick 02 çalışıyor. GTA VC (arm64)
+  eski Catalyst yolunu kullanmaya devam ediyor.
+- Motor tanılama: `open()` hataları artık misafir yolunu da yazıyor
+  (PearLegacyEngine `5b4654a0`); eksik kaynak ayıklaması bellek dökümü
+  gerektirmiyor.
+
 ## Aktif hedef — PearLegacyEngine (32-bit iOS) ve Miku Flick (2026-11-08)
 
 - PearSilicon çalışma dalı: `denizomer10-pear-legacy-engine`.

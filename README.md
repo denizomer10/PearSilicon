@@ -128,6 +128,34 @@ sudo ln -sf /Applications/PearSilicon.app/Contents/MacOS/PearSilicon \
 
 Full command reference: [docs/CLI.md](docs/CLI.md).
 
+## 32-bit iOS apps (PearLegacyEngine)
+
+Apps built before iOS 11 (armv6/armv7) cannot be loaded by macOS at all, so
+PearSilicon runs them as guest code inside
+[PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine), a 32-bit
+iOS compatibility layer built on ANGLE/Metal. Install flow is unchanged: pick the
+`.ipa`, nothing else. Such apps are tagged **32-bit** in the library and show
+`Runtime: PearLegacyEngine (32-bit iOS)` in the detail view.
+
+One-time engine setup — download the release and place it where PearSilicon
+looks for it:
+
+```sh
+curl -L -o /tmp/ple.tar.gz \
+  https://github.com/denizomer10/PearLegacyEngine/releases/latest/download/PearLegacyEngine-0.7.1-macos-arm64.tar.gz
+mkdir -p "$HOME/Library/Application Support/PearSilicon"
+tar -xzf /tmp/ple.tar.gz -C "$HOME/Library/Application Support/PearSilicon"
+```
+
+The archive extracts as `PearLegacyEngine/`, which is the first location
+searched. In a source checkout the engine is also found next to the working
+directory, and `PEAR_LEGACY_ENGINE_HOME=/path/to/PearLegacyEngine` overrides
+everything. Requirements: Apple Silicon, macOS 26 or later.
+
+Unlike 64-bit apps, the installed `.app` is kept byte-for-byte as shipped — no
+platform patch, runtime injection or re-signing — and each app keeps its guest
+storage in `Games/<bundleID>`, so saves stay with the library.
+
 ## Controllers and keymapper
 
 The keymapper is **opt-in per iOS app** and off by default. Supported actions are
@@ -273,7 +301,12 @@ benchmark establishes a performance advantage over PlayCover.
 
 ## Limitations
 
-- Compatible iOS apps still depend on Apple’s Catalyst/iOSSupport stack.
+- Compatible 64-bit iOS apps still depend on Apple’s Catalyst/iOSSupport stack;
+  32-bit apps instead need the PearLegacyEngine bundle installed separately
+  (see above).
+- The 32-bit engine is Apple Silicon only and needs macOS 26 or later, and its
+  app compatibility is narrower than the 64-bit path — one engine release may
+  run some games well and crash in others.
 - Compatibility varies by app; check release notes rather than assuming a feature
   or game works.
 - Mac apps are not sandboxed; Wine cannot run kernel anti-cheat.
