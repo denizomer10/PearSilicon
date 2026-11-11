@@ -709,3 +709,10 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - PearWine 1.0.1 uses the verified signed MetalSharp Wine ZIP, keeping its bundle and cross-architecture entitlement intact. Installed deep/strict signature verification passes. Defaults are outside the signed app.
 - Fixed first-prefix initialization timeout and asynchronous registry-flush race. Fresh-prefix initialization and managed GTA Vice City process smoke test passed in 39 seconds. Visual gameplay is not verified: Computer Use permission is unavailable.
 - Release: PearSilicon 0.8.2 (27), PearWine 1.0.1. Details and test evidence: `docs/VICE_CITY_PEARWINE.md`.
+
+### 2026-11-12 — Miku Flick screen fit and touch
+
+- PearLegacyEngine now honours `autoresizingMask` / `autoresizesSubviews` (decoded from nibs, applied on `setFrame:` / `setBounds:`). MikuFlick and MikuFlick 02 lay out their EAGLView at 320x460 inside a root view stretched to 320x480; the view stayed 460 pt tall, so the bottom row (わ key, pause button) was cut off and touches drifted. Renderbuffer is now 640x960 in both games; the user confirmed screen and touch are fixed.
+- New engine diagnostics: `PEAR_TRACE_OPEN=1` logs every `open()`, and opening a directory is noted in the log.
+- Verified: engine unit tests (41, incl. 4 new autoresize tests), Miku Flick title / music select / gameplay frames, Miku Flick 02 renderbuffer size. The engine's TestApp integration test fails while *building* the test app with the bundled clang (before the engine runs); unrelated to this change.
+- Release: PearSilicon 0.8.4 (29), PearLegacyEngine 1a1c8a0f.

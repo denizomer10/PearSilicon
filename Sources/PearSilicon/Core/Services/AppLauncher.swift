@@ -697,9 +697,16 @@ final class AppLauncher: @unchecked Sendable {
         for resName in ["touchHLE_default_options.txt", "touchHLE_dylibs", "touchHLE_fonts"] {
             let src = resourceDir.appendingPathComponent(resName)
             let dst = resourcesURL.appendingPathComponent(resName)
-            if fm.fileExists(atPath: src.path), !fm.fileExists(atPath: dst.path) {
-                try? fm.createSymbolicLink(at: dst, withDestinationURL: src)
+            guard fm.fileExists(atPath: src.path) else { continue }
+            // Re-point links left behind by another PearSilicon copy (moved,
+            // translocated or deleted), so the host always uses this one.
+            if let target = try? fm.destinationOfSymbolicLink(atPath: dst.path) {
+                if target == src.path { continue }
+                try? fm.removeItem(at: dst)
+            } else if fm.fileExists(atPath: dst.path) {
+                continue
             }
+            try? fm.createSymbolicLink(at: dst, withDestinationURL: src)
         }
 
         var iconFileName: String?

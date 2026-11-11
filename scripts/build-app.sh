@@ -10,8 +10,8 @@ cd "$ROOT"
 
 APP_NAME="PearSilicon"
 BUNDLE_ID="com.pearsilicon.app"
-APP_VERSION="0.8.3"
-APP_BUILD="28"
+APP_VERSION="0.8.4"
+APP_BUILD="29"
 COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 CONFIG="${1:-release}"
 BUILD_DIR="${PEAR_BUILD_DIR:-$ROOT/build}"
@@ -98,8 +98,19 @@ if [[ -n "$LEGACY_BIN" ]]; then
   if [[ "$LEGACY_FROM_STAGE" == 0 && -d "$LEGACY_REPO" ]]; then
     [[ -f "$LEGACY_REPO/touchHLE_default_options.txt" ]] && cp "$LEGACY_REPO/touchHLE_default_options.txt" "$LEGACY_STAGE/"
     if [[ -d "$LEGACY_REPO/touchHLE_dylibs" ]]; then
+      # The repo's dylibs have no ANGLE build; keep the staged one (from
+      # scripts/setup-legacy-engine.sh) so the engine can still render.
+      ANGLE_KEEP=""
+      if [[ -d "$LEGACY_STAGE/touchHLE_dylibs/angle" ]]; then
+        ANGLE_KEEP="$BUILD_DIR/.angle-keep"
+        rm -rf "$ANGLE_KEEP"
+        mv "$LEGACY_STAGE/touchHLE_dylibs/angle" "$ANGLE_KEEP"
+      fi
       rm -rf "$LEGACY_STAGE/touchHLE_dylibs"
       cp -R "$LEGACY_REPO/touchHLE_dylibs" "$LEGACY_STAGE/touchHLE_dylibs"
+      if [[ -n "$ANGLE_KEEP" ]]; then
+        mv "$ANGLE_KEEP" "$LEGACY_STAGE/touchHLE_dylibs/angle"
+      fi
     fi
     if [[ -d "$LEGACY_REPO/touchHLE_fonts" ]]; then
       rm -rf "$LEGACY_STAGE/touchHLE_fonts"
