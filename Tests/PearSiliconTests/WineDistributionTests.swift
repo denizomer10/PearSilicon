@@ -72,3 +72,24 @@ final class WineDistributionTests: XCTestCase {
         XCTAssertEqual(ordered.map(\.id), ["pearwine-1.0.0", "metalsharp-v6.0", "wine-staging-11.21", "custom"])
     }
 }
+
+/// Full PearWine install from the live release into a temporary store.
+/// Downloads about 1 GB, so it runs only with PEAR_LIVE_PEARWINE_INSTALL=1.
+final class PearWineLiveInstallTests: XCTestCase {
+    func testInstallsPearWineEndToEnd() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["PEAR_LIVE_PEARWINE_INSTALL"] == "1",
+                          "Set PEAR_LIVE_PEARWINE_INSTALL=1 to download and install PearWine.")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pearwine-live-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WineEngineStore(rootURL: root.appendingPathComponent("Engines", isDirectory: true))
+        let engine = try await WineDistributionInstaller().install(.pearWine, store: store) { print("[install]", $0) }
+        try engine.validate()
+        XCTAssertEqual(engine.distribution, .pearWine)
+        XCTAssertTrue(engine.executablePath.hasSuffix("bin/wine-launcher"), engine.executablePath)
+        XCTAssertEqual(WineDistributionInstaller.environmentDefaults(for: engine)["WINEMSYNC"], "1")
+        XCTAssertNotNil(WineDistributionInstaller.registryDefaults(for: engine))
+        XCTAssertEqual(try store.engines().map(\.id), [engine.id])
+        print("[install] registered \(engine.name) \(engine.version) -> \(engine.executableURL.path)")
+    }
+}

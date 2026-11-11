@@ -495,12 +495,18 @@ actor WineReleaseService {
         ) else {
             throw WineReleaseError.invalid("Could not inspect the extracted Wine runtime")
         }
-        var best: (url: URL, depth: Int, isWine64: Bool)?
+        // rank: wine64 = 0, wine = 1, wine-launcher = 2 (lower wins). Some
+        // builds (MetalSharp Wine, PearWine) ship `bin/wine` as a small shell
+        // wrapper that only exports GStreamer/MoltenVK paths and execs the
+        // native `bin/wine-launcher`. Wrappers are never registered; the
+        // native launcher is, and ManagedAppService exports the same paths.
+        var best: (url: URL, depth: Int, rank: Int)?
         var visited = 0
         for case let url as URL in enumerator {
             visited += 1
             if visited > maximumEntries { break }
-            guard ["wine64", "wine"].contains(url.lastPathComponent) else { continue }
+            let ranks = ["wine64": 0, "wine": 1, "wine-launcher": 2]
+            guard let rank = ranks[url.lastPathComponent] else { continue }
             let parent = url.deletingLastPathComponent()
             guard parent.lastPathComponent == "bin" else { continue }
             let runtimeRoot = parent.deletingLastPathComponent()
@@ -512,15 +518,13 @@ actor WineReleaseService {
             guard values?.isRegularFile == true, values?.isExecutable == true else { continue }
             guard (try? ManagedExecutable.validateMacOS(url)) != nil else { continue }
             let depth = url.pathComponents.count
-            let isWine64 = url.lastPathComponent == "wine64"
-            if best == nil || depth < best!.depth
-                || (depth == best!.depth && isWine64 && !best!.isWine64) {
-                best = (url, depth, isWine64)
+            if best == nil || depth < best!.depth || (depth == best!.depth && rank < best!.rank) {
+                best = (url, depth, rank)
             }
         }
         guard let executable = best?.url else {
             throw WineReleaseError.invalid(
-                "The archive contains no complete Wine runtime with bin/wine64, lib and share"
+                "The archive contains no complete Wine runtime: no native bin/wine64, bin/wine or bin/wine-launcher next to lib and share"
             )
         }
         let parent = executable.deletingLastPathComponent()

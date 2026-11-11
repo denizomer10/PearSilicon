@@ -536,6 +536,16 @@ struct ManagedAppService: Sendable {
                 result["WINEDLLPATH"] = runtime.appendingPathComponent("lib/wine", isDirectory: true).path
                 result["WINEDATADIR"] = runtime.appendingPathComponent("share/wine", isDirectory: true).path
                 result["DYLD_FALLBACK_LIBRARY_PATH"] = runtime.appendingPathComponent("lib", isDirectory: true).path
+                // What a `bin/wine` wrapper would export (MetalSharp/PearWine):
+                // the bundled GStreamer plugins for in-game video and audio.
+                let gstreamer = runtime.appendingPathComponent("lib/gstreamer-1.0", isDirectory: true)
+                if FileManager.default.fileExists(atPath: gstreamer.path) {
+                    result["GST_PLUGIN_SYSTEM_PATH_1_0"] = gstreamer.path
+                    let scanner = runtime.appendingPathComponent("libexec/gstreamer-1.0/gst-plugin-scanner")
+                    if FileManager.default.isExecutableFile(atPath: scanner.path) {
+                        result["GST_PLUGIN_SCANNER_1_0"] = scanner.path
+                    }
+                }
                 let moltenVK = runtime.appendingPathComponent("share/vulkan/icd.d/MoltenVK_icd.json")
                 if FileManager.default.fileExists(atPath: moltenVK.path) {
                     result["VK_ICD_FILENAMES"] = moltenVK.path

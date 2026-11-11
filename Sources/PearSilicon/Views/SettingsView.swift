@@ -14,7 +14,6 @@ struct SettingsView: View {
     @State private var engineVersion = "user-supplied"
     @State private var engineExecutablePath = "bin/wine64"
     @State private var engineLicenseConfirmed = false
-    @State private var wineChannel: WineReleaseChannel = .staging
 
     // Community download form.
     @State private var downloadURL = ""
@@ -187,46 +186,9 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Open-source Wine — automatic") {
-                Picker("Channel", selection: $wineChannel) {
-                    // WineHQ Stable is intentionally not offered; the automatic
-                    // engines use the staging and development feeds.
-                    ForEach(WineReleaseChannel.allCases.filter { $0 != .stable }) { channel in
-                        Text(channel.title).tag(channel)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Button("Check Latest Release") {
-                    Task { await state.checkWineRelease(channel: wineChannel) }
-                }
-                .disabled(state.isBusy)
-                if let check = state.wineReleaseCheck {
-                    LabeledContent("Version", value: check.tag)
-                    LabeledContent("Asset", value: check.assetName)
-                    if check.size > 0 {
-                        LabeledContent("Size", value: ByteCountFormatter.string(fromByteCount: check.size, countStyle: .file))
-                    }
-                    LabeledContent("SHA-256") {
-                        Text(check.sha256)
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    Button("Download and Install") {
-                        Task { await state.installWineRelease() }
-                    }
-                    .buttonStyle(.glassProminent)
-                    .disabled(state.isBusy)
-                }
-                Text(WineEngineStore.openSourceNotice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Registered engines") {
                 if state.wineEngines.isEmpty {
-                    Text("No Wine engine registered. Check for an open-source build above or add a custom runtime.")
+                    Text("No Wine engine registered. Install PearWine above (recommended) or add a custom runtime.")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(state.wineEngines) { engine in

@@ -2,6 +2,21 @@
 
 ## Oturum 2026-11-11 — PearRuntime/PearWine/PearDebug ayrımı, gamepad, Miku Flick
 
+### 0.8.1 — PearWine kurulumu (2026-11-11)
+- PearWine kurulumu "no complete Wine runtime with bin/wine64" hatasıyla
+  düşüyordu: MetalSharp/PearWine'da `bin/wine` 365 baytlık bir kabuk
+  sarmalayıcısı (GStreamer/MoltenVK yollarını ayarlayıp `bin/wine-launcher`'ı
+  çalıştırıyor). Kurucu artık sarmalayıcıyı değil yerel `bin/wine-launcher`'ı
+  kaydediyor (`wine64` > `wine` > `wine-launcher`), sarmalayıcının dışa aktardığı
+  `GST_PLUGIN_SYSTEM_PATH_1_0` / `GST_PLUGIN_SCANNER_1_0` değişkenleri
+  ManagedAppService tarafından veriliyor (MoltenVK zaten veriliyordu).
+- Uçtan uca doğrulandı (`PEAR_LIVE_PEARWINE_INSTALL=1` ile açılan canlı test,
+  geçici depoya): indirme, SHA-256, yol denetimi, açma, overlay, kayıt ≈3,5 dk.
+  `wine-launcher --version` → `wine-11.20 (MetalSharp Wine 6.0)`, `wineboot -i`
+  tam prefix oluşturuyor.
+- Settings → Wine'daki ayrı "Open-source Wine — automatic" bölümü kaldırıldı;
+  WineHQ Staging/Development üstteki motor listesinde.
+
 ### Güncellemeler — eski sürüm gösterme hatası (0.8.0 ile düzeltildi)
 - GUI her zaman Development Beta kanalını kullanıyor. Bu kanal GitHub listesindeki
   *ilk ön sürümü* seçiyordu ve kararlı sürümleri hiç görmüyordu: v0.7.0
