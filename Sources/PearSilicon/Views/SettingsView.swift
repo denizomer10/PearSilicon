@@ -348,7 +348,12 @@ struct SettingsView: View {
                     Task { await state.checkForUpdates() }
                 }
                 .disabled(state.isBusy)
-                Text("PearSilicon follows the development release channel. A Stable channel is not offered.")
+                Toggle("Update automatically", isOn: $state.automaticUpdatesEnabled)
+                if let status = state.automaticUpdateStatus {
+                    Text(status)
+                        .font(.caption)
+                }
+                Text("PearSilicon follows the development release channel. With automatic updates on, it checks at launch and every six hours, downloads and verifies a new build in the background, and installs it with a relaunch once no game or app is running. After an update, macOS may ask you to allow the new build in System Settings → Privacy & Security (Open Anyway), because PearSilicon is not notarized.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

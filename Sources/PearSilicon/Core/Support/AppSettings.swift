@@ -33,6 +33,15 @@ enum AppSettings {
         defaults.set(allowed, forKey: "pointerLock.enabled." + bundleID)
     }
 
+    // MARK: - Updates
+
+    /// Whether PearSilicon checks for, downloads and installs updates by
+    /// itself. On unless the user turned it off.
+    static var automaticUpdates: Bool {
+        get { defaults.object(forKey: "updates.automatic") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "updates.automatic") }
+    }
+
     // MARK: - PearLegacyEngine (32-bit iOS runtime) options
 
     /// Whether to open the 32-bit iOS app with an enlarged, resizable window

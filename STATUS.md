@@ -716,3 +716,11 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - New engine diagnostics: `PEAR_TRACE_OPEN=1` logs every `open()`, and opening a directory is noted in the log.
 - Verified: engine unit tests (41, incl. 4 new autoresize tests), Miku Flick title / music select / gameplay frames, Miku Flick 02 renderbuffer size. The engine's TestApp integration test fails while *building* the test app with the bundled clang (before the engine runs); unrelated to this change.
 - Release: PearSilicon 0.8.4 (29), PearLegacyEngine 1a1c8a0f.
+
+### 2026-11-12 — reliable, automatic updates (0.8.5)
+
+- Cause of "The app's PearBuildCommit disagrees with the resolved release tag": the 0.8.4 ZIP was built before its commit, so the app embedded `8ed32e5` while `v0.8.4` points to `b55b987`. The updater's check is correct and stays strict.
+- `scripts/publish-release.sh <notes.md>` is now the only release path: it refuses a dirty or unpushed tree or an existing tag, builds at HEAD, checks the built app's commit/version/build, ANGLE and signature, publishes `vX.Y.Z` + `vX.Y.Z-beta` at that exact commit, then downloads both assets and checks digest and embedded commit against the tags.
+- Automatic updates (Settings → Updates → "Update automatically", on by default): check 15 s after launch and every 6 h, download and verify in the background, install with relaunch once no game/app is running and nothing is busy. Disabled for bare SwiftPM builds and with `PEAR_DISABLE_AUTO_UPDATE`.
+- `apply-update` resolves App Translocation (a quarantined app runs from a read-only copy) to the real bundle, and its parent check uses the running copy's path. After installing, if the new app is quarantined, it opens System Settings → Privacy & Security and shows a dialog explaining "Open Anyway".
+- Verified: 342 XCTests (22 skips) + 24 Swift Testing; `apply-update` on a scratch install with a quarantined staged build swapped atomically, kept a rollback, macOS blocked the new build, Privacy & Security and the guidance dialog appeared.

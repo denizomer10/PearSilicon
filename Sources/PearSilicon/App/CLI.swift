@@ -183,10 +183,16 @@ enum CLI {
               let parentPID = Int32(parentText), parentPID > 0 else {
             throw CLIError.message("apply-update requires --source <staged.app> --parent-pid <pid>")
         }
-        let destination = Bundle.main.bundleURL.standardizedFileURL
-        guard destination.pathExtension == "app",
+        let runningBundle = Bundle.main.bundleURL.standardizedFileURL
+        guard runningBundle.pathExtension == "app",
               Bundle.main.bundleIdentifier == "com.pearsilicon.app" else {
             throw CLIError.message("apply-update must run from inside the installed PearSilicon.app")
+        }
+        // A quarantined app runs from a read-only translocated copy; replace
+        // the bundle the user actually launched instead.
+        guard let destination = AppTranslocation.originalURL(for: runningBundle),
+              destination.pathExtension == "app" else {
+            throw CLIError.message("Could not find where PearSilicon.app is installed (App Translocation); move it to Applications and try again")
         }
         let source = URL(fileURLWithPath: sourcePath).standardizedFileURL
         guard source.pathExtension == "app", source != destination else {
@@ -200,7 +206,9 @@ enum CLI {
 
         print("Waiting for PearSilicon (pid \(parentPID)) to quit…")
         let deadline = Date().addingTimeInterval(180)
-        let destinationExecutable = destination
+        // The parent runs from the same bundle as this helper (possibly the
+        // translocated copy), so compare against that path.
+        let destinationExecutable = runningBundle
             .appendingPathComponent("Contents/MacOS/PearSilicon").standardizedFileURL.path
         while kill(parentPID, 0) == 0 {
             guard Date() < deadline else {
@@ -246,8 +254,30 @@ enum CLI {
         try? FileManager.default.removeItem(at: container)
         if !arguments.flags.contains("no-launch") {
             _ = try Shell.run("/usr/bin/open", ["-n", destination.path])
+            if Quarantine.isQuarantined(destination) {
+                guideThroughGatekeeperApproval(appName: destination.deletingPathExtension().lastPathComponent)
+            }
         }
         return 0
+    }
+
+    /// PearSilicon is not notarized, so macOS blocks the first launch of a
+    /// freshly downloaded (quarantined) build. The blocked launch above makes
+    /// the "Open Anyway" button appear in Privacy & Security; open that pane
+    /// and tell the user what to click.
+    static let privacySecuritySettingsURL = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension"
+    static func gatekeeperApprovalMessage(appName: String) -> String {
+        "\(appName) was updated. Because it is not notarized by Apple, macOS may block the new version the first time it opens.\n\nIn System Settings → Privacy & Security, scroll down to Security and click “Open Anyway” next to \(appName), then confirm with your password or Touch ID."
+    }
+
+    private static func guideThroughGatekeeperApproval(appName: String) {
+        Thread.sleep(forTimeInterval: 2)
+        _ = try? Shell.run("/usr/bin/open", [privacySecuritySettingsURL])
+        let message = gatekeeperApprovalMessage(appName: appName)
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "display dialog \"\(message)\" with title \"\(appName) Update\" buttons {\"OK\"} default button \"OK\" with icon caution giving up after 600"
+        _ = try? Shell.run("/usr/bin/osascript", ["-e", script])
     }
 
     private static func verifyUpdateBundle(_ bundle: URL) throws {

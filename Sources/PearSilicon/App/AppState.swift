@@ -55,6 +55,15 @@ final class AppState: ObservableObject {
     /// Explicit, user-triggered updater state. No timer or telemetry.
     @Published private(set) var availableUpdate: AppUpdateCheck?
     @Published private(set) var stagedUpdate: StagedAppUpdate?
+    /// What the automatic updater is doing, for the status bar and Settings.
+    @Published private(set) var automaticUpdateStatus: String?
+    @Published var automaticUpdatesEnabled: Bool = AppSettings.automaticUpdates {
+        didSet {
+            AppSettings.automaticUpdates = automaticUpdatesEnabled
+            if automaticUpdatesEnabled { startAutomaticUpdates() } else { stopAutomaticUpdates() }
+        }
+    }
+    private var automaticUpdateTask: Task<Void, Never>?
 
     /// Launchable per-platform items.
     var platformApps: [InstalledApp] {
@@ -308,6 +317,7 @@ final class AppState: ObservableObject {
         do {
             try await refreshLibrary()
             refreshRuntimesIfPearSiliconWasUpdated()
+            startAutomaticUpdates()
         } catch {
             statusMessage = L10n.error("Could not initialize library: \(error.localizedDescription)")
         }
@@ -1525,8 +1535,9 @@ final class AppState: ObservableObject {
 
     // MARK: - Updates
 
-    /// Explicit user action only. Never runs on launch or on a timer.
-    /// Only the development release channel is offered in the GUI; the
+    /// Explicit check from Settings. Automatic checks run separately (see
+    /// `startAutomaticUpdates`). Only the development release channel is
+    /// offered in the GUI; the
     /// parameter remains for tests and non-GUI callers.
     func checkForUpdates(channel: UpdateChannel? = nil) async {
         guard !isBusy else { return }
@@ -1595,6 +1606,74 @@ final class AppState: ObservableObject {
             NSApplication.shared.terminate(nil)
         } catch {
             statusMessage = L10n.error("Could not start the update helper: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Automatic updates
+
+    /// Only a real, installed PearSilicon.app updates itself: not a bare
+    /// SwiftPM build, and not when PEAR_DISABLE_AUTO_UPDATE is set (tests).
+    static var canUpdateAutomatically: Bool {
+        Bundle.main.bundleIdentifier == "com.pearsilicon.app"
+            && Bundle.main.bundleURL.pathExtension == "app"
+            && ProcessInfo.processInfo.environment["PEAR_DISABLE_AUTO_UPDATE"] == nil
+    }
+
+    /// Checks shortly after launch and every six hours. A found update is
+    /// downloaded and verified in the background and installed (with a
+    /// relaunch) as soon as no game is running and nothing else is busy.
+    func startAutomaticUpdates() {
+        guard automaticUpdateTask == nil, automaticUpdatesEnabled, Self.canUpdateAutomatically else { return }
+        automaticUpdateTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            while !Task.isCancelled {
+                await self?.runAutomaticUpdateCycle()
+                try? await Task.sleep(for: .seconds(6 * 3600))
+            }
+        }
+    }
+
+    func stopAutomaticUpdates() {
+        automaticUpdateTask?.cancel()
+        automaticUpdateTask = nil
+        automaticUpdateStatus = nil
+    }
+
+    /// Whether an update can be installed right now without interrupting the
+    /// user: no game or managed app running, no busy work, no runtime refresh.
+    var isIdleForUpdateInstall: Bool {
+        runningGames.isEmpty && runningManagedEntries.isEmpty && !isBusy && runtimeRefresh == nil
+    }
+
+    func runAutomaticUpdateCycle() async {
+        do {
+            if stagedUpdate == nil {
+                let update = try await updater.checkForUpdates(channel: .developmentBeta)
+                guard update.isUpdateAvailable else {
+                    automaticUpdateStatus = nil
+                    return
+                }
+                availableUpdate = update
+                automaticUpdateStatus = "Downloading PearSilicon \(update.release.tagName)…"
+                stagedUpdate = try await updater.stage(update)
+                statusMessage = "PearSilicon \(update.release.tagName) downloaded and verified; it installs when your apps are closed"
+            }
+            guard let staged = stagedUpdate else { return }
+            let tag = staged.update.release.tagName
+            while !Task.isCancelled {
+                refreshRunningApps()
+                if isIdleForUpdateInstall { break }
+                automaticUpdateStatus = "PearSilicon \(tag) is ready and installs when your apps are closed"
+                try await Task.sleep(for: .seconds(15))
+            }
+            try Task.checkCancellation()
+            automaticUpdateStatus = "Installing PearSilicon \(tag)…"
+            await installStagedUpdateAndRelaunch()
+        } catch is CancellationError {
+            automaticUpdateStatus = nil
+        } catch {
+            automaticUpdateStatus = nil
+            statusMessage = L10n.error("Automatic update failed: \(error.localizedDescription)")
         }
     }
 }
