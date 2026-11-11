@@ -4,6 +4,25 @@ import XCTest
 
 final class WineReleaseTests: XCTestCase {
 
+    func testZipRejectsEscapingSymlinkBeforeExtraction() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("wine-zip-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: source.appendingPathComponent("escape").path,
+                                                   withDestinationPath: "/tmp")
+        let zip = root.appendingPathComponent("unsafe.zip")
+        _ = try Shell.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", source.path, zip.path])
+        XCTAssertThrowsError(try WineReleaseService.validateZipListing(zip))
+        try FileManager.default.removeItem(at: source.appendingPathComponent("escape"))
+        try Data("safe".utf8).write(to: source.appendingPathComponent("file"))
+        try FileManager.default.createSymbolicLink(atPath: source.appendingPathComponent("link").path,
+                                                   withDestinationPath: "file")
+        let safe = root.appendingPathComponent("safe.zip")
+        _ = try Shell.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", source.path, safe.path])
+        XCTAssertNoThrow(try WineReleaseService.validateZipListing(safe))
+    }
+
     func testLatestSelectsTheNewestMatchingAssetAndReadsGitHubDigest() async throws {
         let hash = String(repeating: "a", count: 64)
         let json = """

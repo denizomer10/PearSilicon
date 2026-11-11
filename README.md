@@ -368,3 +368,17 @@ output of `pearsilicon doctor`.
 
 MIT — see [LICENSE](LICENSE). Apple frameworks and installed apps retain their own
 licenses. PearSilicon does not provide app licenses, accounts or iOS firmware.
+
+### Signed PearWine runtime (0.8.2)
+
+PearWine 1.0.1 uses the pinned MetalSharp Wine 6.0 arm64 ZIP. The installer
+verifies its SHA-256, checks archive paths and links before extraction, and
+verifies the app signature after applying the external PearWine overlay.
+`Runtime/MetalSharp-Wine.app` stays intact; PearWine defaults live beside it
+in `Runtime/share/pearwine`. The original Developer ID signature and
+cross-architecture entitlement are retained. No upstream app is re-signed.
+
+Windows executable admission permits sections overlapping `SizeOfHeaders`,
+as seen in GTA Vice City, while rejecting truncated raw sections and headers.
+Real-game import and signed-runtime tests are opt-in; see
+`SignedWineIntegrationTests.swift` and `ManagedAppTests.swift`.

@@ -291,7 +291,8 @@ actor WineReleaseService {
             if madeRoot { _ = rmdir(root.path) }
         }
         try ManagedAppFiles.makeDirectory(staging)
-        let archive = staging.appendingPathComponent("wine.tar.xz")
+        let isZip = assetName.lowercased().hasSuffix(".zip")
+        let archive = staging.appendingPathComponent(isZip ? "wine.zip" : "wine.tar.xz")
         progress("Downloading \(assetName)…")
         try await transport.download(url, archive)
         try Task.checkCancellation()
@@ -304,16 +305,28 @@ actor WineReleaseService {
             throw WineReleaseError.invalid("Wine archive SHA-256 mismatch; the download was discarded")
         }
         progress("Checking archive paths…")
-        try Self.validateTarListing(archive)
         let extracted = staging.appendingPathComponent("Extracted", isDirectory: true)
         try ManagedAppFiles.makeDirectory(extracted)
         progress("Extracting Wine…")
-        _ = try Shell.run("/usr/bin/tar", ["-xJf", archive.path, "-C", extracted.path, "--no-same-owner"])
+        if isZip {
+            // Signed app bundles ship as ZIP. ditto keeps code signatures,
+            // extended attributes and symlinks exactly as notarized.
+            try Self.validateZipListing(archive)
+            _ = try Shell.run("/usr/bin/ditto", ["-x", "-k", archive.path, extracted.path])
+        } else {
+            try Self.validateTarListing(archive)
+            _ = try Shell.run("/usr/bin/tar", ["-xJf", archive.path, "-C", extracted.path, "--no-same-owner"])
+        }
         try Self.validateExtractedTree(extracted)
         let found = try Self.findWineExecutable(in: extracted)
         if let prepare {
             try await prepare(found.root)
             try Self.validateExtractedTree(extracted)
+        }
+        if found.relativeExecutable.contains(".app/Contents/MacOS/") {
+            let app = found.root.appendingPathComponent(found.relativeExecutable)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            _ = try Shell.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
         }
         progress("Installing \(found.relativeExecutable)…")
         let engine = try store.installDownloadedEngine(
@@ -373,7 +386,7 @@ actor WineReleaseService {
     // MARK: - Archive admission
 
     static func validateTarListing(_ archive: URL) throws {
-        let names = try Shell.run("/usr/bin/tar", ["-tJf", archive.path])
+        let names = try Shell.run("/usr/bin/tar", ["-tf", archive.path])
         var count = 0
         for line in names.split(separator: "\n", omittingEmptySubsequences: false) {
             guard !line.isEmpty else { continue }
@@ -383,7 +396,7 @@ actor WineReleaseService {
             }
             try validateEntryName(String(line))
         }
-        let verbose = try Shell.run("/usr/bin/tar", ["-tvJf", archive.path])
+        let verbose = try Shell.run("/usr/bin/tar", ["-tvf", archive.path])
         for line in verbose.split(separator: "\n") {
             // mode links owner group size month day time name…
             let fields = line.split(separator: " ", maxSplits: 8, omittingEmptySubsequences: true)
@@ -404,6 +417,12 @@ actor WineReleaseService {
                 try validateLinkTarget(target)
             }
         }
+    }
+
+    static func validateZipListing(_ archive: URL) throws {
+        // libarchive reads ZIP metadata too, including symlink targets. Check
+        // links before ditto extracts anything, just as for tar archives.
+        try validateTarListing(archive)
     }
 
     private static func validateEntryName(_ name: String) throws {
@@ -522,6 +541,12 @@ actor WineReleaseService {
                 best = (url, depth, rank)
             }
         }
+        // A signed Wine app (Name.app/Contents/MacOS/wine) is kept whole: its
+        // restricted entitlement (32-bit x86 support) is only valid inside the
+        // unmodified bundle, so the runtime root is the folder holding the .app.
+        if let bundle = try findWineAppBundle(in: extracted) {
+            return bundle
+        }
         guard let executable = best?.url else {
             throw WineReleaseError.invalid(
                 "The archive contains no complete Wine runtime: no native bin/wine64, bin/wine or bin/wine-launcher next to lib and share"
@@ -534,6 +559,22 @@ actor WineReleaseService {
         }
         let relative = String(executable.path.dropFirst(root.path.count + 1))
         return (root, relative)
+    }
+}
+
+extension WineReleaseService {
+    static func findWineAppBundle(in extracted: URL) throws -> (root: URL, relativeExecutable: String)? {
+        let items = try FileManager.default.contentsOfDirectory(at: extracted, includingPropertiesForKeys: nil)
+        for app in items where app.pathExtension == "app" {
+            let contents = app.appendingPathComponent("Contents", isDirectory: true)
+            let executable = contents.appendingPathComponent("MacOS/wine")
+            guard FileManager.default.fileExists(atPath: contents.appendingPathComponent("lib/wine").path),
+                  FileManager.default.fileExists(atPath: contents.appendingPathComponent("share/wine").path),
+                  FileManager.default.isExecutableFile(atPath: executable.path),
+                  (try? ManagedExecutable.validateMacOS(executable)) != nil else { continue }
+            return (extracted, "\(app.lastPathComponent)/Contents/MacOS/wine")
+        }
+        return nil
     }
 }
 

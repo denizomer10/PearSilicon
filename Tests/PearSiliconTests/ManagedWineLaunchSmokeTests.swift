@@ -38,6 +38,7 @@ final class ManagedWineLaunchSmokeTests: XCTestCase {
             let log = entry.dataURL.appendingPathComponent("launch.log")
             print("Game process exited early; log:\n\((try? String(contentsOf: log, encoding: .utf8)) ?? "")")
         }
+        XCTAssertTrue(process.isRunning, "Game exited during launch smoke test")
         process.stop()
     }
 
@@ -66,9 +67,16 @@ final class ManagedWineLaunchSmokeTests: XCTestCase {
             if (!prefix) return 2;
             char path[4096];
             snprintf(path, sizeof(path), "%s/system.reg", prefix);
-            FILE *f = fopen(path, "w");
-            if (f) { fputs("WINE REGISTRY Version 2\\n", f); fclose(f); }
-            if (argc > 1 && strstr(argv[1], "wineboot")) return 0;
+            if (argc > 1 && strstr(argv[1], "wineboot")) {
+                // Match wineserver flushing the registry after wineboot exits.
+                if (fork() == 0) {
+                    usleep(300000);
+                    FILE *f = fopen(path, "w");
+                    if (f) { fputs("WINE REGISTRY Version 2\\n", f); fclose(f); }
+                    _exit(0);
+                }
+                return 0;
+            }
             sleep(30);
             return 0;
         }

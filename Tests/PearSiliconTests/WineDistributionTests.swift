@@ -86,7 +86,7 @@ final class PearWineLiveInstallTests: XCTestCase {
         let engine = try await WineDistributionInstaller().install(.pearWine, store: store) { print("[install]", $0) }
         try engine.validate()
         XCTAssertEqual(engine.distribution, .pearWine)
-        XCTAssertTrue(engine.executablePath.hasSuffix("bin/wine-launcher"), engine.executablePath)
+        XCTAssertTrue(engine.executablePath.hasSuffix(".app/Contents/MacOS/wine"), engine.executablePath)
         XCTAssertEqual(WineDistributionInstaller.environmentDefaults(for: engine)["WINEMSYNC"], "1")
         XCTAssertNotNil(WineDistributionInstaller.registryDefaults(for: engine))
         XCTAssertEqual(try store.engines().map(\.id), [engine.id])

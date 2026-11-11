@@ -272,19 +272,40 @@ final class ManagedAppTests: XCTestCase {
         XCTAssertTrue(ManagedAppService.windowsExecutableOnlyImportHint.contains("folder"))
     }
 
-    func testPEAdmissionRejectsDisguisedFilesDLLsDriversAndTruncatedSections() throws {
-        var truncatedSection = ManagedAppTestFixture.pe()
-        ManagedAppTestFixture.put32(0xfffffff0, into: &truncatedSection, at: 392 + 20)
+    func testPEAdmissionRejectsDisguisedFilesDLLsDriversAndMissingSectionTables() throws {
         var badSignature = ManagedAppTestFixture.pe()
         badSignature[128] = 0
-        for data in [Data("not a program".utf8), ManagedAppTestFixture.pe(dll: true),
-                     ManagedAppTestFixture.pe(subsystem: 1), truncatedSection, badSignature] {
+        var missingSectionTable = ManagedAppTestFixture.pe()
+        ManagedAppTestFixture.put16(96, into: &missingSectionTable, at: 134) // 96 sections, file too short
+        var armThirtyTwo = ManagedAppTestFixture.pe()
+        ManagedAppTestFixture.put16(0x1c4, into: &armThirtyTwo, at: 132)
+        var truncatedSection = ManagedAppTestFixture.pe()
+        ManagedAppTestFixture.put32(0xfffffff0, into: &truncatedSection, at: 392 + 20)
+        for data in [truncatedSection, Data("not a program".utf8), ManagedAppTestFixture.pe(dll: true),
+                     ManagedAppTestFixture.pe(subsystem: 1), ManagedAppTestFixture.pe(subsystem: 10),
+                     badSignature, missingSectionTable, armThirtyTwo] {
             let fixture = try ManagedAppTestFixture()
             defer { fixture.remove() }
             let source = fixture.root.appendingPathComponent("Game.exe")
             try data.write(to: source)
             XCTAssertThrowsError(try ManagedAppService().importWindowsExecutable(from: source, libraryRoot: fixture.library, engineID: "test"))
             XCTAssertFalse(ManagedAppFiles.exists(fixture.library))
+        }
+    }
+
+    /// Admission tolerates header overlap and extra directory declarations;
+    /// Wine remains responsible for mapping and loading the image.
+    func testPEAdmissionAcceptsLayoutsTheWindowsLoaderAccepts() throws {
+        var headerOverlap = ManagedAppTestFixture.pe()
+        ManagedAppTestFixture.put32(0x400, into: &headerOverlap, at: 152 + 60)  // SizeOfHeaders past section
+        var manyDirectories = ManagedAppTestFixture.pe()
+        ManagedAppTestFixture.put32(32, into: &manyDirectories, at: 152 + 108)
+        for data in [headerOverlap, manyDirectories] {
+            let fixture = try ManagedAppTestFixture()
+            defer { fixture.remove() }
+            let source = fixture.root.appendingPathComponent("Game.exe")
+            try data.write(to: source)
+            XCTAssertNoThrow(try ManagedExecutable.validatePE(source))
         }
     }
 
@@ -556,5 +577,54 @@ struct ManagedAppTestFixture {
             let shift = (little ? index : 3 - index) * 8
             data[offset + index] = UInt8(truncatingIfNeeded: value >> shift)
         }
+    }
+}
+
+/// Runs the Windows program admission check over every .exe below the folders
+/// in PEAR_PE_SAMPLES (colon-separated). Opt-in: real game folders are not in
+/// the repository.
+final class RealWindowsProgramAdmissionTests: XCTestCase {
+    func testRealExecutablesAreAdmitted() throws {
+        let folders = (ProcessInfo.processInfo.environment["PEAR_PE_SAMPLES"] ?? "")
+            .split(separator: ":").map { URL(fileURLWithPath: String($0)) }
+        try XCTSkipIf(folders.isEmpty, "Set PEAR_PE_SAMPLES to folders containing Windows programs.")
+        var checked = 0
+        var rejected: [String] = []
+        for folder in folders {
+            let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)
+            while let url = walker?.nextObject() as? URL {
+                guard url.pathExtension.lowercased() == "exe" else { continue }
+                checked += 1
+                do { try ManagedExecutable.validatePE(url) } catch {
+                    rejected.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+        }
+        print("[pe] checked \(checked) programs, rejected \(rejected.count)")
+        rejected.forEach { print("[pe] rejected", $0) }
+        XCTAssertGreaterThan(checked, 0)
+        // Only kernel/driver images (for example Wine's ntoskrnl.exe) may be refused.
+        XCTAssertTrue(rejected.allSatisfy { $0.contains("drivers") || $0.contains("driver or firmware") }, "\(rejected)")
+    }
+}
+
+/// Imports a real Windows game folder into a temporary library, the same way
+/// "Add Windows Game" does. Opt-in: PEAR_WINDOWS_GAME_FOLDER=<folder> and
+/// PEAR_WINDOWS_GAME_EXE=<relative .exe path>.
+final class RealWindowsGameImportTests: XCTestCase {
+    func testImportsRealGameFolder() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let folder = env["PEAR_WINDOWS_GAME_FOLDER"], let exe = env["PEAR_WINDOWS_GAME_EXE"] else {
+            throw XCTSkip("Set PEAR_WINDOWS_GAME_FOLDER and PEAR_WINDOWS_GAME_EXE.")
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pear-import-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entry = try ManagedAppService().importWindowsFolder(
+            from: URL(fileURLWithPath: folder), executablePath: exe,
+            libraryRoot: root.appendingPathComponent("Library"), engineID: "pearwine-1.0.0"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: entry.payloadURL.path))
+        print("[import] \(entry.displayName) -> \(entry.manifest.payloadPath)")
     }
 }

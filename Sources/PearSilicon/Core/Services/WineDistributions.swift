@@ -45,7 +45,7 @@ struct WineDistribution: Identifiable, Hashable, Sendable {
         WineDistribution(
             id: "metalsharp", name: "MetalSharp Wine",
             summary: "PearWine's upstream: arm64 Wine 11 with FEX. Try it when a PearWine change breaks a game.",
-            source: .githubRelease(repository: "metalsharp/MetalSharp-Wine", assetPattern: "metalsharp-wine-*-arm64.tar.xz"),
+            source: .githubRelease(repository: "metalsharp/MetalSharp-Wine", assetPattern: "MetalSharp-Wine-*-arm64.zip"),
             recommended: false, nativeArm64: true
         ),
         WineDistribution(

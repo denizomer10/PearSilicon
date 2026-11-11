@@ -664,3 +664,10 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - GUI yenilemesi: uygulama içi Pear logosu ve boş durum ekranı, Yeniden boyutlandırılabilir iki sütunlu detay sayfası, cam sekme çubuğu, durum rozetleri, **Settings → About** sekmesi. Sabit 260 pt Actions sütununun yol açtığı kırpma giderildi; test amaçlı sürüklenebilir platform anahtarı kaldırılarak pencere yerleşimi sabitlendi.
 - Doğrulanan: `swift build`, `swift test` (**311 XCTest + 24 Swift Testing, 16 skip, 0 hata**), yeni `AppCompatibility` algılama testleri (4 dosya senaryosu), `./scripts/build-app.sh release`.
 
+
+### 2026-11-11 — Vice City and signed PearWine
+
+- Fixed PE admission for Vice City's `.text` / SizeOfHeaders overlap while preserving raw section bounds checks. Three real EXEs admitted; full game folder imported.
+- PearWine 1.0.1 uses the verified signed MetalSharp Wine ZIP, keeping its bundle and cross-architecture entitlement intact. Installed deep/strict signature verification passes. Defaults are outside the signed app.
+- Fixed first-prefix initialization timeout and asynchronous registry-flush race. Fresh-prefix initialization and managed GTA Vice City process smoke test passed in 39 seconds. Visual gameplay is not verified: Computer Use permission is unavailable.
+- Release: PearSilicon 0.8.2 (27), PearWine 1.0.1. Details and test evidence: `docs/VICE_CITY_PEARWINE.md`.

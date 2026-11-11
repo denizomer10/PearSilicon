@@ -27,6 +27,15 @@ struct WineEngine: Codable, Hashable, Identifiable, Sendable {
 
     var executableURL: URL { rootURL.appendingPathComponent(executablePath) }
 
+    /// Signed Wine app bundles (PearWine's 32-bit capable base) run from
+    /// `Runtime/<Name>.app/Contents/MacOS/wine` and must stay intact: their
+    /// restricted entitlement is only valid inside the unmodified bundle.
+    var isAppBundleRuntime: Bool { executablePath.contains(".app/Contents/MacOS/") }
+
+    /// The folder that holds Wine's `bin` (or `MacOS`), `lib` and `share`:
+    /// `Runtime` for a plain build, `Runtime/<Name>.app/Contents` for a bundle.
+    var wineHome: URL { executableURL.deletingLastPathComponent().deletingLastPathComponent() }
+
     func validate() throws {
         try LibraryPath.validateComponent(id)
         _ = try ManagedAppFiles.displayText(name)
@@ -39,10 +48,12 @@ struct WineEngine: Codable, Hashable, Identifiable, Sendable {
         let runtime = rootURL.appendingPathComponent("Runtime", isDirectory: true)
         _ = try ManagedAppFiles.existingDirectory(runtime)
         try ManagedAppFiles.validateTree(runtime)
-        guard executablePath.contains("/bin/"),
-              FileManager.default.fileExists(atPath: runtime.appendingPathComponent("bin").path),
-              FileManager.default.fileExists(atPath: runtime.appendingPathComponent("lib").path)
-                || FileManager.default.fileExists(atPath: runtime.appendingPathComponent("share").path) else {
+        let home = wineHome
+        guard executablePath.contains("/bin/") || isAppBundleRuntime,
+              home.path.hasPrefix(runtime.path + "/") || home.path == runtime.path,
+              FileManager.default.fileExists(atPath: executableURL.deletingLastPathComponent().path),
+              FileManager.default.fileExists(atPath: home.appendingPathComponent("lib").path)
+                || FileManager.default.fileExists(atPath: home.appendingPathComponent("share").path) else {
             throw PearError.invalidPackage(
                 "Incomplete Wine engine: reinstall it so Runtime contains bin, lib and share. A launcher-only copy cannot initialize a prefix."
             )

@@ -136,7 +136,7 @@ struct ManagedAppService: Sendable {
                 throw PearError.launchFailed("Select the Wine engine recorded in this game's manifest")
             }
             try engine.validate()
-            let runtime = engine.rootURL.appendingPathComponent("Runtime", isDirectory: true)
+            let runtime = engine.wineHome
             let backend = entry.manifest.graphicsBackend ?? .moltenVK
             switch backend {
             case .moltenVK:
@@ -205,7 +205,9 @@ struct ManagedAppService: Sendable {
             configuration.arguments = ["wineboot.exe", "-u"]
             let bootstrap = try spawn(configuration, entry: entry, purpose: .wineBootstrap, activate: false)
             do {
-                let deadline = ContinuousClock.now.advanced(by: .seconds(45))
+                // First-run FEX translation and prefix setup in a signed ARM64
+                // bundle can exceed 45 seconds on an M1. Keep a bounded wait.
+                let deadline = ContinuousClock.now.advanced(by: .seconds(engine.isAppBundleRuntime ? 180 : 45))
                 while bootstrap.isRunning {
                     try Task.checkCancellation()
                     guard ContinuousClock.now < deadline else {
@@ -219,6 +221,14 @@ struct ManagedAppService: Sendable {
             } catch {
                 bootstrap.stop()
                 throw error
+            }
+            // wineboot can exit before wineserver flushes the new registry.
+            // Do not reject a successfully initialized prefix in that interval.
+            let registryDeadline = ContinuousClock.now.advanced(by: .seconds(15))
+            while !ManagedAppFiles.exists(entry.prefixURL.appendingPathComponent("system.reg")),
+                  ContinuousClock.now < registryDeadline {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(100))
             }
             // Wine commonly creates z: -> / and absolute user-folder links.
             // Delete the links, not their targets, before admitting the game.
@@ -487,7 +497,7 @@ struct ManagedAppService: Sendable {
     /// aborts while creating its swapchain. Refuse the backend instead of
     /// presenting a doomed launch. A missing `nm` answers conservatively false.
     static func engineExposesMetalViewAPI(_ engine: WineEngine) -> Bool {
-        let wineLib = engine.rootURL.appendingPathComponent("Runtime/lib/wine", isDirectory: true)
+        let wineLib = engine.wineHome.appendingPathComponent("lib/wine", isDirectory: true)
         for arch in ["x86_64-unix", "aarch64-unix", "i386-unix", "arm-unix"] {
             let winemac = wineLib.appendingPathComponent(arch).appendingPathComponent("winemac.so")
             guard FileManager.default.fileExists(atPath: winemac.path) else { continue }
@@ -525,8 +535,8 @@ struct ManagedAppService: Sendable {
             result["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d"
             result["WINEDEBUG"] = "-all"
             if let engine {
-                let runtime = engine.rootURL.appendingPathComponent("Runtime", isDirectory: true)
-                let bin = runtime.appendingPathComponent("bin", isDirectory: true)
+                let runtime = engine.wineHome
+                let bin = engine.executableURL.deletingLastPathComponent()
                 result["PATH"] = bin.path + ":/usr/bin:/bin"
                 // Running the release's bin/wine directly bypasses its .app
                 // wrapper, so supply the paths that wrapper normally exports.
@@ -1045,41 +1055,58 @@ enum ManagedExecutable {
         guard cursor == length, macOS else { throw invalid("Executable has no unambiguous macOS build platform") }
     }
 
+    /// Bounded header admission check for a Windows program. This is not a
+    /// complete loader validation; Wine decides whether the image can run.
+    /// Real games can declare SizeOfHeaders past the first section (including
+    /// the tested gta-vc.exe). Allow this overlap, while retaining bounded
+    /// headers, section tables and nonempty raw section ranges.
     static func validatePE(_ url: URL) throws {
         guard url.pathExtension.lowercased() == "exe" else { throw invalid("Select a Windows .exe") }
         let reader = try ManagedBinaryReader(url)
+        guard reader.size >= 64 else { throw invalid("Missing Windows DOS/PE signature") }
         let dos = try reader.read(0, 64)
         guard dos[0] == 0x4d, dos[1] == 0x5a else { throw invalid("Missing Windows DOS/PE signature") }
         let offset = UInt64(u32(dos, 60, little: true))
-        guard offset >= 64 else { throw invalid("Invalid PE header offset") }
+        guard offset >= 4, offset + 24 <= reader.size else { throw invalid("Invalid PE header offset") }
         let header = try reader.read(offset, 24)
+        guard Array(header.prefix(4)) == [0x50, 0x45, 0, 0] else {
+            throw invalid("Not a Windows PE program (16-bit DOS/NE programs are not supported)")
+        }
         let machine = u16(header, 4)
+        // x86 (including 32-bit games via WoW64), x64 and ARM64.
+        guard [UInt16(0x14c), 0x8664, 0xaa64].contains(machine) else {
+            throw invalid("This Windows program is built for a CPU Wine cannot run on Apple silicon")
+        }
         let sections = Int(u16(header, 6))
         let optionalBytes = Int(u16(header, 20))
         let flags = u16(header, 22)
-        guard Array(header.prefix(4)) == [0x50, 0x45, 0, 0],
-              [UInt16(0x14c), 0x8664, 0xaa64].contains(machine), (1...96).contains(sections),
-              flags & 0x0002 != 0, flags & 0x2000 == 0, optionalBytes >= 96, optionalBytes <= 4096 else {
-            throw invalid("Not a supported Windows PE program (DLLs and drivers are not launch targets)")
+        guard flags & 0x0002 != 0, flags & 0x2000 == 0 else {
+            throw invalid("Not a Windows program (DLLs and drivers are not launch targets)")
+        }
+        guard optionalBytes >= (machine == 0x14c ? 96 : 112), offset + 24 + UInt64(optionalBytes) <= reader.size else {
+            throw invalid("Invalid Windows PE optional header")
         }
         let optional = try reader.read(offset + 24, optionalBytes)
-        let pe32 = machine == 0x14c
-        let base = pe32 ? 96 : 112
-        guard optionalBytes >= base, u16(optional, 0) == (pe32 ? 0x10b : 0x20b),
-              [UInt16(2), 3].contains(u16(optional, 68)) else { throw invalid("Invalid Windows PE optional header/subsystem") }
-        let directories = u32(optional, pe32 ? 92 : 108, little: true)
-        guard directories <= 16, UInt64(base) + UInt64(directories) * 8 <= UInt64(optionalBytes) else {
-            throw invalid("Invalid PE data directories")
+        guard u16(optional, 0) == (machine == 0x14c ? 0x10b : 0x20b) else {
+            throw invalid("Invalid Windows PE optional header")
         }
+        // 1 = native/driver, 10–13 = EFI images, 16 = boot application.
+        let subsystem = u16(optional, 68)
+        guard ![UInt16(1), 10, 11, 12, 13, 16].contains(subsystem) else {
+            throw invalid("This is a driver or firmware image, not a Windows program")
+        }
+        // Require a complete section table before checking its raw ranges.
         let tableOffset = offset + 24 + UInt64(optionalBytes)
+        guard tableOffset + UInt64(sections) * 40 <= reader.size else {
+            throw invalid("The Windows program is truncated (section table missing)")
+        }
         let table = try reader.read(tableOffset, sections * 40)
-        let headersSize = UInt64(u32(optional, 60, little: true))
-        guard headersSize >= tableOffset + UInt64(sections * 40), headersSize <= reader.size else { throw invalid("Invalid PE headers size") }
         for index in 0..<sections {
             let bytes = UInt64(u32(table, index * 40 + 16, little: true))
             let start = UInt64(u32(table, index * 40 + 20, little: true))
-            guard start <= reader.size, bytes <= reader.size - start,
-                  bytes == 0 || start >= headersSize else { throw invalid("PE section escapes the file") }
+            guard bytes == 0 || (start <= reader.size && bytes <= reader.size - start) else {
+                throw invalid("PE section escapes the file")
+            }
         }
     }
 
