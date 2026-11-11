@@ -91,12 +91,14 @@ or right-click → **Open**.
 ### Build from source
 
 ```sh
+git clone --recurse-submodules https://github.com/denizomer10/PearSilicon.git
+# existing checkout: git submodule update --init --recursive
 ./scripts/build-app.sh release     # app + runtime
 open build/PearSilicon.app
 
 ./scripts/make-zip.sh release      # build/PearSilicon.zip
 swift test                         # test suite
-./runtime/build.sh                 # runtime dylib only
+./runtime/build.sh                 # PearRuntime only (submodule)
 ```
 
 ## Quick start
@@ -182,9 +184,13 @@ tap, hold, joystick, mouse-look and swipe.
 - If no controller bindings exist, a compatibility fallback maps the standard pad
   to the keyboard keymap. Mapped keyboard events are consumed to suppress the
   system key beep.
-- Genshin Impact’s iOS build does not expose its native controller mode on Mac;
-  its Control Type remains “Touchscreen”. Controller keymapper bindings still
-  drive its touch controls.
+- Games with their own controller support (Unreal and Unity titles such as
+  GTA: Vice City – Definitive Edition and Genshin Impact) get the pad directly.
+  PearRuntime 0.8 no longer re-posts a "controller connected" event that these
+  engines treated as a second player. Once a game shows that it drives
+  controllers itself, the automatic pad-to-touch fallback turns off, so touch
+  input no longer pulls the game back to touch mode. Explicit controller
+  bindings in the Keymap editor still apply.
 - **Keyboard Mouse to Gamepad Inputs** is a separate per-app toggle for games
   with native controller support. The game receives a hidden virtual controller;
   every A/B/X/Y, shoulder, trigger, D-pad, MENU/OPTIONS and stick control can be
@@ -233,6 +239,15 @@ pearsilicon mousetouch com.example.game off
 Imported games live under `wine-apps/<id>/` with `Payload`, `Data` and `Prefix`.
 The prefix is private to the game; absolute host drive mappings are removed.
 
+- **PearWine is the recommended engine** ([PearWine](https://github.com/denizomer10/PearWine)):
+  native arm64 Wine 11 with FEX, Mullion (Direct3D 10–12 on Metal), DXVK and
+  VKD3D, and no Rosetta. When a Windows game is opened without an engine, the
+  engine chooser offers PearWine first. Once PearWine is installed, games use it
+  automatically.
+- **Fallbacks**: if a game stops right after starting, its detail pane offers the
+  next engine in this order: MetalSharp Wine, Sikarugir Wine 11, WhiskyWine,
+  WineHQ Staging, WineHQ Development. **Settings → Wine** lists them all.
+  Every download is checked against its SHA-256 before installation.
 - Install open-source WineHQ **Staging** or **Development** engines from
   **Settings → Wine**, or register a local runtime.
 - Remove a registered engine from Settings; game prefixes and saves are kept.
@@ -291,6 +306,18 @@ Default support root:
    credentials, cloud surfaces, device identity, paths, pointer lock, ODR,
    audio/haptics, consent, networking and unhandled-key beeps.
 4. Wine entries run as direct native processes; no nested sandbox or VM.
+
+PearSilicon is split into separate projects:
+
+| Project | Role |
+|---|---|
+| [PearRuntime](https://github.com/denizomer10/PearRuntime) | Modular compatibility layer for modern arm64 iOS apps (`runtime/`, git submodule) |
+| [PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine) | 32-bit iOS engine |
+| [PearWine](https://github.com/denizomer10/PearWine) | Recommended Wine engine for Apple silicon |
+| [PearDebug](https://github.com/denizomer10/PearDebug) | Log sessions, log analysis and engine probes (`Vendor/PearDebug`, git submodule) |
+
+Every launch writes a PearDebug log session (the previous run is kept as
+`<id>….1.log`). `pearsilicon analyze <app>` runs PearDebug's analyzer on the newest log.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the execution model and
 [docs/CLI.md](docs/CLI.md) for diagnostics and environment variables.

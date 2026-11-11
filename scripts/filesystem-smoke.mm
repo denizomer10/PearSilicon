@@ -31,7 +31,7 @@ static int FixtureGetPath(int, int, char *);
 #define fchmod FixtureFchmod
 #define fcntl FixtureGetPath
 #ifndef PEAR_FILESYSTEM_SOURCE
-#define PEAR_FILESYSTEM_SOURCE "../runtime/SandboxShim.mm"
+#define PEAR_FILESYSTEM_SOURCE "../runtime/modules/storage/SandboxShim.mm"
 #endif
 #include PEAR_FILESYSTEM_SOURCE
 #undef section

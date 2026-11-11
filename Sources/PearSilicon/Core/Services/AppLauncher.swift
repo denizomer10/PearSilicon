@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import PearDebugKit
 
 /// How an app is started.
 enum LaunchMethod: Sendable {
@@ -45,6 +46,13 @@ final class AppLauncher: @unchecked Sendable {
         self.logDirectory = libraryURL
             .deletingLastPathComponent()
             .appendingPathComponent("Logs", isDirectory: true)
+    }
+
+    /// One PearDebug log session per launch. The previous run is rotated to
+    /// `<id>…1.log` instead of being truncated, so a crash log survives the
+    /// relaunch that usually follows it. PearDebug reads the same files.
+    private func openLogSession(for app: InstalledApp, source: LogSource) -> FileHandle? {
+        try? LogStore(directory: logDirectory).beginSessionHandle(appID: app.id, source: source).1
     }
 
     // MARK: - Public API
@@ -399,10 +407,7 @@ final class AppLauncher: @unchecked Sendable {
         process.currentDirectoryURL = app.bundleURL
         process.environment = env
 
-        try? fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
-        let logURL = logDirectory.appendingPathComponent("\(app.id).native.log")
-        fileManager.createFile(atPath: logURL.path, contents: nil)
-        if let handle = try? FileHandle(forWritingTo: logURL) {
+        if let handle = openLogSession(for: app, source: .macApp) {
             process.standardOutput = handle
             process.standardError = handle
         } else {
@@ -458,10 +463,7 @@ final class AppLauncher: @unchecked Sendable {
         // Redirect output to a log file. Never leave it on an undrained pipe:
         // once the pipe buffer fills the child blocks on write and the app
         // appears to hang (a white screen).
-        try? fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
-        let logURL = logDirectory.appendingPathComponent("\(app.id).log")
-        fileManager.createFile(atPath: logURL.path, contents: nil)
-        if let handle = try? FileHandle(forWritingTo: logURL) {
+        if let handle = openLogSession(for: app, source: .runtime) {
             process.standardOutput = handle
             process.standardError = handle
         } else {
@@ -629,10 +631,7 @@ final class AppLauncher: @unchecked Sendable {
         process.currentDirectoryURL = resourceDir
         process.environment = env
 
-        try? fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
-        let logURL = logDirectory.appendingPathComponent("\(app.id).log")
-        fileManager.createFile(atPath: logURL.path, contents: nil)
-        if let handle = try? FileHandle(forWritingTo: logURL) {
+        if let handle = openLogSession(for: app, source: .legacyEngine) {
             process.standardOutput = handle
             process.standardError = handle
         } else {

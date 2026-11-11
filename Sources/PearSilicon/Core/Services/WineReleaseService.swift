@@ -259,6 +259,28 @@ actor WineReleaseService {
         _ check: WineReleaseCheck, store: WineEngineStore,
         progress: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> WineEngine {
+        try await installArchive(
+            from: check.assetURL, assetName: check.assetName, sha256: check.sha256,
+            engineID: Self.engineID(channel: check.channel, tag: check.tag),
+            name: "Wine \(check.channel.title.replacingOccurrences(of: "WineHQ ", with: ""))",
+            version: check.tag, distribution: .wineHQ, store: store, progress: progress
+        )
+    }
+
+    /// Shared installer for every Wine distribution (WineHQ, PearWine, Apple
+    /// silicon forks): download, SHA-256 check, path-safe extraction, optional
+    /// `prepare` step on the runtime root (PearWine applies its overlay there),
+    /// then registration. Nothing from the archive is executed.
+    func installArchive(
+        from url: URL, assetName: String, sha256: String, engineID: String,
+        name: String, version: String, distribution: WineEngine.Distribution,
+        store: WineEngineStore,
+        prepare: (@Sendable (URL) async throws -> Void)? = nil,
+        progress: @escaping @Sendable (String) -> Void = { _ in }
+    ) async throws -> WineEngine {
+        guard let expectedHash = Self.normalizedHash(sha256) else {
+            throw WineReleaseError.invalid("\(assetName) has no valid SHA-256 to verify against")
+        }
         let root = try ManagedAppFiles.canonicalRoot(store.rootURL)
         let madeRoot = !ManagedAppFiles.exists(root)
         if madeRoot { try ManagedAppFiles.makeDirectory(root) }
@@ -270,15 +292,15 @@ actor WineReleaseService {
         }
         try ManagedAppFiles.makeDirectory(staging)
         let archive = staging.appendingPathComponent("wine.tar.xz")
-        progress("Downloading \(check.assetName)…")
-        try await transport.download(check.assetURL, archive)
+        progress("Downloading \(assetName)…")
+        try await transport.download(url, archive)
         try Task.checkCancellation()
         let size = (try? FileManager.default.attributesOfItem(atPath: archive.path)[.size] as? NSNumber)?.int64Value ?? 0
         guard size > 0, size <= Self.maximumDownloadBytes else {
             throw WineReleaseError.invalid("The downloaded Wine archive is empty or too large")
         }
         progress("Verifying SHA-256…")
-        guard try WineReleaseService.sha256(of: archive) == check.sha256.lowercased() else {
+        guard try WineReleaseService.sha256(of: archive) == expectedHash else {
             throw WineReleaseError.invalid("Wine archive SHA-256 mismatch; the download was discarded")
         }
         progress("Checking archive paths…")
@@ -289,13 +311,15 @@ actor WineReleaseService {
         _ = try Shell.run("/usr/bin/tar", ["-xJf", archive.path, "-C", extracted.path, "--no-same-owner"])
         try Self.validateExtractedTree(extracted)
         let found = try Self.findWineExecutable(in: extracted)
-        let engineID = Self.engineID(channel: check.channel, tag: check.tag)
+        if let prepare {
+            try await prepare(found.root)
+            try Self.validateExtractedTree(extracted)
+        }
         progress("Installing \(found.relativeExecutable)…")
         let engine = try store.installDownloadedEngine(
-            extractedRoot: found.root, id: engineID,
-            name: "Wine \(check.channel.title.replacingOccurrences(of: "WineHQ ", with: ""))",
-            version: check.tag, executablePath: found.relativeExecutable,
-            distribution: .wineHQ
+            extractedRoot: found.root, id: engineID, name: name,
+            version: version, executablePath: found.relativeExecutable,
+            distribution: distribution
         )
         keepStaging = false
         progress("Installed \(engine.name) \(engine.version)")
@@ -348,7 +372,7 @@ actor WineReleaseService {
 
     // MARK: - Archive admission
 
-    private static func validateTarListing(_ archive: URL) throws {
+    static func validateTarListing(_ archive: URL) throws {
         let names = try Shell.run("/usr/bin/tar", ["-tJf", archive.path])
         var count = 0
         for line in names.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -430,7 +454,7 @@ actor WineReleaseService {
         }
     }
 
-    private static func validateExtractedTree(_ root: URL) throws {
+    static func validateExtractedTree(_ root: URL) throws {
         var count = 0
         var bytes: Int64 = 0
         guard let enumerator = FileManager.default.enumerator(

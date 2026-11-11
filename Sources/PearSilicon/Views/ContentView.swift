@@ -65,6 +65,10 @@ struct ContentView: View {
                 wineExecutablePicker = nil
             }
         }
+        .sheet(item: $state.wineEngineChoiceEntry) { entry in
+            WineEngineChooserSheet(entry: entry)
+                .environmentObject(state)
+        }
         .alert(item: $alert) { payload in
             Alert(title: Text(payload.title), message: Text(payload.message), dismissButton: .default(Text("OK")))
         }

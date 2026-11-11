@@ -284,19 +284,45 @@ struct ManagedAppDetailView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Wine engine").font(.caption).foregroundStyle(.secondary)
             if state.wineEngines.isEmpty {
-                Text("No engine registered. Add one in Settings.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                Button {
+                    state.wineEngineChoiceEntry = entry
+                } label: {
+                    Label("Choose Engine (PearWine recommended)…", systemImage: "star.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glassProminent)
             } else {
                 Picker("Wine engine", selection: Binding(
                     get: { entry.manifest.wineEngineID ?? state.wineEngines[0].id },
                     set: { state.setWineEngine($0, for: entry) }
                 )) {
                     ForEach(state.wineEngines) { engine in
-                        Text("\(engine.name) \(engine.version)").tag(engine.id)
+                        let recommended = engine.distribution == .pearWine
+                        Text("\(engine.name) \(engine.version)\(recommended ? " — Recommended" : "")").tag(engine.id)
                     }
                 }
                 .labelsHidden()
+                if let failedEngine = state.wineLaunchFailures[entry.id] {
+                    let next = state.nextWineEngine(after: failedEngine)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("The game stopped right after starting on this engine.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        if let next {
+                            Button {
+                                Task { await state.retryWithNextWineEngine(entry) }
+                            } label: {
+                                Label("Try \(next.name)", systemImage: "arrow.triangle.2.circlepath")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.glass)
+                            .disabled(running || state.isBusy)
+                        }
+                        Button("More Engines…") { state.wineEngineChoiceEntry = entry }
+                            .buttonStyle(.link)
+                            .font(.caption)
+                    }
+                }
             }
 
             Button {

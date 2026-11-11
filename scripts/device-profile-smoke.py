@@ -998,11 +998,11 @@ def build(root):
     profile_object = root / "profile.o"
     common = ["xcrun", "--sdk", "macosx", "clang", "-x", "c", "-std=c11", "-Wall", "-Wextra",
               "-Werror", "-Wno-unused-parameter", "-I" + str(ROOT / "runtime/include")]
-    subprocess.run(common + ["-c", str(ROOT / "runtime/DeviceProfile.mm"), "-o", str(strict_c_object)],
+    subprocess.run(common + ["-c", str(ROOT / "runtime/modules/device/DeviceProfile.mm"), "-o", str(strict_c_object)],
                    check=True, timeout=60)
     subprocess.run(["xcrun", "--sdk", "macosx", "clang++", "-x", "c++", "-std=c++17",
                     "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT / "runtime/include"),
-                    "-c", str(ROOT / "runtime/DeviceProfile.mm"), "-o", str(profile_object)],
+                    "-c", str(ROOT / "runtime/modules/device/DeviceProfile.mm"), "-o", str(profile_object)],
                    check=True, timeout=60)
     # A strict dependency audit catches accidental ObjC/Foundation/IPC/file access
     # even when an early-access test happens not to exercise the offending path.

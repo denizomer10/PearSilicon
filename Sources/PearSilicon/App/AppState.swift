@@ -27,6 +27,14 @@ final class AppState: ObservableObject {
     @Published private(set) var managedEntries: [LibraryEntry] = []
     @Published var selectedManagedEntryID: LibraryEntry.ID?
     @Published private(set) var wineEngines: [WineEngine] = []
+    /// Wine distribution being installed from the catalog, if any.
+    @Published private(set) var installingWineDistributionID: String?
+    /// Set when a Windows game exited with an error shortly after launch. The
+    /// detail pane then offers the next engine in the recommended order.
+    @Published private(set) var wineLaunchFailures: [LibraryEntry.ID: String] = [:]
+    /// A Windows game the user tried to open without an engine: the window
+    /// shows the engine chooser (PearWine first) for it.
+    @Published var wineEngineChoiceEntry: LibraryEntry?
     @Published private(set) var libraryWarnings: [String] = []
     @Published private(set) var quarantinedMacEntryIDs: Set<String> = []
     /// Set after an import when the managed copy still carries a download
@@ -319,7 +327,7 @@ final class AppState: ObservableObject {
 
     func reloadEngines() {
         do {
-            wineEngines = try wineApps.engines.engines()
+            wineEngines = WineDistribution.ordered(try wineApps.engines.engines())
         } catch {
             wineEngines = []
             libraryWarnings.append("Wine engines: \(error.localizedDescription)")
@@ -530,6 +538,10 @@ final class AppState: ObservableObject {
             platform = target.platform
             selectedManagedEntryID = target.id
             statusMessage = L10n.launching(target.displayName)
+            wineLaunchFailures[target.id] = nil
+            if target.platform == .wine, let engine {
+                watchForEarlyWineFailure(process, entry: target, engine: engine)
+            }
         } catch {
             statusMessage = L10n.error("Launch failed: \(error.localizedDescription)")
         }
@@ -542,23 +554,100 @@ final class AppState: ObservableObject {
         if let id = entry.manifest.wineEngineID, let found = try wineApps.engines.engine(id: id) {
             return (entry, found)
         }
-        let installed = try wineApps.engines.engines()
-        guard !installed.isEmpty else {
+        let installed = WineDistribution.ordered(try wineApps.engines.engines())
+        // PearWine is the recommended engine: use it whenever it is installed.
+        // Otherwise a single engine is linked automatically, and with several
+        // (or none) the engine chooser asks, with PearWine offered first.
+        let pearWine = installed.first { $0.distribution == .pearWine }
+        guard let engine = pearWine ?? (installed.count == 1 ? installed.first : nil) else {
+            wineEngineChoiceEntry = entry
             throw PearError.launchFailed(
-                "No Wine engine is installed. Open Settings → Wine and download an open-source build first."
+                installed.isEmpty
+                    ? "Choose a Wine engine for \(entry.displayName). PearWine is recommended."
+                    : "\(entry.displayName) has no Wine engine yet. Choose one; PearWine is recommended."
             )
         }
-        guard installed.count == 1 else {
-            throw PearError.launchFailed(
-                "\(entry.displayName) has no matching Wine engine. Choose one in the game's detail pane."
-            )
-        }
-        let engine = installed[0]
         updateManifest(entry) { $0.wineEngineID = engine.id }
         reloadEngines()
         let refreshed = managedEntries.first { $0.directoryURL == entry.directoryURL } ?? entry
         statusMessage = "Linked \(entry.displayName) to \(engine.name) \(engine.version)"
         return (refreshed, engine)
+    }
+
+    /// A Windows program that exits with an error within 20 seconds most
+    /// likely did not start on this engine. Record it so the detail pane can
+    /// offer the next engine in the recommended order.
+    private func watchForEarlyWineFailure(_ process: ManagedAppProcess, entry: LibraryEntry, engine: WineEngine) {
+        Task { @MainActor [weak self] in
+            let start = ContinuousClock.now
+            while process.isRunning, ContinuousClock.now - start < .seconds(20) {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard let self, !process.isRunning, let status = process.terminationStatus, status != 0 else { return }
+            self.wineLaunchFailures[entry.id] = engine.id
+            if let next = self.nextWineEngine(after: engine.id) {
+                self.statusMessage = L10n.error(
+                    "\(entry.displayName) stopped on \(engine.name) (exit \(status)). Try \(next.name) from its detail pane."
+                )
+            } else {
+                self.statusMessage = L10n.error(
+                    "\(entry.displayName) stopped on \(engine.name) (exit \(status)). Install a fallback engine in Settings → Wine."
+                )
+            }
+        }
+    }
+
+    /// The next installed engine after `engineID` in the recommended order.
+    func nextWineEngine(after engineID: String?) -> WineEngine? {
+        guard let engineID, let index = wineEngines.firstIndex(where: { $0.id == engineID }) else {
+            return wineEngines.first
+        }
+        let next = wineEngines.index(after: index)
+        return next < wineEngines.endIndex ? wineEngines[next] : nil
+    }
+
+    /// Switches a game to the next engine and launches it again.
+    func retryWithNextWineEngine(_ entry: LibraryEntry) async {
+        guard let next = nextWineEngine(after: entry.manifest.wineEngineID) else { return }
+        setWineEngine(next.id, for: entry)
+        wineLaunchFailures[entry.id] = nil
+        let refreshed = managedEntries.first { $0.id == entry.id } ?? entry
+        await launch(refreshed)
+    }
+
+    /// Installs a catalog distribution (PearWine or a fallback fork).
+    func installWineDistribution(_ distribution: WineDistribution) async -> WineEngine? {
+        guard !isBusy, installingWineDistributionID == nil else { return nil }
+        isBusy = true
+        installingWineDistributionID = distribution.id
+        defer {
+            installingWineDistributionID = nil
+            finishBusyWork()
+        }
+        do {
+            let engine = try await WineDistributionInstaller(releases: wineApps.releases)
+                .install(distribution, store: wineApps.engines) { [weak self] message in
+                    Task { @MainActor in self?.statusMessage = message }
+                }
+            reloadEngines()
+            statusMessage = "Installed \(engine.name) \(engine.version)"
+            return engine
+        } catch {
+            statusMessage = L10n.error("\(distribution.name) install failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Engine chooser result: install the distribution if needed, link it to
+    /// the game and launch.
+    func chooseWineDistribution(_ distribution: WineDistribution, for entry: LibraryEntry) async {
+        wineEngineChoiceEntry = nil
+        var engine = wineEngines.first { WineDistribution.distribution(for: $0) == distribution }
+        if engine == nil { engine = await installWineDistribution(distribution) }
+        guard let engine else { return }
+        setWineEngine(engine.id, for: entry)
+        let refreshed = managedEntries.first { $0.id == entry.id } ?? entry
+        await launch(refreshed)
     }
 
     func stop(_ entry: LibraryEntry) {

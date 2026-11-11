@@ -90,7 +90,7 @@ def catalyst_syntax(compiler, sdk, env):
         compiler, "-std=c++17", "-fobjc-arc", "-Wno-deprecated-declarations",
         "-target", "arm64-apple-ios15.0-macabi", "-isysroot", sdk,
         "-iframework", str(frameworks), "-I", str(ROOT / "runtime/include"),
-        "-include", "PearRuntime.h", "-fsyntax-only", str(ROOT / "runtime/SandboxShim.mm"),
+        "-include", "PearRuntime.h", "-fsyntax-only", str(ROOT / "runtime/modules/storage/SandboxShim.mm"),
     ], cwd=ROOT, env=env, check=True, timeout=90)
     print("PASS production Catalyst syntax (real PearRuntime.h/UIKit; no build outputs)", flush=True)
 

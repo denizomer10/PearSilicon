@@ -175,6 +175,18 @@ struct SettingsView: View {
 
     private var wine: some View {
         Form {
+            Section("Wine engines for Apple silicon") {
+                WineDistributionList(
+                    action: { distribution in
+                        Task { _ = await state.installWineDistribution(distribution) }
+                    },
+                    actionTitle: { _, installed in installed ? "Reinstall" : "Install" }
+                )
+                Text("Windows games use PearWine when it is installed. If a game stops right after starting, its detail pane offers the next engine in this list.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Open-source Wine — automatic") {
                 Picker("Channel", selection: $wineChannel) {
                     // WineHQ Stable is intentionally not offered; the automatic

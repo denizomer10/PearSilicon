@@ -13,7 +13,7 @@
 } while (0)
 
 #ifndef PEAR_KEYCHAIN_SOURCE
-#define PEAR_KEYCHAIN_SOURCE "../runtime/KeychainShim.mm"
+#define PEAR_KEYCHAIN_SOURCE "../runtime/modules/storage/KeychainShim.mm"
 #endif
 
 #if defined(PEAR_KEYCHAIN_ACTIVE_DYLIB)

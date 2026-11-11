@@ -9,6 +9,7 @@
 import AppKit
 import Darwin
 import Foundation
+import PearDebugKit
 
 // MARK: - Errors
 
@@ -57,7 +58,7 @@ struct CLIArguments: Sendable {
 
 
 private let booleanFlags: Set<String> = [
-    "launch", "no-launch", "keys", "no-keys", "log", "wait", "follow", "system",
+    "launch", "no-launch", "keys", "no-keys", "log", "wait", "follow", "system", "json", "markdown",
     "lldb", "yes", "print", "path", "generate", "json", "no-keymap", "trace", "help",
     "metal-hud", "no-metal-hud", "pointer-lock", "no-pointer-lock",
     "env-injection", "load-command", "sandboxed", "background",
@@ -140,6 +141,7 @@ enum CLI {
         case "mousetouch": return try compatibilityOverrideCommand(parsed, kind: .mouseTouch)
         case "refresh-runtime": return try refreshRuntimeCommand(parsed)
         case "logs": return try logsCommand(parsed)
+        case "analyze", "diagnose": return try analyzeCommand(parsed)
         case "paths": return try pathsCommand()
         case "storage": return try storageCommand(parsed)
         case "doctor": return try doctorCommand()
@@ -451,9 +453,9 @@ enum CLI {
         var logPath: String?
         if wantsLog {
             try FileManager.default.createDirectory(at: paths.logs, withIntermediateDirectories: true)
-            let url = paths.logs.appendingPathComponent("\(app.id).log")
-            try Data().write(to: url) // truncate so `tail` starts at the new run
-            logPath = url.path
+            // The launcher opens a fresh PearDebug session at this path (the
+            // previous run is rotated, not lost), so `tail` starts at the new run.
+            logPath = LogStore(directory: paths.logs).url(for: app.id, source: .runtime).path
         }
 
         var environment = arguments.environment
@@ -981,9 +983,8 @@ enum CLI {
             return 0
         }
 
-        let path = CLIPaths.shared.logs.appendingPathComponent("\(app.id).log").path
-        guard FileManager.default.fileExists(atPath: path) else {
-            print("no log file at \(path)")
+        guard let path = newestLog(for: app)?.path else {
+            print("no log for \(app.id) in \(CLIPaths.shared.logs.path)")
             print("launch with --log (or use `pearsilicon debug`) to create one")
             return 1
         }
@@ -996,6 +997,40 @@ enum CLI {
             print(try String(contentsOfFile: path, encoding: .utf8), terminator: "")
         }
         return 0
+    }
+
+    /// Newest log of the latest run across every PearDebug source
+    /// (PearRuntime, PearLegacyEngine, macOS app, host).
+    private static func newestLog(for app: InstalledApp) -> URL? {
+        LogStore(directory: CLIPaths.shared.logs).logs(for: app.id)
+            .filter { $0.run == 0 }
+            .max {
+                let a = (try? $0.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let b = (try? $1.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return a < b
+            }?.url
+    }
+
+    /// PearDebug analysis of an app's newest log (or `--run N` for an older one).
+    private static func analyzeCommand(_ arguments: CLIArguments) throws -> Int32 {
+        guard let query = arguments.positionals.first else {
+            throw CLIError.message("usage: pearsilicon analyze <bundle-id|name> [--json|--markdown]")
+        }
+        let app = try resolveApp(query)
+        guard let url = newestLog(for: app) else {
+            print("no log for \(app.id); launch it once (or `pearsilicon debug \(app.id)`) first")
+            return 1
+        }
+        let analysis = Analyzer().analyze(try LogStore.read(url))
+        let format: ReportFormat = arguments.flags.contains("json") ? .json
+            : arguments.flags.contains("markdown") ? .markdown : .text
+        print(Report.render(analysis, title: "\(app.displayName) — \(url.lastPathComponent)", format: format))
+        let crashes = CrashReports.reports(matching: app.executableName, limit: 2)
+        if format == .text, !crashes.isEmpty {
+            print("\nRecent crash reports:")
+            for report in crashes { print(CrashReports.summarize(report)) }
+        }
+        return analysis.findings.contains { $0.severity >= Finding.Severity.problem } ? 2 : 0
     }
 
     // MARK: Paths / link
@@ -1377,6 +1412,7 @@ enum CLI {
           mousetouch <id|name> [on|off|auto]  Override mouse-to-touch fallback
           refresh-runtime <id|name>  Refresh one stopped iOS app's runtime
           logs <id|name>       Print or follow the log (--follow, --system)
+          analyze <id|name>    Diagnose the newest log with PearDebug (--json, --markdown)
           paths                Show the Application Support layout
           storage [move <folder>|remove-previous]  Show storage or experimentally relocate apps/data
           doctor               Report build tools, runtime location and library status

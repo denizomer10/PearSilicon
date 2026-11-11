@@ -34,7 +34,7 @@ BIN="$(swift build -c "$CONFIG" --show-bin-path)/$APP_NAME"
 # --- 2b) Build runtime dylib ----------------------------------------------
 if [[ -x "$ROOT/runtime/build.sh" ]]; then
   echo ">> Building runtime dylib"
-  "$ROOT/runtime/build.sh"
+  PEAR_BUILD_DIR="$BUILD_DIR" "$ROOT/runtime/build.sh"
 fi
 
 # --- 3) Assemble .app -----------------------------------------------------

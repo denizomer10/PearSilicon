@@ -9,9 +9,17 @@ let package = Package(
     products: [
         .executable(name: "PearSilicon", targets: ["PearSilicon"])
     ],
+    dependencies: [
+        // PearDebug: log sessions, log analysis and engine probes.
+        // https://github.com/denizomer10/PearDebug (git submodule)
+        .package(path: "Vendor/PearDebug")
+    ],
     targets: [
         .executableTarget(
             name: "PearSilicon",
+            dependencies: [
+                .product(name: "PearDebugKit", package: "PearDebug")
+            ],
             path: "Sources/PearSilicon",
             resources: [
                 .process("Resources")

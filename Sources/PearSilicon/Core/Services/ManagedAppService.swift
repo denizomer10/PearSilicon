@@ -226,6 +226,22 @@ struct ManagedAppService: Sendable {
             guard ManagedAppFiles.exists(entry.prefixURL.appendingPathComponent("system.reg")) else {
                 throw PearError.launchFailed("Wine did not initialize the private prefix")
             }
+            // PearWine prefix defaults (GCMouse raw input, Option as Alt). Best
+            // effort: a failed import never blocks the game.
+            // The prefix has no host root drive, so the file is copied into C:.
+            if let registry = WineDistributionInstaller.registryDefaults(for: engine) {
+                let staged = entry.prefixURL.appendingPathComponent("drive_c/pearwine-defaults.reg")
+                try? FileManager.default.removeItem(at: staged)
+                try? FileManager.default.copyItem(at: registry, to: staged)
+                configuration.arguments = ["regedit.exe", "/S", "C:\\pearwine-defaults.reg"]
+                if let importer = try? spawn(configuration, entry: entry, purpose: .wineBootstrap, activate: false) {
+                    let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+                    while importer.isRunning, ContinuousClock.now < deadline {
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    if importer.isRunning { importer.stop() }
+                }
+            }
             configuration = try launchConfiguration(for: entry, engine: engine, metalHUDEnabled: metalHUDEnabled)
         }
         try Task.checkCancellation()
@@ -524,6 +540,11 @@ struct ManagedAppService: Sendable {
                 if FileManager.default.fileExists(atPath: moltenVK.path) {
                     result["VK_ICD_FILENAMES"] = moltenVK.path
                     result["VK_DRIVER_FILES"] = moltenVK.path
+                }
+                // PearWine ships its own launch defaults (msync, cursor
+                // confinement…). They never override a value set above.
+                for (key, value) in WineDistributionInstaller.environmentDefaults(for: engine) where result[key] == nil {
+                    result[key] = value
                 }
                 let graphics = engine.rootURL.appendingPathComponent("Graphics", isDirectory: true)
                 switch entry.manifest.graphicsBackend ?? .moltenVK {

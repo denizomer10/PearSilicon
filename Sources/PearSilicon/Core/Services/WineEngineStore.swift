@@ -11,6 +11,10 @@ struct WineEngine: Codable, Hashable, Identifiable, Sendable {
         case wineHQ
         /// User-provided open-source or community build.
         case community
+        /// PearWine, PearSilicon's recommended Apple silicon Wine.
+        case pearWine
+        /// A curated Apple silicon Wine fork from the distribution catalog.
+        case fork
     }
 
     static let manifestFilename = "pear-wine-engine.json"

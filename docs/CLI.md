@@ -78,7 +78,8 @@ pearsilicon compat <id|name> [--json]  Show the detected compatibility profile
 pearsilicon legacy <id|name> [on|off|auto]  Override the legacy window bridge
 pearsilicon mousetouch <id|name> [on|off|auto]  Override mouse-to-touch fallback
 pearsilicon refresh-runtime <id|name>  Refresh one stopped iOS app's runtime
-pearsilicon logs <id|name>      Print or follow the log (--follow, --system)
+pearsilicon logs <id|name>      Print or follow the newest log (--follow, --system)
+pearsilicon analyze <id|name>   PearDebug analysis of the newest log (--json, --markdown)
 pearsilicon paths               Show the Application Support layout
 pearsilicon storage [move <folder>|remove-previous]  Show storage or relocate the managed library
 pearsilicon doctor              Report build tools, runtime location and library status

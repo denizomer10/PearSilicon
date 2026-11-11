@@ -1,5 +1,75 @@
 # PearSilicon — Çalışma Durumu
 
+## Oturum 2026-11-11 — PearRuntime/PearWine/PearDebug ayrımı, gamepad, Miku Flick
+
+### Yeni depolar (GitHub, herkese açık)
+- **PearRuntime** (`denizomer10/PearRuntime`, `runtime/` alt modülü): `runtime/`
+  geçmişiyle ayrıldı. Kaynaklar `modules/{core,input,graphics,device,storage,services}`
+  altında; her modül açılışta `PEAR_RUNTIME_DISABLE` / `PEAR_RUNTIME_ONLY` ile
+  kapatılabilir. Derleme artık `-O2 -mcpu=apple-m1` (önceden optimizasyonsuzdu),
+  modüller paralel derleniyor, `-dead_strip`. Sürüm 0.8.0.
+- **PearDebug** (`denizomer10/PearDebug`, `Vendor/PearDebug` alt modülü):
+  `PearDebugKit` (LogStore oturum/rotasyon, LogParser, kural modülleriyle
+  Analyzer, CrashReports, PearLegacyEngine için GDB istemcisi `LegacyProbe`) ve
+  `peardebug` CLI. PearSilicon'un tüm açılış logları artık PearDebug oturumu
+  (önceki çalışma `<id>….1.log` olarak saklanır). `pearsilicon analyze <app>` eklendi.
+- **PearWine** (`denizomer10/PearWine`, v1.0.0): MetalSharp Wine 6.0 (arm64,
+  Wine 11.20 + FEX) tabanı SHA-256 ile sabitlenmiş manifest + PearWine overlay
+  (`pearwine.env`, `pearwine-defaults.reg`). WineHQ 11.21 birleştirmeli kaynak
+  derleme hattı ve CI hazır, **henüz çalıştırılmadı**.
+
+### PearSilicon
+- Wine dağıtım kataloğu (`WineDistributions.swift`): PearWine (önerilen) →
+  MetalSharp Wine → Sikarugir Wine 11 → WhiskyWine → WineHQ Staging/Devel.
+  Motor seçilmemiş Windows oyunu açılınca seçici çıkar; PearWine kuruluysa
+  otomatik kullanılır; oyun 20 sn içinde hata ile kapanırsa ayrıntı panelinde
+  "Try <sonraki motor>" düğmesi çıkar. Settings → Wine'da katalog listesi var.
+- PearWine ortam varsayılanları başlatmada uygulanır (ayarlı değerleri ezmez);
+  prefix ilk oluşturulunca `pearwine-defaults.reg` C: üzerinden içe aktarılır.
+- Testler: 314 XCTest (16 atlandı) + 24 Swift Testing + 5 yeni
+  `WineDistributionTests`, 0 hata. PearWine'ın 962 MB'lık gerçek kurulumu uçtan
+  uca denenmedi (yalnız overlay hash'i yayınlanan dosyayla doğrulandı).
+
+### Gamepad (Genshin, GTA VC DE)
+- Kök neden: runtime açılıştan 3 sn sonra `GCControllerDidConnectNotification`
+  bildirimini tüm gözlemcilere yeniden gönderiyordu. Denetleyiciyi zaten
+  listeleyen Unreal/Unity motorları aynı kolu ikinci oyuncu yuvasına koyuyor,
+  tek oyunculu oyun girdiyi yok sayıyordu. Ayrıca her boş `controllers`
+  sorgusu ana iş parçacığını 1,2 sn kilitliyordu.
+- Düzeltme (PearRuntime 0.8.0): kaçırılan bağlanma yalnız geç kaydolan ve kolu
+  görmemiş gözlemciye bir kez iletilir; sorgu beklemesi yalnız ilk 1,5 sn ve
+  ana iş parçacığında; oyun kendi denetleyici yolunu kullanınca pad→dokunma
+  çevirisi kapanır (`PEAR_CONTROLLER_KEYMAP=force` ile açık tutulur); oyunun
+  pad işleyicisi pad başına saklanır; vendorName logu pad başına bir kez.
+- Doğrulama: Catalyst sonda uygulaması (sanal denetleyici). Eski runtime:
+  listeleyen motor modunda 1 kopya bağlanma. Yeni: 0 kopya; geç gözlemci tam 1.
+  Gerçek oyunlarda (fiziksel kol ile) kullanıcı testi bekliyor.
+
+### Miku Flick şarkı sonu siyah ekran (düzeltildi)
+- Oyun kare sunmaya devam ediyor ama siyah; CRI Mana film oynatıcısının
+  PLAYEND olmasını bekliyor. İç `criMvPly` şarkı sonunda PLAYEND (6) oluyor,
+  dosya kapanmış, Atom ses sesi bitmiş (durum 4); ancak `CriMvEasyPlayer`
+  `executeWaitStatusServer` içindeki bitiş-zamanı kontrolü
+  (`0x7dae8`: oynatma saati ≥ (kare+1)/fps) hiç geçmiyor, temizlik başlamıyor,
+  dış durum PLAYING (5) kalıyor.
+- Ölçüm: "VOC@LOID in Love" (`koi_suru_vocaroid_small.usm`) videosu 3677 kare
+  @ 20 fps = 183,9 sn; müzik oyunda 2:56 (≈176 sn, kullanıcı ölçümü). Saat
+  sesten sürüldüğü için ses bitince ≈176 sn'de takılıyor, 183,9'a hiç
+  ulaşmıyor.
+- Düzeltme (PearLegacyEngine `99c6c6d5`, `src/game_fixes.rs`): yükleme
+  anında `__text` içinde tam bayt imzasıyla (tek eşleşme şartı) bulunan bu
+  `ble`, koşulsuz `b` yapılıyor. Kullanıcı testinde şarkıdan sonra sonuç ekranı
+  geldi. Miku Flick 02 (CRI Mana 1.61) bu kalıbı içermiyor, değişmiyor.
+- Motorun `cargo test` entegrasyon testi bu makinede test uygulamasını
+  derlerken (`ld: can't re-map file … libstdc++.6.0.9.dylib` armv6) düşüyor;
+  motor kodundan bağımsız araç zinciri sorunu. 37 birim testi geçiyor.
+- PearSilicon paketine yeni motor için `scripts/setup-legacy-engine.sh` ve
+  `scripts/build-app.sh release` yeniden çalıştırılmalı.
+- Motor: GDB sunucusunda `H` komutu iş parçacığı kimliğini onluk okuyup
+  çöküyordu (protokol onaltılık) → düzeltildi. `D` (detach) yoktu ve bağlantı
+  kopunca motor panikliyordu → artık oyun kaldığı yerden devam ediyor. Ana döngüdeki 5 `env::var`
+  çağrısı `LazyLock`'a alındı. Bunlar PearLegacyEngine'de commit edilmedi.
+
 ## Tamamlandı — dal birleştirme, motor/JIT entegrasyonu ve sürüm (2026-11-09)
 
 - `codex/pear-legacy-engine` ile `denizomer10-pear-legacy-engine` karşılaştırılıp
