@@ -40,9 +40,20 @@ final class PackageInstaller: @unchecked Sendable {
             try BinaryPatcher.removeLoadDylib(at: $0, containing: $1)
         }
         var run: (String, [String]) throws -> String = { try Shell.run($0, $1) }
-        var requireStopped: @MainActor (InstalledApp) throws -> Void = { app in
-            try AppLauncher.requireStopped(app)
+        /// Runs on any thread: the running-app check itself hops to the main
+        /// thread, so preparation (clone, patch, re-sign) can stay off it.
+        var requireStopped: @Sendable (InstalledApp) throws -> Void = { app in
+            try PackageInstaller.onMainThread { try AppLauncher.requireStopped(app) }
         }
+    }
+
+    /// Runs `body` on the main actor from any thread. Background callers wait
+    /// briefly for a main-thread turn; the main thread itself runs it inline.
+    static func onMainThread<T: Sendable>(_ body: @MainActor () throws -> T) throws -> T {
+        if Thread.isMainThread {
+            return try MainActor.assumeIsolated { try body() }
+        }
+        return try DispatchQueue.main.sync { try MainActor.assumeIsolated { try body() } }
     }
 
     private let fileManager = FileManager.default
@@ -568,7 +579,6 @@ final class PackageInstaller: @unchecked Sendable {
     /// Prepares and signs a separate copy before atomically exchanging it with
     /// the installed bundle. Until that exchange, rollback is just discarding
     /// the copy; no failed preparation or signature can alter the original.
-    @MainActor
     func setPreparationMode(_ mode: PreparationMode, for app: InstalledApp, launchLease: AppLaunchLease? = nil, force: Bool = false) throws {
         let lease = try launchLease ?? AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
         defer { if launchLease == nil { lease.release() } }
@@ -602,7 +612,6 @@ final class PackageInstaller: @unchecked Sendable {
     /// Installs a new PearSilicon build's runtime into an already-installed iOS
     /// app. Only runs when the runtime fingerprint differs; the app's own files
     /// and data are preserved and the staged copy is re-signed before exchange.
-    @MainActor
     func refreshRuntimeIfNeeded(
         for app: InstalledApp, sourceRuntimeDirectory: URL, launchLease: AppLaunchLease? = nil
     ) throws -> Bool {
@@ -610,12 +619,14 @@ final class PackageInstaller: @unchecked Sendable {
         let mode = currentPreparationMode(for: app)
         guard mode != .nativeContainer else { return false }
         let installed = app.bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
-        let installedRevision = try RuntimeRevision.fingerprint(in: installed)
-        let sourceRevision = try RuntimeRevision.fingerprint(in: sourceRuntimeDirectory)
-        guard let sourceRevision else {
+        guard try RuntimeRevision.fingerprint(in: sourceRuntimeDirectory) != nil else {
             throw PearError.missingRuntimeComponent("libPearRuntime.dylib")
         }
-        guard installedRevision != sourceRevision else { return false }
+        // Content comparison: the installed runtime is re-signed per app, so a
+        // raw-byte comparison would report every refreshed app as outdated.
+        guard try !RuntimeRevision.installedRuntimeMatches(installed: installed, source: sourceRuntimeDirectory) else {
+            return false
+        }
         try setPreparationMode(mode, for: app, launchLease: launchLease, force: true)
         return true
     }

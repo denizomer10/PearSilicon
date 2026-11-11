@@ -1,5 +1,43 @@
 # PearSilicon — Çalışma Durumu
 
+## 0.8.3 (28) — 2026-11-11
+
+- **Wine kataloğu:** MetalSharp Wine ve Sikarugir Wine 11 kaldırıldı (PearWine
+  zaten MetalSharp tabanlı). Liste: PearWine → WhiskyWine → WineHQ Staging/Devel.
+  WhiskyWine kaynağı (Sikarugir-App/Engines) çalışıyor; Whisky'nin kendi adresi
+  (data.getwhisky.app) 404. GitHub API'nin anonim 60/saat sınırı dolunca kurulum
+  403 ile düşüyordu → herkese açık sürüm sayfalarına (releases.atom +
+  expanded_assets) geri dönüş eklendi; aynı dosya/URL/SHA-256 canlı doğrulandı.
+- **Rosetta tespiti düzeltildi:** `/Library/Apple/usr/libexec/oah` klasörü
+  yalnız RosettaLinux içerebiliyor; artık `oah/libRosettaRuntime` aranıyor.
+  x86_64 motorlar (WhiskyWine, WineHQ) Rosetta yokken indirilmeden açık mesaj
+  veriyor. Bu Mac'te Rosetta 2 kurulu değil.
+- **iOS runtime otomatik yenileme:** PearSilicon güncellenince (paketteki runtime
+  parmak izi değişince) açılışta arka planda yenileniyor; sol altta ilerleme
+  çubuğu, pencere kullanılabilir (ana iş parçacığı olay döngüsünde doğrulandı),
+  yenileme bitene kadar yalnız iOS uygulamaları açılamıyor/kurulamıyor/silinemiyor.
+  Hazırlama (ditto/codesign) ana iş parçacığından çıkarıldı.
+- **Yakınsama hatası düzeltildi:** runtime karşılaştırması ham baytlarla
+  yapılıyordu; kurucu her uygulamada runtime'ı yeniden imzaladığı için yenilenen
+  uygulama hep "eski" görünüyordu (her elle yenilemede 3,4 GB Genshin yeniden
+  işleniyordu). Artık imzasız içerik karşılaştırılıyor, isteğe bağlı bileşenler
+  (libcxxcompat, MarketplaceKit) uygulamada yoksa yok sayılıyor. Gerçek
+  uygulamalarda "already current" ~1 sn.
+- **32-bit FPS göstergesi:** motor ANGLE/Metal ile çizdiği için Metal HUD
+  çalışıyor; motorun sarı FPS katmanı artık açılmıyor, tek gösterge.
+- **Log oturumları:** LaunchServices ile açılan iOS oyunlarında da her açılış yeni
+  log, önceki `<id>.1.log`.
+- **PearLegacyEngine `9aadb01d`:** JIT (C++) artık `-mcpu=apple-m1` ile derleniyor
+  (Rust tarafı zaten öyleydi). PearWine imzalı/notarize üst akış uygulaması
+  olduğundan ikili değişiklik yapılamaz (32-bit yetkisi bozulur).
+- **Uçtan uca test:** 338 XCTest (22 isteğe bağlı canlı test) + 24 Swift Testing,
+  PearDebug 7, PearRuntime derleme; canlı: PearWine kurulumu (GitHub'dan),
+  WhiskyWine kurulum/arama, GTA VC exe kabulü (3/3) ve içe aktarma, gerçek
+  launcher ile GTA VC'nin PearWine üzerinde açılıp kapanması, GTA VC DE (iOS) ve
+  Miku Flick (32-bit) CLI ile açma/durdurma, GUI otomatik runtime yenileme.
+  Görsel oynanabilirlik ve GUI tıklamaları elle doğrulanmadı.
+- Mac uygulaması verilerinin kopyalanması kullanıcı isteğiyle yapılmadı.
+
 ## Oturum 2026-11-11 — PearRuntime/PearWine/PearDebug ayrımı, gamepad, Miku Flick
 
 ### 0.8.1 — PearWine kurulumu (2026-11-11)

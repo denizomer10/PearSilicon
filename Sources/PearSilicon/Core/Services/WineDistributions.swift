@@ -32,6 +32,14 @@ struct WineDistribution: Identifiable, Hashable, Sendable {
         }
     }
 
+    /// Rosetta 2 is installed when its runtime library exists. The `oah`
+    /// folder alone is not enough: it can hold only RosettaLinux.
+    static var isRosettaInstalled: Bool {
+        FileManager.default.fileExists(atPath: "/Library/Apple/usr/libexec/oah/libRosettaRuntime")
+    }
+
+    static let rosettaInstallCommand = "softwareupdate --install-rosetta --agree-to-license"
+
     static let pearWine = WineDistribution(
         id: "pearwine", name: "PearWine",
         summary: "Recommended. Best compatibility: native arm64 Wine 11 with FEX, Mullion (Direct3D 10–12 on Metal), DXVK and VKD3D. No Rosetta.",
@@ -42,18 +50,6 @@ struct WineDistribution: Identifiable, Hashable, Sendable {
     /// Recommended first, then fallbacks from most to least likely to help.
     static let catalog: [WineDistribution] = [
         .pearWine,
-        WineDistribution(
-            id: "metalsharp", name: "MetalSharp Wine",
-            summary: "PearWine's upstream: arm64 Wine 11 with FEX. Try it when a PearWine change breaks a game.",
-            source: .githubRelease(repository: "metalsharp/MetalSharp-Wine", assetPattern: "MetalSharp-Wine-*-arm64.zip"),
-            recommended: false, nativeArm64: true
-        ),
-        WineDistribution(
-            id: "sikarugir", name: "Sikarugir Wine 11",
-            summary: "CrossOver-lineage Wine for macOS (x86_64, needs Rosetta 2). Good for older DirectX 9 games and launchers.",
-            source: .githubRelease(repository: "Sikarugir-App/Engines", assetPattern: "WS12WineSikarugir11.0*.tar.xz"),
-            recommended: false, nativeArm64: false
-        ),
         WineDistribution(
             id: "whiskywine", name: "WhiskyWine",
             summary: "Whisky's Wine with Apple's D3DMetal (x86_64, needs Rosetta 2). Try it for DirectX 11/12 games.",
@@ -171,14 +167,40 @@ struct WineDistributionInstaller: Sendable {
         String(value.lowercased().map { $0.isLetter || $0.isNumber || $0 == "." ? $0 : "-" }).trimmingCharacters(in: CharacterSet(charactersIn: "-."))
     }
 
+    /// A non-2xx answer. 403/429 from api.github.com means the unauthenticated
+    /// rate limit (60 requests/hour) is used up.
+    struct HTTPStatusError: LocalizedError {
+        let host: String
+        let status: Int
+        var errorDescription: String? {
+            status == 403 || status == 429
+                ? "\(host) is rate-limiting requests (HTTP \(status)); try again later"
+                : "\(host) answered HTTP \(status)"
+        }
+    }
+
     static func fetch(_ url: URL) async throws -> Data {
         var request = URLRequest(url: url)
         request.setValue("PearSilicon", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 60
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw WineReleaseError.network("\(url.host ?? "server") answered \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+            throw HTTPStatusError(host: url.host ?? "server", status: (response as? HTTPURLResponse)?.statusCode ?? 0)
         }
         return data
+    }
+
+    /// `WS12WhiskyWine2.5.0_3.tar.xz` with pattern `WS12WhiskyWine*.tar.xz` → `2.5.0_3`.
+    static func versionLabel(asset name: String, pattern: String) -> String {
+        var label = name
+        for suffix in [".tar.xz", ".tar.gz", ".zip"] where label.hasSuffix(suffix) {
+            label.removeLast(suffix.count)
+        }
+        if let prefix = pattern.split(separator: "*", omittingEmptySubsequences: false).first,
+           !prefix.isEmpty, label.hasPrefix(prefix), label.count > prefix.count {
+            label.removeFirst(prefix.count)
+        }
+        return label.trimmingCharacters(in: CharacterSet(charactersIn: "-_ "))
     }
 
     static func matches(_ name: String, pattern: String) -> Bool {
@@ -216,20 +238,66 @@ struct WineDistributionInstaller: Sendable {
             let assets: [Asset]
         }
         let url = URL(string: "https://api.github.com/repos/\(repository)/releases?per_page=10")!
-        let releases = try JSONDecoder().decode([Release].self, from: try await fetch(url))
+        let releases: [Release]
+        do {
+            releases = try JSONDecoder().decode([Release].self, from: try await fetch(url))
+        } catch let error as HTTPStatusError where error.status == 403 || error.status == 429 {
+            // The API's anonymous quota is spent; the public release pages are
+            // not API calls and publish the same SHA-256 digests.
+            return try await latestAssetFromReleasePages(repository: repository, pattern: pattern)
+        }
         for release in releases where !release.draft {
+            // Only assets with a GitHub-published SHA-256 are installable;
+            // newest first, so an older unhashed upload never blocks a newer one.
             let candidates = release.assets
                 .filter { matches($0.name, pattern: pattern) && $0.size > 0 && $0.size <= WineReleaseService.maximumDownloadBytes }
-                .sorted { ($0.updated_at ?? "", $0.name) > ($1.updated_at ?? "", $1.name) }
-            guard let asset = candidates.first else { continue }
-            guard let digest = asset.digest, let hash = WineReleaseService.normalizedHash(digest) else {
-                throw WineReleaseError.invalid("GitHub did not publish a SHA-256 for \(asset.name)")
-            }
-            let version = asset.name.replacingOccurrences(of: ".tar.xz", with: "")
+                .compactMap { asset in
+                    asset.digest.flatMap(WineReleaseService.normalizedHash).map { (asset, $0) }
+                }
+                .sorted { ($0.0.updated_at ?? "", $0.0.name) > ($1.0.updated_at ?? "", $1.0.name) }
+            guard let (asset, hash) = candidates.first else { continue }
             return Asset(name: asset.name, url: asset.browser_download_url, sha256: hash,
-                         version: release.tag_name == "v1.0" ? version : "\(release.tag_name) \(version)")
+                         version: versionLabel(asset: asset.name, pattern: pattern))
         }
-        throw WineReleaseError.notFound("No release of \(repository) has an asset matching \(pattern)")
+        throw WineReleaseError.notFound("No release of \(repository) has a verifiable asset matching \(pattern)")
+    }
+
+    /// Fallback when the GitHub API is rate-limited: the release feed gives the
+    /// tags and each tag's asset page lists names, download links and SHA-256s.
+    static func latestAssetFromReleasePages(repository: String, pattern: String) async throws -> Asset {
+        let atom = String(decoding: try await fetch(URL(string: "https://github.com/\(repository)/releases.atom")!), as: UTF8.self)
+        let tags = WineReleaseService.tags(inAtom: atom)
+        for tag in tags.prefix(10) {
+            guard let escaped = tag.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+                  let page = URL(string: "https://github.com/\(repository)/releases/expanded_assets/\(escaped)") else { continue }
+            let html = String(decoding: try await fetch(page), as: UTF8.self)
+            let marker = "/\(repository)/releases/download/\(tag)/"
+            var names: [String] = []
+            var cursor = html.startIndex
+            while let range = html.range(of: marker, range: cursor..<html.endIndex) {
+                let name = String(html[range.upperBound...].prefix { $0 != "\"" && $0 != "?" && $0 != "<" })
+                if matches(name, pattern: pattern), !names.contains(name) { names.append(name) }
+                cursor = range.upperBound
+            }
+            for name in names.sorted(by: >) {
+                guard let hash = digest(of: marker + name, in: html, nextEntry: marker),
+                      let url = URL(string: "https://github.com\(marker)\(name)") else { continue }
+                return Asset(name: name, url: url, sha256: hash, version: versionLabel(asset: name, pattern: pattern))
+            }
+        }
+        throw WineReleaseError.notFound("No release of \(repository) has a verifiable asset matching \(pattern)")
+    }
+
+    /// The `sha256:` digest inside one asset's entry on a release asset page:
+    /// only between that asset's link and the next asset's link, so an asset
+    /// without a published digest never borrows its neighbour's.
+    static func digest(of link: String, in html: String, nextEntry marker: String) -> String? {
+        guard let start = html.range(of: "\"" + link + "\"") ?? html.range(of: link) else { return nil }
+        let end = html.range(of: marker, range: start.upperBound..<html.endIndex)?.lowerBound ?? html.endIndex
+        let entry = html[start.upperBound..<end]
+        guard let label = entry.range(of: "sha256:") else { return nil }
+        let hex = entry[label.upperBound...].prefix { $0.isHexDigit }
+        return hex.count == 64 ? hex.lowercased() : nil
     }
 
     /// Downloads the small PearWine overlay (only `share/pearwine/…` files),

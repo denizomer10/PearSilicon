@@ -224,10 +224,10 @@ final class InstallerIntegrityTests: XCTestCase {
         let fixture = try IntegrityFixture()
         defer { fixture.remove() }
         var tools = fixture.tools()
-        var checks = 0
+        let checks = CallCounter()
         tools.requireStopped = { _ in
-            checks += 1
-            if checks == 2 { throw IntegrityFailure.running }
+            checks.increment()
+            if checks.value == 2 { throw IntegrityFailure.running }
         }
         let before = try fixture.snapshot(fixture.source)
         do {
@@ -235,7 +235,7 @@ final class InstallerIntegrityTests: XCTestCase {
                 .installBundle(at: fixture.source)
             XCTFail("Installation committed after the stopped-state check failed")
         } catch { XCTAssertEqual(error as? IntegrityFailure, .running) }
-        XCTAssertEqual(checks, 2)
+        XCTAssertEqual(checks.value, 2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
         XCTAssertEqual(try fixture.snapshot(fixture.source), before)
         try fixture.assertNoTransactions()
@@ -247,16 +247,17 @@ final class InstallerIntegrityTests: XCTestCase {
         let app = try await fixture.installer().installBundle(at: fixture.source)
         let before = try fixture.snapshot(fixture.destination)
         var tools = fixture.tools()
-        var checks = 0
+        let checks = CallCounter()
         var commands = 0
         let run = tools.run
         tools.run = { tool, arguments in
             commands += 1
             return try run(tool, arguments)
         }
+        let library = fixture.library
         tools.requireStopped = { _ in
-            checks += 1
-            XCTAssertThrowsError(try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library))
+            checks.increment()
+            XCTAssertThrowsError(try AppLaunchLease.acquire(appID: app.id, libraryURL: library))
             throw IntegrityFailure.running
         }
         let installer = PackageInstaller(libraryURL: fixture.library, preparationTools: tools)
@@ -265,7 +266,7 @@ final class InstallerIntegrityTests: XCTestCase {
             XCTAssertEqual($0 as? IntegrityFailure, .running)
         }
 
-        XCTAssertEqual(checks, 1)
+        XCTAssertEqual(checks.value, 1)
         XCTAssertEqual(commands, 0)
         XCTAssertTrue(try fixture.snapshot(fixture.destination) == before, "Running app bundle changed")
         try fixture.assertNoTransactions()
@@ -279,10 +280,10 @@ final class InstallerIntegrityTests: XCTestCase {
         let app = try await fixture.installer().installBundle(at: fixture.source)
         let before = try fixture.snapshot(fixture.destination)
         var tools = fixture.tools()
-        var checks = 0
+        let checks = CallCounter()
         tools.requireStopped = { _ in
-            checks += 1
-            if checks == 2 { throw IntegrityFailure.running }
+            checks.increment()
+            if checks.value == 2 { throw IntegrityFailure.running }
         }
         let installer = PackageInstaller(libraryURL: fixture.library, preparationTools: tools)
 
@@ -290,7 +291,7 @@ final class InstallerIntegrityTests: XCTestCase {
             XCTAssertEqual($0 as? IntegrityFailure, .running)
         }
 
-        XCTAssertEqual(checks, 2)
+        XCTAssertEqual(checks.value, 2)
         XCTAssertTrue(try fixture.snapshot(fixture.destination) == before, "Stopped-state failure replaced the bundle")
         try fixture.assertNoTransactions()
         let next = try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library)
@@ -304,10 +305,11 @@ final class InstallerIntegrityTests: XCTestCase {
         let saved = try fixture.createSave()
         let before = try fixture.snapshot(fixture.destination)
         var tools = fixture.tools()
-        var checks = 0
+        let checks = CallCounter()
+        let library = fixture.library
         tools.requireStopped = { _ in
-            checks += 1
-            XCTAssertThrowsError(try AppLaunchLease.acquire(appID: app.id, libraryURL: fixture.library))
+            checks.increment()
+            XCTAssertThrowsError(try AppLaunchLease.acquire(appID: app.id, libraryURL: library))
             throw IntegrityFailure.running
         }
         let installer = PackageInstaller(libraryURL: fixture.library, preparationTools: tools)
@@ -316,7 +318,7 @@ final class InstallerIntegrityTests: XCTestCase {
             XCTAssertEqual($0 as? IntegrityFailure, .running)
         }
 
-        XCTAssertEqual(checks, 1)
+        XCTAssertEqual(checks.value, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path))
         if FileManager.default.fileExists(atPath: fixture.destination.path) {
             XCTAssertTrue(try fixture.snapshot(fixture.destination) == before, "Running app was partially removed")
@@ -743,4 +745,12 @@ private final class IntegrityFixture {
         u32(0x0605_4B50); u16(0); u16(0); u16(1); u16(1); u32(UInt32(size)); u32(UInt32(start)); u16(0)
         return data
     }
+}
+
+/// Thread-safe call counter for hooks that may run on any thread.
+final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }

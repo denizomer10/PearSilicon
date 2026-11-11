@@ -245,7 +245,7 @@ The prefix is private to the game; absolute host drive mappings are removed.
   engine chooser offers PearWine first. Once PearWine is installed, games use it
   automatically.
 - **Fallbacks**: if a game stops right after starting, its detail pane offers the
-  next engine in this order: MetalSharp Wine, Sikarugir Wine 11, WhiskyWine,
+  next engine in this order: WhiskyWine,
   WineHQ Staging, WineHQ Development. **Settings → Wine** lists them all.
   Every download is checked against its SHA-256 before installation.
 - Install open-source WineHQ **Staging** or **Development** engines from
@@ -315,6 +315,10 @@ PearSilicon is split into separate projects:
 | [PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine) | 32-bit iOS engine |
 | [PearWine](https://github.com/denizomer10/PearWine) | Recommended Wine engine for Apple silicon |
 | [PearDebug](https://github.com/denizomer10/PearDebug) | Log sessions, log analysis and engine probes (`Vendor/PearDebug`, git submodule) |
+
+After a PearSilicon update, installed iOS apps get the new runtime
+automatically in the background (progress in the bottom-left of the window);
+only iOS apps wait until it finishes.
 
 Every launch writes a PearDebug log session (the previous run is kept as
 `<id>….1.log`). `pearsilicon analyze <app>` runs PearDebug's analyzer on the newest log.

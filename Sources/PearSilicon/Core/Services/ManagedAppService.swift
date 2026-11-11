@@ -158,7 +158,7 @@ struct ManagedAppService: Sendable {
             _ = runtime
             let archs = (try? Shell.run("/usr/bin/lipo", ["-archs", engine.executableURL.path])) ?? ""
             if !archs.split(whereSeparator: \.isWhitespace).contains("arm64"),
-               !FileManager.default.fileExists(atPath: "/Library/Apple/usr/libexec/oah") {
+               !WineDistribution.isRosettaInstalled {
                 throw PearError.launchFailed(
                     "This Wine build is x86_64 and needs Rosetta 2. Install it with `softwareupdate --install-rosetta` or register an arm64 engine."
                 )

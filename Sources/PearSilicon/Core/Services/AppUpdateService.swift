@@ -1038,6 +1038,77 @@ enum RuntimeRevision {
     }
 }
 
+extension RuntimeRevision {
+    /// Whether an app's installed runtime has the same *content* as the runtime
+    /// a PearSilicon build ships. The installer re-signs the runtime inside each
+    /// app, which rewrites the bytes of every Mach-O file and adds
+    /// `_CodeSignature` folders, so raw hashes never match after a refresh.
+    /// Mach-O files are compared with their code signatures removed and
+    /// signature folders are ignored. Only components the app contains are
+    /// compared: libcxxcompat and MarketplaceKit are copied into an app only
+    /// when it needs them.
+    static func installedRuntimeMatches(installed: URL, source: URL) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: installed.appendingPathComponent(componentNames[0]).path) else {
+            return false
+        }
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pear-runtime-compare-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        for name in componentNames {
+            let installedComponent = installed.appendingPathComponent(name)
+            var status = stat()
+            guard lstat(installedComponent.path, &status) == 0 else { continue }
+            let sourceComponent = source.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: sourceComponent.path) else { return false }
+            let lhs = try contentManifest(of: installedComponent, scratch: scratch)
+            let rhs = try contentManifest(of: sourceComponent, scratch: scratch)
+            if lhs != rhs { return false }
+        }
+        return true
+    }
+
+    /// relative path → content hash, ignoring code signatures.
+    private static func contentManifest(of component: URL, scratch: URL) throws -> [String: String] {
+        try UpdateTree.validate(component, maximumBytes: 2 * 1024 * 1024 * 1024, maximumEntries: 100_000)
+        var items = [component]
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: component.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            guard let enumerator = FileManager.default.enumerator(at: component, includingPropertiesForKeys: nil) else {
+                throw AppUpdateError.integrity("Cannot enumerate runtime component \(component.lastPathComponent).")
+            }
+            while let item = enumerator.nextObject() as? URL { items.append(item) }
+        }
+        var manifest: [String: String] = [:]
+        let base = component.deletingLastPathComponent().path.count + 1
+        for item in items {
+            let relative = String(item.path.dropFirst(base))
+            if relative.split(separator: "/").contains("_CodeSignature") || relative.hasSuffix("/CodeResources") { continue }
+            switch try AppUpdateService.fileType(item) {
+            case S_IFDIR: manifest[relative] = "directory"
+            case S_IFLNK: manifest[relative] = "symlink:" + (try FileManager.default.destinationOfSymbolicLink(atPath: item.path))
+            case S_IFREG: manifest[relative] = try unsignedHash(of: item, scratch: scratch)
+            default: throw AppUpdateError.integrity("Unsupported runtime file type.")
+            }
+        }
+        return manifest
+    }
+
+    private static func unsignedHash(of file: URL, scratch: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: file)
+        let magic = try handle.read(upToCount: 4) ?? Data()
+        try handle.close()
+        let machO: Set<Data> = [Data([0xcf, 0xfa, 0xed, 0xfe]), Data([0xca, 0xfe, 0xba, 0xbe]), Data([0xce, 0xfa, 0xed, 0xfe])]
+        guard machO.contains(magic) else { return try sha256(of: file) }
+        let copy = scratch.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.copyItem(at: file, to: copy)
+        defer { try? FileManager.default.removeItem(at: copy) }
+        // An unsigned file is left as is; codesign then reports an error we ignore.
+        _ = try? Shell.run("/usr/bin/codesign", ["--remove-signature", copy.path])
+        return try sha256(of: copy)
+    }
+}
+
 private enum UpdateTree {
     static func fingerprint(_ root: URL) throws -> String {
         try validate(root, maximumBytes: 2 * 1024 * 1024 * 1024, maximumEntries: 100_000)

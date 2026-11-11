@@ -30,7 +30,7 @@ struct ContentView: View {
                     detail
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                StatusBar(message: state.statusMessage, busy: state.isBusy)
+                StatusBar(message: state.statusMessage, busy: state.isBusy, runtimeRefresh: state.runtimeRefresh)
             }
         }
         .frame(minWidth: 1040, minHeight: 660)
@@ -589,9 +589,26 @@ struct WineExecutablePicker: Identifiable {
 struct StatusBar: View {
     let message: String
     let busy: Bool
+    var runtimeRefresh: AppState.RuntimeRefreshProgress? = nil
 
     var body: some View {
         HStack(spacing: 8) {
+            if let refresh = runtimeRefresh {
+                // Bottom-left: background iOS runtime update after a
+                // PearSilicon update. The rest of the window stays usable.
+                HStack(spacing: 8) {
+                    ProgressView(value: refresh.fraction)
+                        .progressViewStyle(.linear)
+                        .frame(width: 140)
+                    Text("Updating iOS apps \(min(refresh.done + 1, refresh.total))/\(refresh.total)"
+                         + (refresh.current.isEmpty ? "" : " · \(refresh.current)"))
+                        .font(.callout.monospacedDigit())
+                        .lineLimit(1)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Updating iOS apps to the new runtime")
+                Divider().frame(height: 14)
+            }
             if busy {
                 ProgressView().controlSize(.small)
             }

@@ -307,6 +307,7 @@ final class AppState: ObservableObject {
     func bootstrap() async {
         do {
             try await refreshLibrary()
+            refreshRuntimesIfPearSiliconWasUpdated()
         } catch {
             statusMessage = L10n.error("Could not initialize library: \(error.localizedDescription)")
         }
@@ -618,6 +619,13 @@ final class AppState: ObservableObject {
     /// Installs a catalog distribution (PearWine or a fallback fork).
     func installWineDistribution(_ distribution: WineDistribution) async -> WineEngine? {
         guard !isBusy, installingWineDistributionID == nil else { return nil }
+        // Do not download an x86_64 engine that cannot start on this Mac.
+        guard distribution.nativeArm64 || WineDistribution.isRosettaInstalled else {
+            statusMessage = L10n.error(
+                "\(distribution.name) is an x86_64 build and needs Rosetta 2, which is not installed. Install it with: \(WineDistribution.rosettaInstallCommand)"
+            )
+            return nil
+        }
         isBusy = true
         installingWineDistributionID = distribution.id
         defer {
@@ -974,53 +982,126 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// After the app itself was updated, push the new runtime into every
-    /// installed iOS app whose fingerprint differs. Only changed components are
-    /// copied; each bundle is prepared and signed in a staged copy first.
-    func refreshInstalledRuntimes() async {
-        guard !isBusy else { return }
-        guard runningGames.isEmpty, runningManagedEntries.isEmpty else {
-            statusMessage = L10n.error("Stop every running app before refreshing runtimes")
-            return
+    /// Progress of a background iOS runtime refresh; nil when none is running.
+    struct RuntimeRefreshProgress: Equatable, Sendable {
+        var total: Int
+        var done: Int
+        var current: String
+        var fraction: Double { total == 0 ? 1 : Double(done) / Double(total) }
+    }
+
+    /// While set, iOS apps cannot be launched, installed over, removed or
+    /// re-prepared: their bundles may be mid-swap. Everything else stays usable.
+    @Published private(set) var runtimeRefresh: RuntimeRefreshProgress?
+
+    var iOSAppsLockedForRuntimeRefresh: Bool { runtimeRefresh != nil }
+
+    private static let refreshedRuntimeKey = "runtime.refreshedFingerprint"
+
+    private var bundledRuntimeDirectory: URL? {
+        AppLauncher.runtimeLibraryURL()?.deletingLastPathComponent()
+    }
+
+    /// Called at startup. When the runtime bundled with this PearSilicon build
+    /// differs from the one last pushed to the installed iOS apps (that is,
+    /// after an update), refresh them in the background.
+    func refreshRuntimesIfPearSiliconWasUpdated() {
+        guard runtimeRefresh == nil, let source = bundledRuntimeDirectory else { return }
+        Task { @MainActor [weak self] in
+            let current = await Task.detached(priority: .utility) {
+                try? RuntimeRevision.fingerprint(in: source)
+            }.value
+            guard let self, let current else { return }
+            let stored = AppSettings.defaults.string(forKey: Self.refreshedRuntimeKey)
+            guard stored != current else { return }
+            await self.runRuntimeRefresh(automatic: true, fingerprint: current)
         }
-        guard let source = AppLauncher.runtimeLibraryURL()?.deletingLastPathComponent() else {
+    }
+
+    /// Manual "Refresh iOS Runtimes": the same background refresh, always run.
+    func refreshInstalledRuntimes() async {
+        guard let source = bundledRuntimeDirectory else {
             statusMessage = L10n.error("No runtime was found next to PearSilicon")
             return
         }
-        isBusy = true
-        defer { finishBusyWork() }
-        var changed = 0
-        var skipped = 0
-        var failures: [String] = []
-        for app in installedApps {
-            await Task.yield()
-            statusMessage = "Checking runtime: \(app.displayName)…"
-            do {
-                if try packageInstaller.refreshRuntimeIfNeeded(
-                    for: app, sourceRuntimeDirectory: source
-                ) {
-                    changed += 1
-                } else {
-                    skipped += 1
-                }
-            } catch {
-                failures.append("\(app.displayName): \(error.localizedDescription)")
-            }
+        let fingerprint = await Task.detached(priority: .utility) {
+            try? RuntimeRevision.fingerprint(in: source)
+        }.value
+        await runRuntimeRefresh(automatic: false, fingerprint: fingerprint)
+    }
+
+    /// Pushes the bundled runtime into every installed iOS app whose runtime
+    /// differs. Each app is prepared and re-signed in a staged copy off the main
+    /// thread, under that app's launch lease (so the CLI cannot start it
+    /// either). Running apps are skipped and retried on the next launch.
+    private func runRuntimeRefresh(automatic: Bool, fingerprint: String?) async {
+        guard runtimeRefresh == nil, let source = bundledRuntimeDirectory else { return }
+        let apps = installedApps
+        guard !apps.isEmpty else {
+            if let fingerprint { AppSettings.defaults.set(fingerprint, forKey: Self.refreshedRuntimeKey) }
+            return
         }
-        if failures.isEmpty {
-            statusMessage = "Runtime refresh complete: \(changed) updated, \(skipped) already current"
-        } else {
+        let installer = packageInstaller
+        let library = libraryURL
+        runtimeRefresh = RuntimeRefreshProgress(total: apps.count, done: 0, current: "")
+        var changed = 0, current = 0
+        var failures: [String] = []
+        var skippedRunning: [String] = []
+        for app in apps {
+            runtimeRefresh?.current = app.displayName
+            if runningApps[app.id] != nil || runningGames.contains(where: { $0.id == app.id }) {
+                skippedRunning.append(app.displayName)
+                runtimeRefresh?.done += 1
+                continue
+            }
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<Bool, Error> in
+                do {
+                    let lease = try AppLaunchLease.acquire(appID: app.id, libraryURL: library)
+                    defer { lease.release() }
+                    return .success(try installer.refreshRuntimeIfNeeded(
+                        for: app, sourceRuntimeDirectory: source, launchLease: lease
+                    ))
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            switch result {
+            case .success(true): changed += 1
+            case .success(false): current += 1
+            case .failure(let error): failures.append("\(app.displayName): \(error.localizedDescription)")
+            }
+            runtimeRefresh?.done += 1
+        }
+        runtimeRefresh = nil
+        if failures.isEmpty, skippedRunning.isEmpty, let fingerprint {
+            AppSettings.defaults.set(fingerprint, forKey: Self.refreshedRuntimeKey)
+        }
+        let prefix = automatic ? "iOS runtime updated after the PearSilicon update" : "Runtime refresh complete"
+        if !failures.isEmpty {
             statusMessage = L10n.error(
-                "Runtime refresh: \(changed) updated, \(skipped) current, \(failures.count) failed. "
+                "Runtime refresh: \(changed) updated, \(current) current, \(failures.count) failed. "
                 + failures.prefix(2).joined(separator: " | ")
             )
+        } else if !skippedRunning.isEmpty {
+            statusMessage = "\(prefix): \(changed) updated. Close \(skippedRunning.joined(separator: ", ")) and relaunch PearSilicon to update it."
+        } else if automatic && changed == 0 {
+            statusMessage = L10n.ready
+        } else {
+            statusMessage = "\(prefix): \(changed) updated, \(current) already current"
         }
+    }
+
+    /// Shown when an iOS action waits for the background runtime refresh.
+    private func reportIOSAppsLocked() {
+        guard let progress = runtimeRefresh else { return }
+        statusMessage = "iOS apps are being updated (\(progress.done)/\(progress.total)). They can be opened when the update finishes."
     }
 
     // MARK: - Install
 
     func install(packageURLs: [URL]) async {
         guard !packageURLs.isEmpty else { return }
+        guard !iOSAppsLockedForRuntimeRefresh else { return reportIOSAppsLocked() }
         guard await acquireImportSlot() else { return }
         defer { releaseImportSlot() }
 
@@ -1192,6 +1273,7 @@ final class AppState: ObservableObject {
         // An import or storage move may be replacing files in the library. Do
         // not read a half-written bundle or race a preparation swap.
         guard !isBusy else { return }
+        guard !iOSAppsLockedForRuntimeRefresh else { return reportIOSAppsLocked() }
 
         // Input translation is opted in per game and default OFF. When disabled,
         // no keymap is passed, so the runtime installs no input handlers.
@@ -1244,6 +1326,7 @@ final class AppState: ObservableObject {
 
     func uninstall(_ app: InstalledApp) {
         guard !isBusy else { return }
+        guard !iOSAppsLockedForRuntimeRefresh else { return reportIOSAppsLocked() }
         do {
             overlays[app.id]?.detach()
             overlays[app.id] = nil

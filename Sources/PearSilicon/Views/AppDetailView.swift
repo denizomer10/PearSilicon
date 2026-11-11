@@ -93,6 +93,9 @@ struct AppDetailView: View {
                     }
                     .buttonStyle(.glassProminent)
                     .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(state.iOSAppsLockedForRuntimeRefresh)
+                    .help(state.iOSAppsLockedForRuntimeRefresh
+                          ? "iOS apps are being updated to the new runtime. They can be opened when it finishes." : "")
                 }
                 .fixedSize()
             }
@@ -286,6 +289,12 @@ struct AppDetailView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.glassProminent)
+                .disabled(state.iOSAppsLockedForRuntimeRefresh)
+                if state.iOSAppsLockedForRuntimeRefresh {
+                    Text("Updating this app to the new runtime. You can open it when the update in the status bar finishes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 if state.isLegacy32Bit(app) {
                     legacy32Settings

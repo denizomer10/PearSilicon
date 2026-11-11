@@ -395,7 +395,10 @@ struct SettingsView: View {
                 Button("Refresh iOS Runtimes Now") {
                     Task { await state.refreshInstalledRuntimes() }
                 }
-                .disabled(state.isBusy)
+                .disabled(state.isBusy || state.iOSAppsLockedForRuntimeRefresh)
+                Text("After a PearSilicon update this runs automatically in the background; the status bar shows its progress and iOS apps open again when it finishes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

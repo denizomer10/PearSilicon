@@ -603,8 +603,12 @@ final class RealWindowsProgramAdmissionTests: XCTestCase {
         print("[pe] checked \(checked) programs, rejected \(rejected.count)")
         rejected.forEach { print("[pe] rejected", $0) }
         XCTAssertGreaterThan(checked, 0)
-        // Only kernel/driver images (for example Wine's ntoskrnl.exe) may be refused.
-        XCTAssertTrue(rejected.allSatisfy { $0.contains("drivers") || $0.contains("driver or firmware") }, "\(rejected)")
+        // Only images Windows would not start as a program either may be refused:
+        // kernel/driver images (ntoskrnl.exe), DLL-flagged helpers, and 16-bit
+        // NE/DOS stubs such as Wine's krnl386.exe.
+        XCTAssertTrue(rejected.allSatisfy {
+            $0.contains("drivers") || $0.contains("driver or firmware") || $0.contains("16-bit")
+        }, "\(rejected)")
     }
 }
 

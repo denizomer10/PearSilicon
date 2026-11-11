@@ -49,6 +49,12 @@ struct WineDistributionList: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if !distribution.nativeArm64 && !WineDistribution.isRosettaInstalled {
+                    Text("Needs Rosetta 2, which is not installed: \(WineDistribution.rosettaInstallCommand)")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                }
                 if let engine {
                     Text("Installed: \(engine.version)")
                         .font(.caption2)

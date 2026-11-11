@@ -147,6 +147,13 @@ final class AppLauncher: @unchecked Sendable {
                     pid = process.processIdentifier
                     running = NSRunningApplication(processIdentifier: pid)
                 case .launchServices:
+                    // LaunchServices owns stdout here; the runtime writes its
+                    // own log at <id>.log. Start a PearDebug session so each
+                    // launch gets a fresh log and the previous run is kept as
+                    // <id>.1.log instead of everything being appended.
+                    if env["PEAR_LOG_FILE"] == nil {
+                        try? openLogSession(for: app, source: .runtime)?.close()
+                    }
                     running = try await openViaLaunchServices(app, env: env, activate: activate)
                     pid = running?.processIdentifier ?? 0
                 }
@@ -618,11 +625,17 @@ final class AppLauncher: @unchecked Sendable {
         if AppSettings.legacyFullscreen(for: app.id) {
             args.append("--fullscreen")
         }
-        if AppSettings.defaults.bool(forKey: "metalHUD.enabled." + app.id) {
-            // The engine renders through OpenGL ES, so Metal's HUD can't apply;
-            // it draws an equivalent FPS overlay and logs the same numbers.
-            env["PEAR_FPS_HUD"] = "1"
+        // The engine renders through ANGLE on Metal, so Apple's Metal HUD works
+        // for 32-bit games and shows more (FPS, GPU time, frame intervals).
+        // The engine's own segment overlay is never enabled as well, so only
+        // one FPS meter appears; --print-fps keeps FPS in the log for PearDebug.
+        env.removeValue(forKey: "PEAR_FPS_HUD")
+        if AppSettings.defaults.bool(forKey: "metalHUD.enabled." + app.id)
+            || extraEnvironment["MTL_HUD_ENABLED"] == "1" {
+            env["MTL_HUD_ENABLED"] = "1"
             args.append("--print-fps")
+        } else {
+            env.removeValue(forKey: "MTL_HUD_ENABLED")
         }
 
         let process = Process()

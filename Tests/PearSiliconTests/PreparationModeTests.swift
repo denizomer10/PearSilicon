@@ -332,6 +332,42 @@ final class PreparationModeTests: XCTestCase {
         }
     }
 
+    /// The app refreshes runtimes from a background task so the window never
+    /// freezes. The refresh must work off the main thread, run its stopped
+    /// check on the main thread, and converge (a second run changes nothing).
+    func testRuntimeRefreshRunsOffTheMainThread() async throws {
+        let fixture = try PreparationFixture()
+        defer { fixture.remove() }
+        try fixture.prepare(.compatibility)
+        // A new PearSilicon build ships a different runtime.
+        let handle = try FileHandle(forWritingTo: fixture.runtimeURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data([0x50, 0x45, 0x41, 0x52]))
+        try handle.close()
+        let mainThreadChecks = CallCounter()
+        var tools = fixture.tools()
+        tools.requireStopped = { _ in
+            try PackageInstaller.onMainThread { mainThreadChecks.increment() }
+            XCTAssertFalse(Thread.isMainThread)
+        }
+        let installer = fixture.installer(tools: tools)
+        let app = try fixture.app(using: installer)
+        let source = fixture.runtimeURL.deletingLastPathComponent()
+
+        let first = try await Task.detached {
+            XCTAssertFalse(Thread.isMainThread)
+            return try installer.refreshRuntimeIfNeeded(for: app, sourceRuntimeDirectory: source)
+        }.value
+        let second = try await Task.detached {
+            try installer.refreshRuntimeIfNeeded(for: app, sourceRuntimeDirectory: source)
+        }.value
+
+        XCTAssertTrue(first, "the changed runtime should have been installed")
+        XCTAssertFalse(second, "a refreshed app must be reported as current")
+        XCTAssertGreaterThan(mainThreadChecks.value, 0)
+        try fixture.assertNoStagingRemains()
+    }
+
     func testValidSameModeDoesNotNeedExternalRuntimeOrResigning() throws {
         let fixture = try PreparationFixture()
         defer { fixture.remove() }

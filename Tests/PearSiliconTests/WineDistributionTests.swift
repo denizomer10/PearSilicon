@@ -18,6 +18,27 @@ final class WineDistributionTests: XCTestCase {
         XCTAssertTrue(match("WS12WhiskyWine2.5.0_3.tar.xz", "WS12WhiskyWine*.tar.xz"))
     }
 
+    func testCatalogOffersPearWineWhiskyWineAndWineHQOnly() {
+        XCTAssertEqual(WineDistribution.catalog.map(\.id), ["pearwine", "whiskywine", "winehq-staging", "winehq-devel"])
+    }
+
+    func testVersionLabelsDropFilePrefixAndExtension() {
+        XCTAssertEqual(WineDistributionInstaller.versionLabel(asset: "WS12WhiskyWine2.5.0_3.tar.xz", pattern: "WS12WhiskyWine*.tar.xz"), "2.5.0_3")
+        XCTAssertEqual(WineDistributionInstaller.versionLabel(asset: "wine-devel-11.21-osx64.tar.xz", pattern: "wine-devel-*.tar.xz"), "11.21-osx64")
+    }
+
+    /// An asset without a published digest must not borrow the next asset's.
+    func testReleasePageDigestStaysWithinOneAsset() {
+        let marker = "/o/r/releases/download/v1/"
+        let html = """
+        <a href="\(marker)A_old.tar.xz">A_old</a> <span>no digest</span>
+        <a href="\(marker)A_new.tar.xz">A_new</a> <span>sha256:\(String(repeating: "ab", count: 32))</span>
+        """
+        XCTAssertNil(WineDistributionInstaller.digest(of: marker + "A_old.tar.xz", in: html, nextEntry: marker))
+        XCTAssertEqual(WineDistributionInstaller.digest(of: marker + "A_new.tar.xz", in: html, nextEntry: marker),
+                       String(repeating: "ab", count: 32))
+    }
+
     func testManifestDecodesPublishedFormat() throws {
         let json = """
         {"schema":"pearwine/v1","name":"PearWine","version":"1.0.0","wine":"11.20","architecture":"arm64",
@@ -66,10 +87,10 @@ final class WineDistributionTests: XCTestCase {
         let ordered = WineDistribution.ordered([
             engine("wine-staging-11.21", .wineHQ),
             engine("custom", .community),
-            engine("metalsharp-v6.0", .fork),
+            engine("whiskywine-2.5.0_3", .fork),
             engine("pearwine-1.0.0", .pearWine),
         ])
-        XCTAssertEqual(ordered.map(\.id), ["pearwine-1.0.0", "metalsharp-v6.0", "wine-staging-11.21", "custom"])
+        XCTAssertEqual(ordered.map(\.id), ["pearwine-1.0.0", "whiskywine-2.5.0_3", "wine-staging-11.21", "custom"])
     }
 }
 
@@ -91,5 +112,52 @@ final class PearWineLiveInstallTests: XCTestCase {
         XCTAssertNotNil(WineDistributionInstaller.registryDefaults(for: engine))
         XCTAssertEqual(try store.engines().map(\.id), [engine.id])
         print("[install] registered \(engine.name) \(engine.version) -> \(engine.executableURL.path)")
+    }
+}
+
+/// Installs any catalog distribution from its live source into a temporary
+/// store. Opt-in: PEAR_LIVE_WINE_DISTRIBUTION=<catalog id> (downloads it).
+final class WineDistributionLiveInstallTests: XCTestCase {
+    func testInstallsSelectedDistribution() async throws {
+        guard let id = ProcessInfo.processInfo.environment["PEAR_LIVE_WINE_DISTRIBUTION"] else {
+            throw XCTSkip("Set PEAR_LIVE_WINE_DISTRIBUTION to a catalog id to download and install it.")
+        }
+        let distribution = try XCTUnwrap(WineDistribution.catalog.first { $0.id == id }, "unknown id \(id)")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("wine-live-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WineEngineStore(rootURL: root.appendingPathComponent("Engines", isDirectory: true))
+        let engine = try await WineDistributionInstaller().install(distribution, store: store) { print("[install]", $0) }
+        try engine.validate()
+        XCTAssertEqual(WineDistribution.distribution(for: engine)?.id, id)
+        // The installed loader must actually start.
+        let process = Process()
+        process.executableURL = engine.executableURL
+        process.arguments = ["--version"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        print("[install] \(engine.name) \(engine.version) -> \(engine.executablePath): \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertTrue(output.lowercased().contains("wine"))
+    }
+}
+
+/// Live: the rate-limit fallback (public release pages) must resolve the same
+/// asset, URL and SHA-256 as the API. Opt-in: PEAR_LIVE_WINE_LOOKUP=1.
+final class WineDistributionLiveLookupTests: XCTestCase {
+    func testReleasePageFallbackMatchesAPI() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["PEAR_LIVE_WINE_LOOKUP"] == "1", "Set PEAR_LIVE_WINE_LOOKUP=1.")
+        let repository = "Sikarugir-App/Engines", pattern = "WS12WhiskyWine*.tar.xz"
+        let api = try await WineDistributionInstaller.latestAsset(repository: repository, pattern: pattern)
+        let pages = try await WineDistributionInstaller.latestAssetFromReleasePages(repository: repository, pattern: pattern)
+        print("[lookup] api:", api.name, api.sha256, "pages:", pages.name, pages.sha256)
+        XCTAssertEqual(api.name, pages.name)
+        XCTAssertEqual(api.url, pages.url)
+        XCTAssertEqual(api.sha256, pages.sha256)
+        XCTAssertEqual(api.version, "2.5.0_3")
     }
 }
