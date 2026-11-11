@@ -2,6 +2,22 @@
 
 ## Oturum 2026-11-11 — PearRuntime/PearWine/PearDebug ayrımı, gamepad, Miku Flick
 
+### Güncellemeler — eski sürüm gösterme hatası (0.8.0 ile düzeltildi)
+- GUI her zaman Development Beta kanalını kullanıyor. Bu kanal GitHub listesindeki
+  *ilk ön sürümü* seçiyordu ve kararlı sürümleri hiç görmüyordu: v0.7.0
+  kararlı olduğu için kullanıcılara daha eski **v0.6.0** sunuluyordu. Kanal
+  ayrıca yalnız hash karşılaştırdığı için sürüm düşürmeyi de "güncelleme"
+  sayabiliyordu.
+- Düzeltme: geliştirme kanalı artık kararlı + ön sürümler arasında en yüksek
+  sürüm numarasını seçiyor (`v0.8.0-beta` gibi ekli etiketler kendi sürümüyle
+  sıralanır, eşitlikte kararlı sürüm kazanır); her kanalda daha eski sürüm asla
+  güncelleme olarak sunulmuyor. `AppUpdateChannelTests` (6 test) eklendi.
+- Eski sürümlerden geçiş: eski istemciler geliştirme kanalında en yeni oluşturulan
+  *ön sürümü* aldığı için 0.8.0 ile aynı ZIP `v0.8.0-beta` ön sürüm etiketiyle
+  de yayınlanıyor (kararlı `v0.8.0`'dan sonra oluşturulur). Yeni istemciler
+  `v0.8.0`'ı seçer. Bundan sonraki sürümlerde de bu eşlik eden ön sürüm
+  etiketi, eski istemciler (≤0.7.0) için yayınlanmaya devam etmeli.
+
 ### Yeni depolar (GitHub, herkese açık)
 - **PearRuntime** (`denizomer10/PearRuntime`, `runtime/` alt modülü): `runtime/`
   geçmişiyle ayrıldı. Kaynaklar `modules/{core,input,graphics,device,storage,services}`

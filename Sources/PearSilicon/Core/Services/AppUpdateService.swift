@@ -266,6 +266,15 @@ actor AppUpdateService {
         var candidates = tags
         if channel == .stable {
             candidates = tags.filter { UpdateVersion($0) != nil }
+        } else {
+            // Newest version first (stable before its companion beta tag);
+            // unnumbered tags such as `development-beta` keep their feed order.
+            let numbered = tags.compactMap { tag in UpdateVersion.numericPrefix(tag).map { (tag, $0) } }
+                .sorted { lhs, rhs in
+                    lhs.1 != rhs.1 ? lhs.1 > rhs.1 : (!lhs.0.contains("-") && rhs.0.contains("-"))
+                }
+                .map(\.0)
+            candidates = numbered + tags.filter { UpdateVersion.numericPrefix($0) == nil }
         }
         for tag in candidates {
             guard let encoded = Self.pathSafe(tag) else { continue }
@@ -276,7 +285,9 @@ actor AppUpdateService {
             let developmentTag = tagLower.contains("development") || tagLower.contains("beta")
                 || tagLower.contains("preview") || tagLower.contains("rc")
             if channel == .stable, prerelease { continue }
-            if channel == .developmentBeta, !(prerelease || developmentTag || tag == tags.first) { continue }
+            if channel == .developmentBeta,
+               !(prerelease || developmentTag || tag == candidates.first
+                 || UpdateVersion.numericPrefix(tag) != nil) { continue }
             guard let commit = Self.firstMatch("/commit/([0-9a-f]{40})", in: page) else { continue }
             guard let assetsPage = try? await html(
                 "/denizomer10/PearSilicon/releases/expanded_assets/\(encoded)"
@@ -362,6 +373,20 @@ actor AppUpdateService {
                     (UpdateVersion(lhs.tagName) ?? UpdateVersion("0")!) < (UpdateVersion(rhs.tagName) ?? UpdateVersion("0")!)
                 }
         case .developmentBeta:
+            // The development channel follows the newest *version*, stable or
+            // prerelease. Taking the first prerelease in GitHub's list offered
+            // an older beta (0.6.0) after a newer stable release (0.7.0).
+            // Companion tags such as `v0.8.0-beta` rank with their version; on
+            // a tie the stable release wins.
+            let numbered = candidates.compactMap { release in
+                UpdateVersion.numericPrefix(release.tagName).map { (release, $0) }
+            }
+            if let newest = numbered.max(by: { lhs, rhs in
+                lhs.1 != rhs.1 ? lhs.1 < rhs.1 : (lhs.0.prerelease && !rhs.0.prerelease)
+            }) {
+                return newest.0
+            }
+            // Repositories with only a mutable `development-beta` release.
             return candidates.first {
                 $0.prerelease
                     || $0.tagName.lowercased().contains("development")
@@ -543,7 +568,8 @@ actor AppUpdateService {
         }
         if channel == .developmentBeta {
             let tag = release.tagName.lowercased()
-            guard release.prerelease || tag.contains("development") || tag.contains("beta") else {
+            guard release.prerelease || tag.contains("development") || tag.contains("beta")
+                    || UpdateVersion.numericPrefix(release.tagName) != nil else {
                 throw AppUpdateError.invalidMetadata("The development channel requires a development or prerelease release.")
             }
         } else {
@@ -582,7 +608,11 @@ actor AppUpdateService {
             throw AppUpdateError.invalidMetadata("A resolved Git commit and SHA-256 asset digest are required.")
         }
         var reason: AppUpdateCheck.Reason?
-        if channel == .stable, let remote = UpdateVersion(release.tagName), let local = UpdateVersion(current.version), remote != local {
+        // Versions decide first on every channel: a newer version is an
+        // update, an older one never is (no silent downgrade to an old beta).
+        // Equal versions fall through to the build identity checks.
+        if let remote = UpdateVersion.numericPrefix(release.tagName),
+           let local = UpdateVersion.numericPrefix(current.version), remote != local {
             reason = remote > local ? .newerVersion : nil
         } else if let digest = current.assetSHA256 {
             reason = digest == asset.sha256 ? nil : .changedAsset
@@ -872,7 +902,7 @@ private struct UpdateInstallReceipt: Codable {
     let destinationPath: String
 }
 
-private struct UpdateVersion: Comparable {
+struct UpdateVersion: Comparable {
     let numbers: [UInt64]
     init?(_ string: String) {
         let text = string.hasPrefix("v") ? String(string.dropFirst()) : string
@@ -886,6 +916,13 @@ private struct UpdateVersion: Comparable {
         self.numbers = numbers + Array(repeating: 0, count: 3 - numbers.count)
     }
     static func < (lhs: Self, rhs: Self) -> Bool { lhs.numbers.lexicographicallyPrecedes(rhs.numbers) }
+
+    /// `v0.8.0-beta` / `0.8.0+24` → 0.8.0. Used where companion prerelease
+    /// tags must rank with the version they ship.
+    static func numericPrefix(_ string: String) -> UpdateVersion? {
+        let core = string.split(whereSeparator: { $0 == "-" || $0 == "+" || $0 == " " }).first.map(String.init) ?? string
+        return UpdateVersion(core)
+    }
 }
 
 // Exact-host allowlist, applied before the first request AND every redirect.
