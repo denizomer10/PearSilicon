@@ -757,3 +757,8 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - Running state of Wine entries comes from a 2-second scan of each prefix's processes (working directory inside the entry, or the prefix's wineserver folder `/tmp/.wine-<uid>/server-<dev>-<inode>`), so relaunched clients (Steam) and games started by a launcher show as running. Wine's background services alone do not count.
 - Stop force-quits the whole prefix: `wineserver -k9` with the entry's engine (MetalSharp or WineHQ), then SIGKILL to anything left, including orphans. CLI: `wine-status <id>`, `wine-stop <id>`.
 - Verified live with Vice City: all 10 prefix processes found, `gta-vc.exe` reported as the program, `wine-stop` cleared everything in 0.34 s.
+
+### 2026-11-12 — PearDebug 0.2.0
+
+- New PearDebug tools: `wine ps` (prefix processes; PearSilicon's running state and Stop now use PearDebugKit's `WineProcesses`), `steam` (Steam client diagnosis from its logs and registry), `legacy crash` (32-bit crash capture over --gdb), `legacy frames` (frame dumps to PNG + size summary), and analyzer rules for the problems found this session. Guide: `Vendor/PearDebug/DEBUGGING.md`.
+- Verified live: Miku Flick dumps (640x920 before the fix, 640x960 after), Asphalt 6 crash (PC 0x70ee0, 11-frame chain), Steam drive-letter copy (drive-root repair loop), Vice City (`wine ps`/`wine-stop`).
