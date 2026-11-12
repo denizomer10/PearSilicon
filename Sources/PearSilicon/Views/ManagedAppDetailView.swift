@@ -48,7 +48,6 @@ struct ManagedAppRowView: View {
 struct ManagedAppDetailView: View {
     @EnvironmentObject private var state: AppState
     let entry: LibraryEntry
-    @State private var confirmingUninstall = false
     @State private var confirmingQuarantine = false
     @State private var showingExecutablePicker = false
 
@@ -82,20 +81,13 @@ struct ManagedAppDetailView: View {
         } message: {
             Text("This bypasses Gatekeeper only for this imported copy. Do it only if you trust the app's source. The original download is not changed and the app is still not notarized.")
         }
-        .confirmationDialog(
-            "Remove \(entry.displayName)? This deletes its app files, data and Wine prefix.",
-            isPresented: $confirmingUninstall
-        ) {
-            Button("Remove", role: .destructive) { state.uninstall(entry) }
-            Button("Cancel", role: .cancel) {}
-        }
         .sheet(isPresented: $showingExecutablePicker) {
             let candidates = state.wineExecutables(for: entry)
             if candidates.isEmpty {
                 VStack(spacing: 14) {
                     Text("No executable inside this game's folder")
                         .font(.title3.weight(.semibold))
-                    Text("Payload/Program does not contain a Windows .exe. Remove the entry and re-import the game folder.")
+                    Text("No installed program was found yet. Complete setup, then scan again.")
                         .foregroundStyle(.secondary)
                     Button("Close") { showingExecutablePicker = false }
                         .buttonStyle(.glassProminent)
@@ -104,7 +96,7 @@ struct ManagedAppDetailView: View {
                 .frame(width: 520, height: 200)
             } else {
                 WineExecutableSelectionView(
-                    folder: entry.payloadURL.deletingLastPathComponent(),
+                    folder: entry.directoryURL,
                     candidates: candidates,
                     importTitle: "Use This Program"
                 ) { relativePath in
@@ -263,7 +255,7 @@ struct ManagedAppDetailView: View {
                 }
 
                 Button(role: .destructive) {
-                    confirmingUninstall = true
+                    state.uninstall(entry)
                 } label: {
                     Label(L10n.uninstall, systemImage: "trash").frame(maxWidth: .infinity)
                 }
@@ -275,9 +267,8 @@ struct ManagedAppDetailView: View {
 
     private var programRelativePath: String {
         let prefix = "Payload/Program/"
-        return entry.manifest.payloadPath.hasPrefix(prefix)
-            ? String(entry.manifest.payloadPath.dropFirst(prefix.count))
-            : entry.manifest.payloadPath
+        let path = entry.manifest.wineLaunchPath ?? entry.manifest.payloadPath
+        return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
     }
 
     private var enginePicker: some View {
@@ -332,46 +323,17 @@ struct ManagedAppDetailView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glass)
-            .disabled(running)
+            .disabled(state.isBusy)
 
-            Text("Graphics API").font(.caption).foregroundStyle(.secondary)
-                .padding(.top, 4)
-            Picker("Graphics API", selection: Binding(
-                get: { state.graphicsBackend(for: entry) },
-                set: { state.setGraphicsBackend($0, for: entry) }
-            )) {
-                ForEach(LibraryManifest.GraphicsBackend.allCases) { backend in
-                    Text(backend.title).tag(backend)
-                }
+            Text("Graphics: Wine engine defaults").font(.caption).foregroundStyle(.secondary)
+            Button(entry.manifest.wineInstaller == true ? "Run Setup Again…" : "Run as Installer…") { state.runWineSetup(entry) }
+                .disabled(running || state.isBusy)
+            if entry.manifest.wineInstaller == true && entry.manifest.wineInstallState != "ready" {
+                Text("Installer: complete the Windows setup, then select the installed program.").font(.caption).foregroundStyle(.secondary)
+                Button("Installation Finished — Find Installed Apps") { state.finishWineInstallation(entry) }
+                    .disabled(state.isBusy)
             }
-            .labelsHidden()
-            Text(state.graphicsBackend(for: entry).detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if state.graphicsBackend(for: entry) == .moltenVK,
-               !state.isGraphicsComponentInstalled(.moltenVK, for: entry) {
-                Text("Direct3D 11 games need the DXVK component; without it Wine's OpenGL renderer is used and may show a black window.")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("Install DXVK") {
-                    Task { await state.installGraphicsComponent(.moltenVK, for: entry) }
-                }
-                .buttonStyle(.glass)
-                .disabled(state.isBusy)
-            }
-            if state.graphicsBackend(for: entry) == .dxmt,
-               !state.isGraphicsComponentInstalled(.dxmt, for: entry) {
-                Text("DXMT is not installed for this engine.")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                Button("Install DXMT") {
-                    Task { await state.installGraphicsComponent(.dxmt, for: entry) }
-                }
-                .buttonStyle(.glass)
-                .disabled(state.isBusy)
-            }
+
         }
     }
 

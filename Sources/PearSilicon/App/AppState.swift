@@ -507,7 +507,66 @@ final class AppState: ObservableObject {
     // MARK: - Managed Mac / Wine apps
 
     func isRunning(_ entry: LibraryEntry) -> Bool {
-        managedRunning[entry.id]?.isRunning == true
+        managedRunning[entry.id]?.isRunning == true || activeWineInstallations.contains(entry.id)
+    }
+
+    @Published private(set) var activeWineInstallations: Set<String> = []
+    @Published var wineInstalledProgramChoice: LibraryEntry?
+
+    func runWineSetup(_ entry: LibraryEntry) {
+        guard !isRunning(entry), !isBusy else { return }
+        updateManifest(entry) { $0.wineInstaller = true; $0.wineInstallState = "pending"; $0.wineLaunchPath = nil }
+        if let updated = managedEntries.first(where: { $0.id == entry.id }) { Task { await launch(updated) } }
+    }
+
+    func finishWineInstallation(_ original: LibraryEntry, automatic: Bool = false) {
+        guard let entry = managedEntries.first(where: { $0.id == original.id }) else { return }
+        let candidates = WineInstallation.candidates(entry, changedOnly: automatic)
+        let recommended = candidates.filter(\.isRecommended)
+        if candidates.count == 1 || recommended.count == 1 {
+            let chosen = recommended.first ?? candidates[0]
+            setWineExecutable(chosen.path, for: entry)
+            statusMessage = "Installation complete — ready to launch \(URL(fileURLWithPath: chosen.path).lastPathComponent)"
+        } else if !candidates.isEmpty {
+            updateManifest(entry) { $0.wineInstallState = "chooseProgram" }
+            wineInstalledProgramChoice = managedEntries.first { $0.id == entry.id }
+        } else {
+            updateManifest(entry) { $0.wineInstallState = "chooseProgram" }
+            statusMessage = "No installed application found yet. Finish setup, then choose Find Installed Apps."
+        }
+    }
+
+    private func watchWineInstallation(_ process: ManagedAppProcess, entry: LibraryEntry, engine: WineEngine) {
+        activeWineInstallations.insert(entry.id)
+        Task { @MainActor [weak self] in
+            // A bootstrapper can exit while a child installer still runs.
+            // wineserver -w waits for every Windows process in this private prefix.
+            defer { self?.activeWineInstallations.remove(entry.id) }
+            let waiter = Process()
+            waiter.executableURL = engine.executableURL.deletingLastPathComponent().appendingPathComponent("wineserver")
+            waiter.arguments = ["-w"]
+            waiter.environment = ManagedAppService.environment(for: entry, engine: engine)
+            waiter.standardOutput = FileHandle.nullDevice
+            waiter.standardError = FileHandle.nullDevice
+            do {
+                while process.isRunning { try await Task.sleep(for: .milliseconds(500)) }
+                try waiter.run()
+                while waiter.isRunning {
+                    try await Task.sleep(for: .seconds(1))
+                    guard self?.managedEntries.contains(where: { $0.id == entry.id }) == true else { return }
+                }
+                guard let self, let current = self.managedEntries.first(where: { $0.id == entry.id }),
+                      current.manifest.wineInstallState == "running" else { return }
+                guard process.terminationStatus == 0, waiter.terminationStatus == 0 else {
+                    self.updateManifest(current) { $0.wineInstallState = "chooseProgram" }
+                    self.statusMessage = "Setup exited without success. Finish or retry installation, then find installed apps."
+                    return
+                }
+                self.finishWineInstallation(current, automatic: true)
+            } catch {
+                self?.statusMessage = "Finish setup, then use Find Installed Apps to select the installed application."
+            }
+        }
     }
 
     func launch(_ entry: LibraryEntry) async {
@@ -531,7 +590,18 @@ final class AppState: ObservableObject {
             case .iOS:
                 throw PearError.launchFailed("Use the iOS launcher for this entry")
             }
-            statusMessage = "Launching \(target.displayName)…"
+            if target.platform == .wine {
+                target.manifest.wineEngineGraphics = true
+                if target.manifest.wineLaunchPath == nil,
+                   target.manifest.wineInstaller == true || WineInstallation.isInstaller(source: target.payloadURL, name: target.payloadURL.lastPathComponent) {
+                    target.manifest.wineInstaller = true
+                    target.manifest.wineInstallState = "running"
+                    target.manifest.wineInstallBaseline = WineInstallation.installedExecutables(target)
+                }
+                let saved = target.manifest
+                updateManifest(target) { $0 = saved }
+            }
+            statusMessage = target.manifest.wineInstallState == "running" ? "Running setup — complete the Windows installer…" : "Launching \(target.displayName)…"
             let process: ManagedAppProcess
             if target.platform == .macOS {
                 process = try await macApps.launch(
@@ -551,7 +621,11 @@ final class AppState: ObservableObject {
             statusMessage = L10n.launching(target.displayName)
             wineLaunchFailures[target.id] = nil
             if target.platform == .wine, let engine {
-                watchForEarlyWineFailure(process, entry: target, engine: engine)
+                if target.manifest.wineInstallState == "running" {
+                    watchWineInstallation(process, entry: target, engine: engine)
+                } else {
+                    watchForEarlyWineFailure(process, entry: target, engine: engine)
+                }
             }
         } catch {
             statusMessage = L10n.error("Launch failed: \(error.localizedDescription)")
@@ -669,6 +743,17 @@ final class AppState: ObservableObject {
     }
 
     func stop(_ entry: LibraryEntry) {
+        if activeWineInstallations.contains(entry.id),
+           let id = entry.manifest.wineEngineID, let engine = wineEngines.first(where: { $0.id == id }) {
+            let stop = Process()
+            stop.executableURL = engine.executableURL.deletingLastPathComponent().appendingPathComponent("wineserver")
+            stop.arguments = ["-k"]
+            stop.environment = ManagedAppService.environment(for: entry, engine: engine)
+            stop.standardOutput = FileHandle.nullDevice
+            stop.standardError = FileHandle.nullDevice
+            do { try stop.run(); updateManifest(entry) { $0.wineInstallState = "chooseProgram" } }
+            catch { statusMessage = L10n.error("Close the Windows installer before removing this entry") }
+        }
         guard let process = managedRunning[entry.id] else { return }
         process.stop()
         managedRunning[entry.id] = nil
@@ -679,14 +764,60 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func confirmRemoval(_ name: String) -> Bool? {
+        let alert = NSAlert()
+        alert.messageText = "Remove \(name)?"
+        alert.informativeText = "Delete everything removes the app, saves, downloaded content and settings. Keep saves retains app data for reinstalling."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Keep Saves and Remove App")
+        alert.addButton(withTitle: "Delete Everything")
+        switch alert.runModal() {
+        case .alertSecondButtonReturn: return true
+        case .alertThirdButtonReturn: return false
+        default: return nil
+        }
+    }
+
+    func cleanStart() async {
+        guard !isBusy, !NSWorkspace.shared.runningApplications.contains(where: {
+            $0.bundleURL?.path.hasPrefix(storageRootURL.path + "/") == true && !$0.isTerminated
+        }), runningGames.isEmpty, runningManagedEntries.isEmpty,
+              !runningApps.values.contains(where: { !$0.isTerminated }) else {
+            statusMessage = L10n.error("Close every app before resetting the library")
+            return
+        }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            // Adopt only the known default legacy library; custom locations
+            // still require their existing marker. Validate before any deletion.
+            let availableRoot = try StorageLocationStore.shared.requireAvailableRoot()
+            guard LibraryPath.canonicalPath(availableRoot) == LibraryPath.canonicalPath(storageRootURL) else {
+                throw PearError.invalidPackage("Storage location changed; reload the library before resetting")
+            }
+            let lifecycle = AppDataLifecycle(root: availableRoot)
+            try lifecycle.validateForReset()
+            for app in installedApps { try AppDataLifecycle.removeNativeContainer(id: app.id) }
+            try lifecycle.reset()
+            for key in AppSettings.defaults.dictionaryRepresentation().keys
+                where key != "storage.rootBookmark" && !key.hasPrefix("storage.") {
+                AppSettings.defaults.removeObject(forKey: key)
+            }
+            reloadStorage()
+            try await refreshLibrary()
+            statusMessage = "Clean start complete"
+        } catch { statusMessage = L10n.error(error.localizedDescription) }
+    }
+
     func uninstall(_ entry: LibraryEntry) {
         guard !isBusy else { return }
         guard !isRunning(entry) else {
             statusMessage = L10n.error("Stop \(entry.displayName) before removing it")
             return
         }
+        guard let keepData = confirmRemoval(entry.displayName) else { return }
         do {
-            try FileManager.default.removeItem(at: entry.directoryURL)
+            try AppDataLifecycle(root: storageRootURL).removeManaged(entry, keepData: keepData)
             managedEntries.removeAll { $0.id == entry.id }
             if selectedManagedEntryID == entry.id { selectedManagedEntryID = nil }
             statusMessage = "Removed \(entry.displayName)"
@@ -713,7 +844,10 @@ final class AppState: ObservableObject {
     func wineExecutables(for entry: LibraryEntry) -> [WineExecutableCandidate] {
         guard entry.platform == .wine else { return [] }
         let program = entry.directoryURL.appendingPathComponent("Payload/Program", isDirectory: true)
-        return WineExecutableDiscovery.candidates(in: program)
+        let imported = WineExecutableDiscovery.candidates(in: program).map {
+            WineExecutableCandidate(path: "Payload/Program/" + $0.path, isRecommended: $0.isRecommended)
+        }
+        return WineInstallation.candidates(entry) + imported
     }
 
     /// Finds an already-imported Wine entry by its library id (the folder name).
@@ -728,13 +862,20 @@ final class AppState: ObservableObject {
         guard entry.platform == .wine else { return }
         do {
             try LibraryPath.validateRelative(relativePath)
-            let program = entry.directoryURL.appendingPathComponent("Payload/Program", isDirectory: true)
-            let candidate = program.appendingPathComponent(relativePath).standardizedFileURL
-            guard LibraryPath.isInside(candidate, root: program) else {
-                throw PearError.invalidPackage("The executable must be inside this game's Payload/Program folder")
+            let path = relativePath.hasPrefix("Prefix/") || relativePath.hasPrefix("Payload/")
+                ? relativePath : "Payload/Program/" + relativePath
+            var candidate = entry
+            candidate.manifest.wineLaunchPath = path
+            _ = try WineInstallation.validatedLaunchURL(candidate)
+            updateManifest(entry) {
+                $0.wineLaunchPath = path
+                $0.wineEngineGraphics = true
+                $0.wineInstallState = path.hasPrefix("Prefix/") ? "ready" : nil
+                if path.hasPrefix("Prefix/"), entry.manifest.wineInstaller == true {
+                    $0.displayName = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+                }
+                if path.hasPrefix("Payload/") { $0.wineInstaller = WineInstallation.isInstaller(source: candidate.launchExecutableURL, name: path) }
             }
-            try ManagedExecutable.validatePE(candidate)
-            updateManifest(entry) { $0.payloadPath = "Payload/Program/\(relativePath)" }
             statusMessage = "Executable set to \(relativePath)"
         } catch {
             statusMessage = L10n.error("Could not change executable: \(error.localizedDescription)")
@@ -1196,6 +1337,7 @@ final class AppState: ObservableObject {
             platform = .wine
             selectedManagedEntryID = entry.id
             statusMessage = "Installed Windows game: \(entry.displayName)"
+            if entry.manifest.wineInstaller == true { Task { await self.launch(entry) } }
         } catch {
             statusMessage = L10n.error("\(url.lastPathComponent): \(error.localizedDescription)")
         }
@@ -1217,6 +1359,7 @@ final class AppState: ObservableObject {
             platform = .wine
             selectedManagedEntryID = entry.id
             statusMessage = "Installed Windows program: \(entry.displayName) — \(ManagedAppService.windowsExecutableOnlyImportHint)"
+            if entry.manifest.wineInstaller == true { Task { await self.launch(entry) } }
         } catch {
             statusMessage = L10n.error("\(url.lastPathComponent): \(error.localizedDescription)")
         }
@@ -1337,11 +1480,23 @@ final class AppState: ObservableObject {
     func uninstall(_ app: InstalledApp) {
         guard !isBusy else { return }
         guard !iOSAppsLockedForRuntimeRefresh else { return reportIOSAppsLocked() }
+        guard !isRunning(app) else {
+            statusMessage = L10n.error("Stop the app before removing it")
+            return
+        }
+        guard let keepData = confirmRemoval(app.displayName) else { return }
         do {
             overlays[app.id]?.detach()
             overlays[app.id] = nil
             try iosApps.uninstall(app)
-            try? keymapStore.delete(for: app.id)
+            if !keepData {
+                try AppDataLifecycle.removeNativeContainer(id: app.id)
+                try AppDataLifecycle(root: storageRootURL).removeIOSData(id: app.id)
+                try keymapStore.delete(for: app.id)
+                for key in AppSettings.defaults.dictionaryRepresentation().keys where key.hasSuffix("." + app.id) {
+                    AppSettings.defaults.removeObject(forKey: key)
+                }
+            }
             installedApps.removeAll { $0.id == app.id }
             if selection == app.id {
                 selection = nil

@@ -61,7 +61,7 @@ private let booleanFlags: Set<String> = [
     "launch", "no-launch", "keys", "no-keys", "log", "wait", "follow", "system", "json", "markdown",
     "lldb", "yes", "print", "path", "generate", "json", "no-keymap", "trace", "help",
     "metal-hud", "no-metal-hud", "pointer-lock", "no-pointer-lock",
-    "env-injection", "load-command", "sandboxed", "background",
+    "env-injection", "load-command", "sandboxed", "background", "keep-saves",
 ]
 
 /// Result box for the async → sync bridge. `@unchecked Sendable` because the
@@ -733,12 +733,12 @@ enum CLI {
 
     private static func uninstallCommand(_ arguments: CLIArguments) throws -> Int32 {
         guard let query = arguments.positionals.first else {
-            throw CLIError.message("usage: pearsilicon uninstall <bundle-id|name> [--yes]")
+            throw CLIError.message("usage: pearsilicon uninstall <bundle-id|name> [--keep-saves] [--yes]")
         }
         let app = try resolveApp(query)
 
         if !arguments.flags.contains("yes"), isatty(STDIN_FILENO) != 0 {
-            print("remove \(app.displayName) [\(app.id)]? [y/N] ", terminator: "")
+            print("Remove \(app.displayName) [\(app.id)] and \(arguments.flags.contains("keep-saves") ? "keep saves" : "DELETE ALL saves and downloads")? [y/N] ", terminator: "")
             guard let answer = readLine(), answer.lowercased().hasPrefix("y") else {
                 print("cancelled")
                 return 1
@@ -746,7 +746,11 @@ enum CLI {
         }
 
         try PackageInstaller(libraryURL: CLIPaths.shared.library).uninstall(app)
-        try? KeymapStore(baseURL: CLIPaths.shared.keymaps).delete(for: app.id)
+        if !arguments.flags.contains("keep-saves") {
+            try AppDataLifecycle.removeNativeContainer(id: app.id)
+            try AppDataLifecycle(root: CLIPaths.shared.support).removeIOSData(id: app.id)
+            try KeymapStore(baseURL: CLIPaths.shared.keymaps).delete(for: app.id)
+        }
         notifyLibraryChanged()
         print("removed \(app.displayName) [\(app.id)]")
         return 0

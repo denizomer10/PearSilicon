@@ -386,3 +386,58 @@ Windows executable admission permits sections overlapping `SizeOfHeaders`,
 as seen in GTA Vice City, while rejecting truncated raw sections and headers.
 Real-game import and signed-runtime tests are opt-in; see
 `SignedWineIntegrationTests.swift` and `ManagedAppTests.swift`.
+
+### App data, removal and clean start
+
+Compatibility iOS launches use `Games/<bundle-id>` under the selected storage
+root for HOME, Documents, Library and temporary downloads. Older native-container
+Documents/Library/tmp content is moved into that portable home before launch;
+conflicts are preserved in `NativeMigrationConflicts/<bundle-id>`. Mac entries
+use their private Data home; Wine entries use Data and their private Prefix.
+The existing Move Storage flow copies these locations, retained saves, engines,
+ODR and keychain data together, including to external storage.
+
+Every GUI uninstall offers Cancel, Keep Saves and Remove App, or Delete
+Everything. iOS save retention keeps Games, ODR, keychain and mappings. Managed
+Mac/Wine retention stores the entry in `SavedData/<platform>/<id>`; reinstalling
+the same ID restores Data/Prefix. Wine also restores missing program-side files.
+Original program files remain available for recovery under Data/RetainedProgramFiles
+on reinstall, so keeping saves can retain substantial disk space. Full removal
+also removes the retained entry. CLI iOS uninstall accepts `--keep-saves`.
+
+Settings → General → Clean start resets the **current marked library** after
+confirmation and refuses while apps are running. It removes apps, engines,
+retained saves, downloads, caches and local settings while retaining the storage
+location/marker. Previous storage copies are separate: remove those with Remove
+Previous Copy. Reset does not erase the disk or arbitrary files outside the root.
+
+Native Mac applications can bypass HOME and write absolute host paths; these
+paths cannot be universally redirected or identified for removal. Real Genshin
+Impact downloads and real external-volume gameplay have not been verified by
+the temporary-directory lifecycle tests. No live user save data is deleted by tests.
+
+### Windows installers
+
+Wine entries now use their engine's own graphics defaults; the GUI no longer
+has a graphics API picker or DXVK/DXMT installation buttons. Existing explicit
+backend metadata remains readable for old backups; GUI launches switch to the
+engine defaults and restore DLLs previously mirrored by PearSilicon.
+
+An EXE with a setup/install name or recognized installer markers is imported
+as an installer and started. Unknown installers can use Run as Installer.
+Complete the Windows installer UI normally. PearSilicon snapshots the private
+C: drive, waits for the setup process and `wineserver -w` (including child
+processes), then scans new/changed executables outside Windows system folders.
+One clear program is selected automatically; ambiguous results open a program
+picker. For installers that leave their application running, use Installation
+Finished — Find Installed Apps. No result leaves the entry available to retry;
+nonzero setup exits and missing usable programs leave installation unfinished.
+
+The original setup path and the selected installed executable are stored
+separately. Installed paths use `Prefix/drive_c/...` and launch with C: paths,
+so the prefix, downloads, configuration and launch target move with storage.
+Only EXEs inside the imported program folder or private C: drive are accepted.
+Installer recognition is heuristic; it does not automate EULAs or install steps.
+The synthetic setup test covers an early-exiting bootstrapper, delayed child,
+prefix discovery, saved target and subsequent application launch. Real Steam
+installation and Windows installer UIs have not been verified in that test.

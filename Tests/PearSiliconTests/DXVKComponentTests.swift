@@ -34,10 +34,12 @@ final class DXVKComponentTests: XCTestCase {
             from: fixture.engineFolder(), id: "engine", name: "Engine", version: "1",
             executablePath: "bin/wine64", licenseConfirmed: true
         )
-        let entry = try ManagedAppService().importWindowsFolder(
+        var entry = try ManagedAppService().importWindowsFolder(
             from: fixture.windowsFolder(), executablePath: "bin/Game.exe",
             libraryRoot: fixture.library, engineID: engine.id
         )
+        // Legacy backend manifests still support restoring older managed DLLs.
+        entry.manifest.wineEngineGraphics = false
         let (system32, originals) = try makePrefixFixtures(for: entry)
         let dxvk = try installComponentFixture(in: engine.rootURL)
         XCTAssertTrue(GraphicsComponentService.isDXVKInstalled(in: engine.rootURL))

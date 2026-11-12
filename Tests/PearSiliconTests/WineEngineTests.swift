@@ -230,6 +230,7 @@ final class WineEngineTests: XCTestCase {
         var manifest = try JSONDecoder().decode(
             LibraryManifest.self, from: Data(contentsOf: entry.manifestURL)
         )
+        manifest.wineEngineGraphics = false
         manifest.graphicsBackend = .dxmt
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

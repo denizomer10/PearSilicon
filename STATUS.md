@@ -724,3 +724,21 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - Automatic updates (Settings → Updates → "Update automatically", on by default): check 15 s after launch and every 6 h, download and verify in the background, install with relaunch once no game/app is running and nothing is busy. Disabled for bare SwiftPM builds and with `PEAR_DISABLE_AUTO_UPDATE`.
 - `apply-update` resolves App Translocation (a quarantined app runs from a read-only copy) to the real bundle, and its parent check uses the running copy's path. After installing, if the new app is quarantined, it opens System Settings → Privacy & Security and shows a dialog explaining "Open Anyway".
 - Verified: 342 XCTests (22 skips) + 24 Swift Testing; `apply-update` on a scratch install with a quarantined staged build swapped atomically, kept a rollback, macOS blocked the new build, Privacy & Security and the guidance dialog appeared.
+
+### 2026-11-12 — portable app data and removal choices
+
+- Compatibility iOS HOME/temporary paths now use the selected library. Old native container data migrates into Games, with conflicts retained inside the library.
+- GUI removal asks to keep saves or delete everything; iOS data, ODR, keychain, logs and legacy hosts are covered. Managed retained data restores on reinstall; Wine program-side saves are preserved with recovery copies.
+- Settings General includes a confirmed clean-start reset for the current marked library. Running-app checks guard reset; previous storage copies remain separately removable.
+- Full suite: 345 XCTest tests (22 optional skips), 24 backup tests, zero failures before the final added lifecycle case. Follow-up lifecycle/environment/migration tests: 15 passed. Live Genshin downloads and physical external-volume gameplay are not verified. No live save deletion/reset was performed.
+
+- Marker fix: Clean start now runs the existing legacy-default-root adoption and validates the selected root before deleting any native-container data. Missing markers remain an error for custom roots. The existing local default library marker was repaired without resetting data. Eight lifecycle/storage tests passed.
+
+### 2026-11-12 — Wine engine defaults and installer workflow
+
+- Removed graphics picker and DXVK/DXMT install actions from Wine UI. GUI launches use engine defaults, retaining legacy metadata only for older packages.
+- Recognized installers launch on import. Setup and installed EXE paths are separate, relative manifest fields. Prefix scans exclude system files/helpers, and ambiguous results open a choice sheet. Manual finish/rescan and Run as Installer cover unknown installers and setup-launched applications.
+- Installer monitoring waits for the parent plus per-prefix wineserver idle; active installation participates in running-app guards. Only private C: and imported program targets pass launch validation.
+- Targeted validation: 24 tests, one optional skip, zero failures, including synthetic import → bootstrapper/child → discovery → persisted EXE → application launch. No real Steam setup was run.
+
+- Final Wine setup run: 350 XCTest tests (22 optional skips) plus 24 backup tests passed, zero failures.

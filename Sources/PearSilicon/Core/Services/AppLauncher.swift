@@ -100,6 +100,9 @@ final class AppLauncher: @unchecked Sendable {
 
         if nativeContainer {
             AppPaths.migrateToNativeContainerIfNeeded(for: app.id)
+        } else {
+            try AppDataLifecycle(root: libraryURL.deletingLastPathComponent()).importNativeData(
+                id: app.id, source: AppPaths.nativeContainerData(for: app.id))
         }
 
         var env = buildEnvironment(app: app, keymapURL: keymapURL, extra: extraEnvironment,
@@ -355,20 +358,12 @@ final class AppLauncher: @unchecked Sendable {
             .appendingPathComponent("ODR", isDirectory: true)
             .appendingPathComponent(app.id, isDirectory: true).path
 
-        // A previous native-container run may have moved the app's data into
-        // the macOS container. Point the path shim there when the old location
-        // no longer has the data, so a compatibility launch does not start a
-        // fresh download.
-        let containerData = AppPaths.nativeContainerData(for: app.id)
         let compatibilityData = support.appendingPathComponent("Games", isDirectory: true)
             .appendingPathComponent(app.id, isDirectory: true)
         env["PEAR_HOME_DIR"] = compatibilityData.path
-        let oldDocuments = compatibilityData.appendingPathComponent("Documents", isDirectory: true)
-        let containerDocuments = containerData.appendingPathComponent("Documents", isDirectory: true)
-        if fileManager.fileExists(atPath: containerDocuments.path),
-           !fileManager.fileExists(atPath: oldDocuments.path) {
-            env["PEAR_HOME_DIR"] = containerData.path
-        }
+        env["HOME"] = compatibilityData.path
+        env["CFFIXED_USER_HOME"] = compatibilityData.path
+        env["TMPDIR"] = compatibilityData.appendingPathComponent("tmp").path + "/"
 
         // The runtime is normally loaded via an `LC_LOAD_DYLIB` entry. The
         // experimental environment mode keeps that command out of the app

@@ -4,6 +4,7 @@ import SwiftUI
 /// Settings window (⌘,).
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
+    @State private var confirmingCleanStart = false
     @State private var removingPreviousCopy = false
     @State private var showingEngineSheet = false
 
@@ -87,6 +88,12 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Clean start") {
+                Button("Reset PearSilicon Library…", role: .destructive) { confirmingCleanStart = true }
+                    .disabled(state.isBusy)
+                Text("Deletes all apps, saves, downloads, retained saves, Wine engines and prefixes in the current library. The external disk and files outside this library are preserved. Close all apps first.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Portable layout") {
                 Text("ios-apps, mac-apps and wine-apps are created only when the matching platform has its first item. Existing apps in the older Applications folder are still listed and keep working.")
                     .font(.caption)
@@ -104,6 +111,10 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .confirmationDialog("Start from scratch? All library data will be permanently deleted.", isPresented: $confirmingCleanStart) {
+            Button("Delete Everything and Reset", role: .destructive) { Task { await state.cleanStart() } }
+            Button("Cancel", role: .cancel) {}
+        }
         .confirmationDialog(
             "Remove the previous storage copy? This cannot be undone.",
             isPresented: $removingPreviousCopy
@@ -245,9 +256,6 @@ struct SettingsView: View {
 
             Section("How games are stored") {
                 Text("Each Windows game gets Payload, Data and Prefix directories. Saves stay with the game and are included in its backup. Host root drive mappings are removed; a g: drive exposes only this game's own program folder. Wine runs as a direct native process because a nested sandbox breaks Rosetta/wineserver; this is not a virtual machine and cannot run kernel-level anti-cheat. The macOS WineHQ packages are currently x86_64; Apple silicon may require Rosetta 2.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(GraphicsComponentService.dxvkNotice)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -64,6 +64,11 @@ struct LibraryManifest: Codable, Hashable, Sendable {
     var wineEngineID: String? = nil
     var metalHUDEnabled: Bool = false
     var graphicsBackend: GraphicsBackend? = nil
+    var wineEngineGraphics: Bool? = nil
+    var wineLaunchPath: String? = nil
+    var wineInstaller: Bool? = nil
+    var wineInstallState: String? = nil
+    var wineInstallBaseline: [String: String]? = nil
     var runtimeRevision: String? = nil
     /// Used only for rebasing iOS absolute load commands after a library is moved.
     var preparedDirectoryPath: String? = nil
@@ -77,6 +82,7 @@ struct LibraryEntry: Identifiable, Hashable, Sendable {
     var platform: LibraryPlatform { manifest.platform }
     var displayName: String { manifest.displayName }
     var payloadURL: URL { directoryURL.appendingPathComponent(manifest.payloadPath) }
+    var launchExecutableURL: URL { directoryURL.appendingPathComponent(manifest.wineLaunchPath ?? manifest.payloadPath) }
     var dataURL: URL { directoryURL.appendingPathComponent("Data", isDirectory: true) }
     var prefixURL: URL { directoryURL.appendingPathComponent("Prefix", isDirectory: true) }
     var libraryRootURL: URL { directoryURL.deletingLastPathComponent().deletingLastPathComponent() }

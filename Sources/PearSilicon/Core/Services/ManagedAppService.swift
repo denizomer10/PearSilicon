@@ -85,10 +85,14 @@ struct ManagedAppService: Sendable {
         try LibraryPath.validateComponent(id)
         let name = try ManagedAppFiles.displayText(displayName ?? id)
         try ManagedAppFiles.rejectRecursiveCopy(source: source, root: libraryRoot)
-        let manifest = LibraryManifest(
+        var manifest = LibraryManifest(
             id: id, platform: .wine, displayName: name, version: "1.0",
             payloadPath: "Payload/Program/\(executablePath)", wineEngineID: engineID
         )
+        manifest.wineEngineGraphics = true
+        manifest.wineInstaller = WineInstallation.isInstaller(source: source.appendingPathComponent(isFolder ? executablePath : "").standardizedFileURL, name: executablePath)
+        if !isFolder { manifest.wineInstaller = WineInstallation.isInstaller(source: source, name: executablePath) }
+        manifest.wineInstallState = manifest.wineInstaller == true ? "pending" : nil
         let directory = try ManagedAppFiles.install(
             root: libraryRoot, folder: LibraryPlatform.wine.rawValue, id: id
         ) { stage, _ in
@@ -137,7 +141,7 @@ struct ManagedAppService: Sendable {
             }
             try engine.validate()
             let runtime = engine.wineHome
-            let backend = entry.manifest.graphicsBackend ?? .moltenVK
+            let backend = entry.manifest.wineEngineGraphics == true ? .moltenVK : (entry.manifest.graphicsBackend ?? .moltenVK)
             switch backend {
             case .moltenVK:
                 break
@@ -163,10 +167,10 @@ struct ManagedAppService: Sendable {
                     "This Wine build is x86_64 and needs Rosetta 2. Install it with `softwareupdate --install-rosetta` or register an arm64 engine."
                 )
             }
-            try ManagedExecutable.validatePE(try ManagedAppFiles.regularFile(entry.payloadURL, inside: entry.directoryURL))
+            let program = try WineInstallation.validatedLaunchURL(entry)
             executable = engine.executableURL
-            arguments = [entry.payloadURL.path]
-            workingDirectory = entry.payloadURL.deletingLastPathComponent()
+            arguments = [program.path]
+            workingDirectory = program.deletingLastPathComponent()
         case .iOS:
             throw PearError.invalidPackage("Use the iOS launcher for an iOS library entry")
         }
@@ -319,6 +323,10 @@ struct ManagedAppService: Sendable {
         guard entry.platform == .wine else {
             throw PearError.invalidPackage("A game drive is only valid for Wine entries")
         }
+        if let path = entry.manifest.wineLaunchPath, path.hasPrefix("Prefix/drive_c/") {
+            _ = try WineInstallation.validatedLaunchURL(entry)
+            return "C:\\" + path.dropFirst("Prefix/drive_c/".count).replacingOccurrences(of: "/", with: "\\")
+        }
         let programRoot = entry.directoryURL.appendingPathComponent("Payload/Program", isDirectory: true)
         _ = try ManagedAppFiles.existingDirectory(programRoot)
         let dosdevices = entry.prefixURL.appendingPathComponent("dosdevices", isDirectory: true)
@@ -341,10 +349,11 @@ struct ManagedAppService: Sendable {
         }
 
         let prefix = "Payload/Program/"
-        guard entry.manifest.payloadPath.hasPrefix(prefix) else {
+        let launchPath = entry.manifest.wineLaunchPath ?? entry.manifest.payloadPath
+        guard launchPath.hasPrefix(prefix) else {
             throw PearError.invalidPackage("Wine payload is not inside Payload/Program")
         }
-        let relative = entry.manifest.payloadPath.dropFirst(prefix.count)
+        let relative = launchPath.dropFirst(prefix.count)
             .replacingOccurrences(of: "/", with: "\\")
         return "\(wineGameDriveLetter.uppercased()):\\\(relative)"
     }
@@ -367,7 +376,7 @@ struct ManagedAppService: Sendable {
     static func synchronizeDXVK(for entry: LibraryEntry, engine: WineEngine) throws {
         guard entry.platform == .wine else { return }
         let backend = entry.manifest.graphicsBackend ?? .moltenVK
-        let install = backend == .moltenVK && GraphicsComponentService.isDXVKInstalled(in: engine.rootURL)
+        let install = entry.manifest.wineEngineGraphics != true && backend == .moltenVK && GraphicsComponentService.isDXVKInstalled(in: engine.rootURL)
         let system32 = entry.prefixURL.appendingPathComponent("drive_c/windows/system32", isDirectory: true)
         guard ManagedAppFiles.exists(system32) else {
             if install {
@@ -567,17 +576,19 @@ struct ManagedAppService: Sendable {
                     result[key] = value
                 }
                 let graphics = engine.rootURL.appendingPathComponent("Graphics", isDirectory: true)
-                switch entry.manifest.graphicsBackend ?? .moltenVK {
-                case .dxmt:
-                    let dxmt = graphics.appendingPathComponent("DXMT", isDirectory: true)
-                    result["WINEDLLPATH"] = dxmt.path + ":" + result["WINEDLLPATH"]!
-                    result["WINEDLLOVERRIDES"] = "d3d11,dxgi,d3d10core,winemetal=n,b;winemenubuilder.exe=d"
-                case .moltenVK:
-                    // DXVK is native D3D11; without it the game falls back to
-                    // wined3d's OpenGL renderer, which presents black on this
-                    // engine for GameMaker-style D3D11 titles.
-                    if GraphicsComponentService.isDXVKInstalled(in: engine.rootURL) {
-                        result["WINEDLLOVERRIDES"] = "d3d11,d3d10core=n;winemenubuilder.exe=d"
+                if entry.manifest.wineEngineGraphics != true {
+                    switch entry.manifest.graphicsBackend ?? .moltenVK {
+                    case .dxmt:
+                        let dxmt = graphics.appendingPathComponent("DXMT", isDirectory: true)
+                        result["WINEDLLPATH"] = dxmt.path + ":" + result["WINEDLLPATH"]!
+                        result["WINEDLLOVERRIDES"] = "d3d11,dxgi,d3d10core,winemetal=n,b;winemenubuilder.exe=d"
+                    case .moltenVK:
+                        // DXVK is native D3D11; without it the game falls back to
+                        // wined3d's OpenGL renderer, which presents black on this
+                        // engine for GameMaker-style D3D11 titles.
+                        if GraphicsComponentService.isDXVKInstalled(in: engine.rootURL) {
+                            result["WINEDLLOVERRIDES"] = "d3d11,d3d10core=n;winemenubuilder.exe=d"
+                        }
                     }
                 }
             }
@@ -960,6 +971,7 @@ enum ManagedAppFiles {
         try makeDirectory(temporary)
         stage = temporary
         try build(temporary, destination)
+        try AppDataLifecycle.restoreManagedData(root: root, folder: folder, id: id, stage: temporary)
         try validateTree(temporary)
         let parentFD = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard parentFD >= 0 else { throw posix(parent) }
@@ -968,6 +980,10 @@ enum ManagedAppFiles {
             throw posix(destination)
         }
         stage = nil
+        if let folder, ["mac-apps", "wine-apps"].contains(folder) {
+            let saved = root.appendingPathComponent("SavedData/\(folder)/\(id)")
+            if exists(saved) { try FileManager.default.removeItem(at: saved) }
+        }
         return destination
     }
 

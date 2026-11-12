@@ -69,6 +69,12 @@ struct ContentView: View {
             WineEngineChooserSheet(entry: entry)
                 .environmentObject(state)
         }
+        .sheet(item: $state.wineInstalledProgramChoice) { entry in
+            WineExecutableSelectionView(folder: entry.directoryURL, candidates: WineInstallation.candidates(entry), importTitle: "Use Installed Application") { path in
+                state.setWineExecutable(path, for: entry)
+                state.wineInstalledProgramChoice = nil
+            } onCancel: { state.wineInstalledProgramChoice = nil }
+        }
         .alert(item: $alert) { payload in
             Alert(title: Text(payload.title), message: Text(payload.message), dismissButton: .default(Text("OK")))
         }
