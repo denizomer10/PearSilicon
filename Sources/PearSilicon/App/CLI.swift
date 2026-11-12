@@ -136,7 +136,6 @@ enum CLI {
         case "keys": return try keysCommand(parsed)
         case "hud": return try hudCommand(parsed)
         case "pointerlock": return try pointerLockCommand(parsed)
-        case "wine-compat": return try wineCompatibilityCommand(parsed)
         case "wine-import": return try wineImportCommand(parsed)
         case "wine-launch": return try wineLaunchCommand(parsed)
         case "compat", "compatibility": return try compatCommand(parsed)
@@ -940,20 +939,6 @@ enum CLI {
         return 0
     }
 
-    private static func wineCompatibilityCommand(_ args: CLIArguments) throws -> Int32 {
-        guard let id = args.positionals.first else { throw CLIError.message("usage: wine-compat <entry-id> [--json]") }
-        let entry = try managedWineEntry(id)
-        guard let engineID = entry.manifest.wineEngineID,
-              let engine = try WineEngineStore(rootURL: CLIPaths.shared.support.appendingPathComponent("Engines")).engine(id: engineID) else {
-            throw CLIError.message("The selected Wine engine is not installed")
-        }
-        let report = try PearWineCompatibilityService().assess(entry, engine: engine)
-        try PearWineCompatibilityService.persist(report, for: entry)
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        print(args.flags.contains("json") ? String(decoding: try encoder.encode(report), as: UTF8.self) : report.summary)
-        return 0
-    }
-
     private static func wineLaunchCommand(_ args: CLIArguments) throws -> Int32 {
         guard let id = args.positionals.first else { throw CLIError.message("usage: wine-launch <entry-id> [--wait] [--observe-seconds 30] [--diagnostics]") }
         let seconds: Double
@@ -965,18 +950,6 @@ enum CLI {
         let entry = try managedWineEntry(id)
         guard let engineID = entry.manifest.wineEngineID,
               let engine = try WineEngineStore(rootURL: CLIPaths.shared.support.appendingPathComponent("Engines")).engine(id: engineID) else { throw CLIError.message("Wine engine is not installed") }
-        var report: WineCompatibilityReport?
-        do {
-            report = try PearWineCompatibilityService().assess(entry, engine: engine)
-            if let report { try PearWineCompatibilityService.persist(report, for: entry) }
-        } catch {
-            if error is WineCompatibilityFailure { throw error }
-            report = nil
-            fputs("PearWine analysis unavailable: \(error.localizedDescription)\n", stderr)
-        }
-        if let report, report.signatureVerified, let runtime = report.assessment?.runtime, !runtime.eligible {
-            throw CLIError.message(runtime.reasons.joined(separator: "; "))
-        }
         let gameArguments = try args.options["arguments-json"].map { try JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? []
         let diagnostics = args.flags.contains("diagnostics")
         let startupHealth = WineStartupHealth(entry: entry)
@@ -992,7 +965,7 @@ enum CLI {
                 "requested_seconds": seconds, "observed_seconds": Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18,
                 "gameplay_verified": false, "health_issues": startupHealth.issues()]
             let data = try JSONSerialization.data(withJSONObject: observation, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: entry.dataURL.appendingPathComponent("pearwine-launch-observation.json"), options: .atomic)
+            try data.write(to: entry.dataURL.appendingPathComponent("wine-launch-observation.json"), options: .atomic)
             print(String(decoding: data, as: UTF8.self))
         } else { print("Launched \(entry.displayName)") }
         if args.flags.contains("stop-after-observation") { process.stop() }
@@ -1527,7 +1500,6 @@ enum CLI {
           keys <id|name> [on|off]  Print or set the keymapper toggle
           hud <id|name> [on|off]   Print or set the performance HUD/FPS overlay
           pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
-          wine-compat <id> [--json] Inspect the Wine entry through pinned PearWine API
           wine-import <folder> --exe <file.exe> --engine <id>
           wine-launch <id> [--wait] [--observe-seconds N] [--diagnostics]
           compat <id|name> [--json]  Show the detected compatibility profile

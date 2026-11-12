@@ -6,7 +6,3 @@
 	path = Vendor/PearDebug
 	url = https://github.com/denizomer10/PearDebug.git
 	branch = main
-[submodule "Vendor/PearWine"]
-	path = Vendor/PearWine
-	url = https://github.com/denizomer10/PearWine.git
-	branch = codex/pearwine-2-runtime-architecture

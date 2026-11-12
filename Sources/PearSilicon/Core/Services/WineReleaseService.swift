@@ -92,7 +92,8 @@ actor WineReleaseService {
             download: { url, destination in
                 var request = URLRequest(url: url)
                 request.setValue("PearSilicon", forHTTPHeaderField: "User-Agent")
-                let (temporary, response) = try await URLSession.shared.download(for: request)
+                let delegate = WineDownloadProgress.handler.map(WineDownloadProgressDelegate.init)
+                let (temporary, response) = try await URLSession.shared.download(for: request, delegate: delegate)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                     throw WineReleaseError.network("The Wine download did not return HTTP 200")
                 }
@@ -216,11 +217,20 @@ actor WineReleaseService {
         while let linkStart = atom.range(of: "<entry>", range: cursor..<atom.endIndex) {
             guard let linkEnd = atom.range(of: "</entry>", range: linkStart.upperBound..<atom.endIndex) else { break }
             let entry = atom[linkStart.upperBound..<linkEnd.lowerBound]
-            if let titleStart = entry.range(of: "<title>"),
-               let titleEnd = entry.range(of: "</title>", range: titleStart.upperBound..<entry.endIndex) {
-                let title = entry[titleStart.upperBound..<titleEnd.lowerBound]
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !title.isEmpty, !tags.contains(title) { tags.append(title) }
+            // The tag comes from the entry's own release link: titles are free
+            // text ("MetalSharp Wine 6.0" for tag v6.0), and the HTML content
+            // can link to other releases, so only the first link counts and
+            // only plain tag characters are accepted.
+            var tag: String?
+            if let marker = entry.range(of: "/releases/tag/") {
+                let raw = entry[marker.upperBound...].prefix { $0 != "\"" && $0 != "<" && $0 != "&" && $0 != "'" }
+                tag = String(raw).removingPercentEncoding
+            } else if let titleStart = entry.range(of: "<title>"),
+                      let titleEnd = entry.range(of: "</title>", range: titleStart.upperBound..<entry.endIndex) {
+                tag = entry[titleStart.upperBound..<titleEnd.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let tag, tag.range(of: "^[A-Za-z0-9._+-]{1,128}$", options: .regularExpression) != nil, !tags.contains(tag) {
+                tags.append(tag)
             }
             cursor = linkEnd.upperBound
         }
@@ -267,9 +277,9 @@ actor WineReleaseService {
         )
     }
 
-    /// Shared installer for every Wine distribution (WineHQ, PearWine, Apple
+    /// Shared installer for every Wine distribution (WineHQ, MetalSharp, Apple
     /// silicon forks): download, SHA-256 check, path-safe extraction, optional
-    /// `prepare` step on the runtime root (PearWine applies its overlay there),
+    /// `prepare` step on the runtime root,
     /// then registration. Nothing from the archive is executed.
     func installArchive(
         from url: URL, assetName: String, sha256: String, engineID: String,
@@ -515,7 +525,7 @@ actor WineReleaseService {
             throw WineReleaseError.invalid("Could not inspect the extracted Wine runtime")
         }
         // rank: wine64 = 0, wine = 1, wine-launcher = 2 (lower wins). Some
-        // builds (MetalSharp Wine, PearWine) ship `bin/wine` as a small shell
+        // builds (MetalSharp Wine) ship `bin/wine` as a small shell
         // wrapper that only exports GStreamer/MoltenVK paths and execs the
         // native `bin/wine-launcher`. Wrappers are never registered; the
         // native launcher is, and ManagedAppService exports the same paths.
@@ -588,4 +598,39 @@ enum WineReleaseError: LocalizedError, Sendable {
         case .network(let message), .invalid(let message), .notFound(let message): message
         }
     }
+}
+
+/// Download progress for engine installs. A caller that wants a progress bar
+/// sets `handler` around the install (`WineDownloadProgress.$handler.withValue`);
+/// it receives the downloaded fraction (0...1) of the archive.
+enum WineDownloadProgress {
+    @TaskLocal static var handler: (@Sendable (Double) -> Void)?
+}
+
+private final class WineDownloadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let handler: @Sendable (Double) -> Void
+    private let lock = NSLock()
+    private var observation: NSKeyValueObservation?
+    private var lastReported = -1.0
+
+    init(_ handler: @escaping @Sendable (Double) -> Void) { self.handler = handler }
+
+    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+        let observation = task.progress.observe(\.fractionCompleted, options: [.new]) { [weak self] progress, _ in
+            self?.report(progress.fractionCompleted)
+        }
+        lock.withLock { self.observation = observation }
+    }
+
+    private func report(_ fraction: Double) {
+        // About 200 updates for the whole download, plus completion.
+        let send: Bool = lock.withLock {
+            guard fraction >= 1 || fraction - lastReported >= 0.005 else { return false }
+            lastReported = fraction
+            return true
+        }
+        if send { handler(min(max(fraction, 0), 1)) }
+    }
+
+    deinit { observation?.invalidate() }
 }

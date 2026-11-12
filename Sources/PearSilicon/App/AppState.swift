@@ -29,11 +29,19 @@ final class AppState: ObservableObject {
     @Published private(set) var wineEngines: [WineEngine] = []
     /// Wine distribution being installed from the catalog, if any.
     @Published private(set) var installingWineDistributionID: String?
+    /// Download/install progress of a Wine engine, shown at the bottom-left.
+    struct WineEngineInstallProgress: Equatable {
+        var name: String
+        var phase: String
+        /// Downloaded fraction; nil while verifying or extracting.
+        var fraction: Double?
+    }
+    @Published private(set) var wineEngineInstall: WineEngineInstallProgress?
     /// Set when a Windows game exited with an error shortly after launch. The
     /// detail pane then offers the next engine in the recommended order.
     @Published private(set) var wineLaunchFailures: [LibraryEntry.ID: String] = [:]
-    /// A Windows game the user tried to open without an engine: the window
-    /// shows the engine chooser (PearWine first) for it.
+    /// A Windows game whose engine choice needs the user: the window shows the
+    /// engine chooser (MetalSharp first) for it.
     @Published var wineEngineChoiceEntry: LibraryEntry?
     @Published private(set) var libraryWarnings: [String] = []
     @Published private(set) var quarantinedMacEntryIDs: Set<String> = []
@@ -510,28 +518,7 @@ final class AppState: ObservableObject {
         managedRunning[entry.id]?.isRunning == true || activeWineInstallations.contains(entry.id)
     }
 
-    @Published private(set) var wineCompatibilityReports: [String: WineCompatibilityReport] = [:]
-    @Published private(set) var wineCompatibilityErrors: [String: String] = [:]
     @Published private(set) var wineStartupHealthIssues: [String: String] = [:]
-
-    func analyzeWineCompatibility(_ entry: LibraryEntry) async {
-        guard entry.platform == .wine, !isBusy else { return }
-        isBusy = true
-        defer { finishBusyWork() }
-        do {
-            let resolved = try resolveWineEngine(for: entry)
-            let report = try await Task.detached(priority: .userInitiated) {
-                try PearWineCompatibilityService().assess(resolved.entry, engine: resolved.engine)
-            }.value
-            try PearWineCompatibilityService.persist(report, for: resolved.entry)
-            wineCompatibilityReports[entry.id] = report
-            wineCompatibilityErrors[entry.id] = nil
-            statusMessage = report.summary
-        } catch {
-            wineCompatibilityErrors[entry.id] = error.localizedDescription
-            statusMessage = L10n.error(error.localizedDescription)
-        }
-    }
 
     @Published private(set) var activeWineInstallations: Set<String> = []
     @Published var wineInstalledProgramChoice: LibraryEntry?
@@ -605,6 +592,10 @@ final class AppState: ObservableObject {
             let engine: WineEngine?
             switch entry.platform {
             case .wine:
+                if try !hasUsableWineEngine(for: entry) {
+                    // No engine at all: install MetalSharp first, then go on.
+                    guard await performWineEngineInstall(.metalSharp) != nil else { return }
+                }
                 let resolved = try resolveWineEngine(for: entry)
                 target = resolved.entry
                 engine = resolved.engine
@@ -623,27 +614,6 @@ final class AppState: ObservableObject {
                 }
                 let saved = target.manifest
                 updateManifest(target) { $0 = saved }
-            }
-            if target.platform == .wine, let selectedEngine = engine {
-                let assessedTarget = target
-                wineCompatibilityReports[target.id] = nil
-                do {
-                    let report = try await Task.detached(priority: .userInitiated) {
-                        try PearWineCompatibilityService().assess(assessedTarget, engine: selectedEngine)
-                    }.value
-                    try PearWineCompatibilityService.persist(report, for: target)
-                    wineCompatibilityReports[target.id] = report
-                    wineCompatibilityErrors[target.id] = nil
-                } catch {
-                    // Analysis is optional when Python is absent; it cannot
-                    // silently substitute another engine or graphics backend.
-                    wineCompatibilityErrors[target.id] = error.localizedDescription
-                    if error is WineCompatibilityFailure { throw error }
-                }
-                if let report = wineCompatibilityReports[target.id], report.signatureVerified,
-                   let check = report.assessment?.runtime, !check.eligible {
-                    throw PearError.launchFailed(check.reasons.joined(separator: "; "))
-                }
             }
             statusMessage = target.manifest.wineInstallState == "running" ? "Running setup — complete the Windows installer…" : "Launching \(target.displayName)…"
             let startupHealth = WineStartupHealth(entry: target)
@@ -699,17 +669,13 @@ final class AppState: ObservableObject {
             return (entry, found)
         }
         let installed = WineDistribution.ordered(try wineApps.engines.engines())
-        // PearWine is the recommended engine: use it whenever it is installed.
+        // MetalSharp is the default engine: use it whenever it is installed.
         // Otherwise a single engine is linked automatically, and with several
-        // (or none) the engine chooser asks, with PearWine offered first.
-        let pearWine = installed.first { $0.distribution == .pearWine }
-        guard let engine = pearWine ?? (installed.count == 1 ? installed.first : nil) else {
+        // the engine chooser asks, with MetalSharp offered first.
+        let metalSharp = installed.first { $0.distribution == .metalSharp }
+        guard let engine = metalSharp ?? (installed.count == 1 ? installed.first : nil) else {
             wineEngineChoiceEntry = entry
-            throw PearError.launchFailed(
-                installed.isEmpty
-                    ? "Choose a Wine engine for \(entry.displayName). PearWine is recommended."
-                    : "\(entry.displayName) has no Wine engine yet. Choose one; PearWine is recommended."
-            )
+            throw PearError.launchFailed("Choose a Wine engine for \(entry.displayName). MetalSharp Wine is the default.")
         }
         updateManifest(entry) { $0.wineEngineID = engine.id }
         reloadEngines()
@@ -735,7 +701,7 @@ final class AppState: ObservableObject {
                 )
             } else {
                 self.statusMessage = L10n.error(
-                    "\(entry.displayName) stopped on \(engine.name) (exit \(status)). Install a fallback engine in Settings → Wine."
+                    "\(entry.displayName) stopped on \(engine.name) (exit \(status)). WineHQ builds can be installed in Settings → Wine."
                 )
             }
         }
@@ -759,9 +725,38 @@ final class AppState: ObservableObject {
         await launch(refreshed)
     }
 
-    /// Installs a catalog distribution (PearWine or a fallback fork).
+    /// Whether launching `entry` can proceed without installing an engine.
+    private func hasUsableWineEngine(for entry: LibraryEntry) throws -> Bool {
+        if let id = entry.manifest.wineEngineID, try wineApps.engines.engine(id: id) != nil { return true }
+        return try !wineApps.engines.engines().isEmpty
+    }
+
+    /// The engine a new Windows game should use: an installed one (MetalSharp
+    /// first), otherwise MetalSharp is downloaded and installed now, with
+    /// progress at the bottom of the window. Nil if that install failed.
+    func ensureDefaultWineEngine() async -> WineEngine? {
+        reloadEngines()
+        if let installed = wineEngines.first { return installed }
+        guard !isBusy, installingWineDistributionID == nil else {
+            statusMessage = L10n.error("Wait for the current task to finish, then add the Windows game again")
+            return nil
+        }
+        isBusy = true
+        defer { finishBusyWork() }
+        return await performWineEngineInstall(.metalSharp)
+    }
+
+    /// Installs a catalog distribution from Settings or the engine chooser.
     func installWineDistribution(_ distribution: WineDistribution) async -> WineEngine? {
         guard !isBusy, installingWineDistributionID == nil else { return nil }
+        isBusy = true
+        defer { finishBusyWork() }
+        return await performWineEngineInstall(distribution)
+    }
+
+    /// Download, verify and register `distribution`. The caller holds the busy
+    /// flag; progress is published for the status bar.
+    private func performWineEngineInstall(_ distribution: WineDistribution) async -> WineEngine? {
         // Do not download an x86_64 engine that cannot start on this Mac.
         guard distribution.nativeArm64 || WineDistribution.isRosettaInstalled else {
             statusMessage = L10n.error(
@@ -769,17 +764,36 @@ final class AppState: ObservableObject {
             )
             return nil
         }
-        isBusy = true
         installingWineDistributionID = distribution.id
+        wineEngineInstall = WineEngineInstallProgress(name: distribution.name, phase: "Looking up \(distribution.name)…", fraction: nil)
         defer {
             installingWineDistributionID = nil
-            finishBusyWork()
+            wineEngineInstall = nil
         }
         do {
-            let engine = try await WineDistributionInstaller(releases: wineApps.releases)
-                .install(distribution, store: wineApps.engines) { [weak self] message in
-                    Task { @MainActor in self?.statusMessage = message }
+            let installer = WineDistributionInstaller(releases: wineApps.releases)
+            let store = wineApps.engines
+            let engine = try await WineDownloadProgress.$handler.withValue({ [weak self] fraction in
+                Task { @MainActor in
+                    guard let self, var progress = self.wineEngineInstall,
+                          progress.phase.hasPrefix("Looking") || progress.phase.hasPrefix("Downloading") else { return }
+                    progress.fraction = fraction
+                    progress.phase = "Downloading \(distribution.name)"
+                    self.wineEngineInstall = progress
                 }
+            }) {
+                try await installer.install(distribution, store: store) { [weak self] message in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        self.statusMessage = message
+                        if var progress = self.wineEngineInstall, !message.hasPrefix("Downloading") {
+                            progress.phase = message
+                            progress.fraction = nil
+                            self.wineEngineInstall = progress
+                        }
+                    }
+                }
+            }
             reloadEngines()
             statusMessage = "Installed \(engine.name) \(engine.version)"
             return engine

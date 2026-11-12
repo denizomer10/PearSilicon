@@ -3,23 +3,31 @@ import XCTest
 @testable import PearSilicon
 
 final class WineDistributionTests: XCTestCase {
-    func testPearWineIsFirstAndRecommended() {
-        XCTAssertEqual(WineDistribution.catalog.first?.id, "pearwine")
+    func testMetalSharpIsFirstAndTheOnlyDefault() {
+        XCTAssertEqual(WineDistribution.catalog.first?.id, "metalsharp")
         XCTAssertTrue(WineDistribution.catalog.first?.recommended == true)
         XCTAssertEqual(WineDistribution.catalog.filter(\.recommended).count, 1)
+        XCTAssertEqual(WineDistribution.metalSharp.homepage?.absoluteString, "https://github.com/metalsharp/MetalSharp-Wine")
+        XCTAssertTrue(WineDistribution.metalSharp.nativeArm64)
     }
 
-    func testAssetPatternMatching() {
+    func testCatalogOffersMetalSharpAndOptionalWineHQOnly() {
+        XCTAssertEqual(WineDistribution.catalog.map(\.id), ["metalsharp", "winehq-staging", "winehq-devel"])
+        XCTAssertTrue(WineDistribution.catalog.dropFirst().allSatisfy { !$0.nativeArm64 && !$0.recommended })
+    }
+
+    /// The signed arm64 app ZIP, never the x86_64 build or the unsigned tarball.
+    func testMetalSharpPicksTheSignedArm64App() {
+        guard case .githubRelease(let repository, let pattern) = WineDistribution.metalSharp.source else {
+            return XCTFail("MetalSharp must come from its GitHub releases")
+        }
+        XCTAssertEqual(repository, "metalsharp/MetalSharp-Wine")
         let match = WineDistributionInstaller.matches
-        XCTAssertTrue(match("metalsharp-wine-6.0-arm64.tar.xz", "metalsharp-wine-*-arm64.tar.xz"))
-        XCTAssertFalse(match("MetalSharp-Wine-6.0-arm64.zip", "metalsharp-wine-*-arm64.tar.xz"))
-        XCTAssertTrue(match("WS12WineSikarugir11.0_1.tar.xz", "WS12WineSikarugir11.0*.tar.xz"))
-        XCTAssertFalse(match("WS11WineSikarugir11.0.tar.xz", "WS12WineSikarugir11.0*.tar.xz"))
-        XCTAssertTrue(match("WS12WhiskyWine2.5.0_3.tar.xz", "WS12WhiskyWine*.tar.xz"))
-    }
-
-    func testCatalogOffersPearWineWhiskyWineAndWineHQOnly() {
-        XCTAssertEqual(WineDistribution.catalog.map(\.id), ["pearwine", "whiskywine", "winehq-staging", "winehq-devel"])
+        XCTAssertTrue(match("MetalSharp-Wine-6.0-arm64.zip", pattern))
+        XCTAssertFalse(match("MetalSharp-Wine-6.0-x86_64.zip", pattern))
+        XCTAssertFalse(match("metalsharp-wine-6.0-arm64.tar.xz", pattern))
+        XCTAssertFalse(match("SHA256SUMS", pattern))
+        XCTAssertEqual(WineDistributionInstaller.versionLabel(asset: "MetalSharp-Wine-6.0-arm64.zip", pattern: pattern), "6.0")
     }
 
     func testVersionLabelsDropFilePrefixAndExtension() {
@@ -39,46 +47,39 @@ final class WineDistributionTests: XCTestCase {
                        String(repeating: "ab", count: 32))
     }
 
-    func testManifestDecodesPublishedFormat() throws {
+    /// Engines installed as "PearWine" are the signed MetalSharp app: they keep
+    /// their ID (games stay linked) and load as MetalSharp Wine 6.0.
+    func testInstalledPearWineEngineLoadsAsMetalSharp() throws {
         let json = """
-        {"schema":"pearwine/v1","name":"PearWine","version":"1.0.0","wine":"11.20","architecture":"arm64",
-         "base":{"name":"MetalSharp Wine 6.0","repository":"metalsharp/MetalSharp-Wine","tag":"v6.0",
-           "url":"https://github.com/metalsharp/MetalSharp-Wine/releases/download/v6.0/metalsharp-wine-6.0-arm64.tar.xz",
-           "asset":"metalsharp-wine-6.0-arm64.tar.xz",
-           "sha256":"a728f41ef4cd600ea45bbc1e1fd9bb35fb1a0fa4327ca0cfad311738f93160a6","size":962820908,
-           "root":"metalsharp-wine-6.0-arm64","executable":"bin/wine"},
-         "overlay":{"asset":"pearwine-1.0.0-overlay.tar.gz",
-           "url":"https://github.com/denizomer10/PearWine/releases/download/v1.0.0/pearwine-1.0.0-overlay.tar.gz",
-           "sha256":"156db75594d4bca5328bce6bef38c7d50e673e070802dea0146a2418e32b37a6"},
-         "environment":{"WINEMSYNC":"1"}}
+        {"distribution":"pearWine","executablePath":"Runtime/MetalSharp-Wine.app/Contents/MacOS/wine",
+         "id":"pearwine-1.0.1","name":"PearWine","rootURL":"file:///tmp/pearwine-1.0.1/","version":"1.0.1 (Wine 11.20)"}
         """
-        let manifest = try JSONDecoder().decode(PearWineManifest.self, from: Data(json.utf8))
-        XCTAssertEqual(manifest.version, "1.0.0")
-        XCTAssertNotNil(WineReleaseService.normalizedHash(manifest.base.sha256))
-        XCTAssertEqual(manifest.overlay?.asset, "pearwine-1.0.0-overlay.tar.gz")
-        XCTAssertLessThanOrEqual(manifest.base.size, WineReleaseService.maximumDownloadBytes)
+        let engine = try JSONDecoder().decode(WineEngine.self, from: Data(json.utf8))
+        XCTAssertEqual(engine.id, "pearwine-1.0.1")
+        XCTAssertEqual(engine.distribution, .metalSharp)
+        XCTAssertEqual(engine.name, "MetalSharp Wine")
+        XCTAssertEqual(engine.version, "6.0 (Wine 11.20)")
+        XCTAssertEqual(WineDistribution.distribution(for: engine), .metalSharp)
+        let again = try JSONDecoder().decode(WineEngine.self, from: JSONEncoder().encode(engine))
+        XCTAssertEqual(again, engine)
+        XCTAssertThrowsError(try JSONDecoder().decode(WineEngine.self, from: Data(json.replacingOccurrences(of: "pearWine", with: "mystery").utf8)))
     }
 
-    func testEnvironmentDefaultsIgnoreUnsafeKeys() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pearwine-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let share = root.appendingPathComponent("Runtime/share/pearwine", isDirectory: true)
-        try FileManager.default.createDirectory(at: share, withIntermediateDirectories: true)
-        try """
-        # comment
-        WINEMSYNC=1
-        DYLD_INSERT_LIBRARIES=/tmp/evil.dylib
-        WINEPREFIX=/
-        lowercase=1
-        METALSHARP_CONFINE_CURSOR=1
-        """.write(to: share.appendingPathComponent("pearwine.env"), atomically: true, encoding: .utf8)
-        let engine = WineEngine(id: "pearwine-1.0.0", name: "PearWine", version: "1.0.0", rootURL: root,
-                                executablePath: "Runtime/bin/wine", distribution: .pearWine)
-        XCTAssertEqual(WineDistributionInstaller.environmentDefaults(for: engine),
-                       ["WINEMSYNC": "1", "METALSHARP_CONFINE_CURSOR": "1"])
+    func testMetalSharpDefaultsApplyOnlyToMetalSharp() {
+        let root = URL(fileURLWithPath: "/tmp")
+        let metal = WineEngine(id: "metalsharp-6.0-arm64", name: "MetalSharp Wine", version: "6.0-arm64", rootURL: root,
+                               executablePath: "Runtime/MetalSharp-Wine.app/Contents/MacOS/wine", distribution: .metalSharp)
+        let hq = WineEngine(id: "wine-staging-11.21", name: "WineHQ", version: "11.21", rootURL: root,
+                            executablePath: "Runtime/bin/wine", distribution: .wineHQ)
+        XCTAssertTrue(MetalSharpDefaults.applies(to: metal))
+        XCTAssertFalse(MetalSharpDefaults.applies(to: hq))
+        XCTAssertEqual(MetalSharpDefaults.environment["WINEMSYNC"], "1")
+        XCTAssertTrue(MetalSharpDefaults.registry.hasPrefix("Windows Registry Editor Version 5.00\n"))
+        XCTAssertTrue(MetalSharpDefaults.registry.contains(#"[HKEY_CURRENT_USER\Software\Wine\Mac Driver]"#))
+        XCTAssertTrue(MetalSharpDefaults.registry.contains(#""UseGCMouse"="Y""#))
     }
 
-    func testInstalledEnginesAreOrderedPearWineFirst() {
+    func testInstalledEnginesAreOrderedMetalSharpFirst() {
         let root = URL(fileURLWithPath: "/tmp")
         func engine(_ id: String, _ distribution: WineEngine.Distribution) -> WineEngine {
             WineEngine(id: id, name: id, version: "1", rootURL: root, executablePath: "Runtime/bin/wine",
@@ -87,31 +88,9 @@ final class WineDistributionTests: XCTestCase {
         let ordered = WineDistribution.ordered([
             engine("wine-staging-11.21", .wineHQ),
             engine("custom", .community),
-            engine("whiskywine-2.5.0_3", .fork),
-            engine("pearwine-1.0.0", .pearWine),
+            engine("pearwine-1.0.1", .metalSharp),
         ])
-        XCTAssertEqual(ordered.map(\.id), ["pearwine-1.0.0", "whiskywine-2.5.0_3", "wine-staging-11.21", "custom"])
-    }
-}
-
-/// Full PearWine install from the live release into a temporary store.
-/// Downloads about 1 GB, so it runs only with PEAR_LIVE_PEARWINE_INSTALL=1.
-final class PearWineLiveInstallTests: XCTestCase {
-    func testInstallsPearWineEndToEnd() async throws {
-        try XCTSkipUnless(ProcessInfo.processInfo.environment["PEAR_LIVE_PEARWINE_INSTALL"] == "1",
-                          "Set PEAR_LIVE_PEARWINE_INSTALL=1 to download and install PearWine.")
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pearwine-live-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = WineEngineStore(rootURL: root.appendingPathComponent("Engines", isDirectory: true))
-        let engine = try await WineDistributionInstaller().install(.pearWine, store: store) { print("[install]", $0) }
-        try engine.validate()
-        XCTAssertEqual(engine.distribution, .pearWine)
-        XCTAssertTrue(engine.executablePath.hasSuffix(".app/Contents/MacOS/wine"), engine.executablePath)
-        XCTAssertEqual(WineDistributionInstaller.environmentDefaults(for: engine)["WINEMSYNC"], "1")
-        XCTAssertNotNil(WineDistributionInstaller.registryDefaults(for: engine))
-        XCTAssertEqual(try store.engines().map(\.id), [engine.id])
-        print("[install] registered \(engine.name) \(engine.version) -> \(engine.executableURL.path)")
+        XCTAssertEqual(ordered.map(\.id), ["pearwine-1.0.1", "wine-staging-11.21", "custom"])
     }
 }
 
@@ -127,9 +106,23 @@ final class WineDistributionLiveInstallTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = WineEngineStore(rootURL: root.appendingPathComponent("Engines", isDirectory: true))
-        let engine = try await WineDistributionInstaller().install(distribution, store: store) { print("[install]", $0) }
+        // The same progress hook the status bar uses during automatic installs.
+        final class Fractions: @unchecked Sendable {
+            private let lock = NSLock(); private var values: [Double] = []
+            func add(_ value: Double) { lock.withLock { values.append(value) } }
+            var all: [Double] { lock.withLock { values } }
+        }
+        let fractions = Fractions()
+        let engine = try await WineDownloadProgress.$handler.withValue({ fractions.add($0) }) {
+            try await WineDistributionInstaller().install(distribution, store: store) { print("[install]", $0) }
+        }
         try engine.validate()
         XCTAssertEqual(WineDistribution.distribution(for: engine)?.id, id)
+        let reported = fractions.all
+        print("[install] progress updates: \(reported.count), last \(reported.last ?? -1)")
+        XCTAssertGreaterThan(reported.count, 10)
+        XCTAssertEqual(reported.last ?? 0, 1, accuracy: 0.001)
+        XCTAssertEqual(reported, reported.sorted())
         // The installed loader must actually start.
         let process = Process()
         process.executableURL = engine.executableURL
@@ -151,13 +144,31 @@ final class WineDistributionLiveInstallTests: XCTestCase {
 final class WineDistributionLiveLookupTests: XCTestCase {
     func testReleasePageFallbackMatchesAPI() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["PEAR_LIVE_WINE_LOOKUP"] == "1", "Set PEAR_LIVE_WINE_LOOKUP=1.")
-        let repository = "Sikarugir-App/Engines", pattern = "WS12WhiskyWine*.tar.xz"
+        let repository = "metalsharp/MetalSharp-Wine", pattern = "MetalSharp-Wine-*-arm64.zip"
         let api = try await WineDistributionInstaller.latestAsset(repository: repository, pattern: pattern)
         let pages = try await WineDistributionInstaller.latestAssetFromReleasePages(repository: repository, pattern: pattern)
         print("[lookup] api:", api.name, api.sha256, "pages:", pages.name, pages.sha256)
         XCTAssertEqual(api.name, pages.name)
         XCTAssertEqual(api.url, pages.url)
         XCTAssertEqual(api.sha256, pages.sha256)
-        XCTAssertEqual(api.version, "2.5.0_3")
+        XCTAssertEqual(api.version, "6.0")
+    }
+}
+
+/// Read-only: loads a real engine store and checks every engine still
+/// validates and MetalSharp is preferred. Opt-in: PEAR_INSTALLED_WINE_ENGINES=<Engines folder>.
+final class InstalledWineEngineStoreTests: XCTestCase {
+    func testInstalledEnginesLoadAsMetalSharpFirst() throws {
+        guard let path = ProcessInfo.processInfo.environment["PEAR_INSTALLED_WINE_ENGINES"] else {
+            throw XCTSkip("Set PEAR_INSTALLED_WINE_ENGINES to an Engines folder.")
+        }
+        let engines = WineDistribution.ordered(try WineEngineStore(rootURL: URL(fileURLWithPath: path)).engines())
+        XCTAssertFalse(engines.isEmpty)
+        for engine in engines {
+            XCTAssertNoThrow(try engine.validate(), engine.id)
+            print("[engines] \(engine.id): \(engine.name) \(engine.version) (\(engine.distribution.rawValue))")
+        }
+        XCTAssertEqual(engines.first?.distribution, .metalSharp)
+        XCTAssertEqual(engines.first?.name, "MetalSharp Wine")
     }
 }

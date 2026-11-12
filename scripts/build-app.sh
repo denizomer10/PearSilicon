@@ -48,16 +48,6 @@ if [[ -d "$RES_BUNDLE" ]]; then
   cp -R "$RES_BUNDLE" "$OUT/Contents/Resources/"
 fi
 
-# SwiftPM dependency resources are separate bundles; copy the pinned API's
-# Python sources/catalog with the app. No Wine binaries are embedded here.
-PEARWINE_BUNDLE="$(dirname "$BIN")/PearWine_PearWineKit.bundle"
-if [[ -d "$PEARWINE_BUNDLE" ]]; then
-  cp -R "$PEARWINE_BUNDLE" "$OUT/Contents/Resources/"
-else
-  echo "ERROR: PearWine API resource bundle is missing: $PEARWINE_BUNDLE" >&2
-  exit 1
-fi
-
 if [[ -f "$BUILD_DIR/libPearRuntime.dylib" ]]; then
   cp "$BUILD_DIR/libPearRuntime.dylib" "$OUT/Contents/Resources/"
 fi

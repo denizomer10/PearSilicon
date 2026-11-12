@@ -626,7 +626,7 @@ final class RealWindowsGameImportTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let entry = try ManagedAppService().importWindowsFolder(
             from: URL(fileURLWithPath: folder), executablePath: exe,
-            libraryRoot: root.appendingPathComponent("Library"), engineID: "pearwine-1.0.0"
+            libraryRoot: root.appendingPathComponent("Library"), engineID: "metalsharp-6.0"
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: entry.payloadURL.path))
         print("[import] \(entry.displayName) -> \(entry.manifest.payloadPath)")

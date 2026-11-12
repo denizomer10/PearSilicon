@@ -12,15 +12,13 @@ let package = Package(
     dependencies: [
         // PearDebug: log sessions, log analysis and engine probes.
         // https://github.com/denizomer10/PearDebug (git submodule)
-        .package(path: "Vendor/PearDebug"),
-        .package(path: "Vendor/PearWine")
+        .package(path: "Vendor/PearDebug")
     ],
     targets: [
         .executableTarget(
             name: "PearSilicon",
             dependencies: [
-                .product(name: "PearDebugKit", package: "PearDebug"),
-                .product(name: "PearWineKit", package: "PearWine")
+                .product(name: "PearDebugKit", package: "PearDebug")
             ],
             path: "Sources/PearSilicon",
             resources: [

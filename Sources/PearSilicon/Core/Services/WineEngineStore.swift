@@ -11,10 +11,21 @@ struct WineEngine: Codable, Hashable, Identifiable, Sendable {
         case wineHQ
         /// User-provided open-source or community build.
         case community
-        /// PearWine, PearSilicon's recommended Apple silicon Wine.
-        case pearWine
-        /// A curated Apple silicon Wine fork from the distribution catalog.
+        /// MetalSharp Wine (metalsharp/MetalSharp-Wine), the default engine.
+        case metalSharp
+        /// Another Apple silicon Wine fork.
         case fork
+
+        /// Engines installed as "PearWine" are the signed MetalSharp Wine app;
+        /// they load as MetalSharp without being reinstalled.
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            if raw == "pearWine" { self = .metalSharp; return }
+            guard let value = Distribution(rawValue: raw) else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown Wine distribution \(raw)"))
+            }
+            self = value
+        }
     }
 
     static let manifestFilename = "pear-wine-engine.json"
@@ -27,7 +38,33 @@ struct WineEngine: Codable, Hashable, Identifiable, Sendable {
 
     var executableURL: URL { rootURL.appendingPathComponent(executablePath) }
 
-    /// Signed Wine app bundles (PearWine's 32-bit capable base) run from
+    init(id: String, name: String, version: String, rootURL: URL, executablePath: String, distribution: Distribution) {
+        self.id = id
+        self.name = name
+        self.version = version
+        self.rootURL = rootURL
+        self.executablePath = executablePath
+        self.distribution = distribution
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, version, rootURL, executablePath, distribution }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        version = try container.decode(String.self, forKey: .version)
+        rootURL = try container.decode(URL.self, forKey: .rootURL)
+        executablePath = try container.decode(String.self, forKey: .executablePath)
+        distribution = try container.decode(Distribution.self, forKey: .distribution)
+        // PearWine 1.0.x installed MetalSharp Wine 6.0's signed app unchanged.
+        if name == "PearWine", distribution == .metalSharp {
+            name = WineDistribution.metalSharp.name
+            if version.hasPrefix("1.0.") { version = "6.0" + (version.range(of: " (Wine").map { String(version[$0.lowerBound...]) } ?? "") }
+        }
+    }
+
+    /// Signed Wine app bundles (MetalSharp's 32-bit capable build) run from
     /// `Runtime/<Name>.app/Contents/MacOS/wine` and must stay intact: their
     /// restricted entitlement is only valid inside the unmodified bundle.
     var isAppBundleRuntime: Bool { executablePath.contains(".app/Contents/MacOS/") }

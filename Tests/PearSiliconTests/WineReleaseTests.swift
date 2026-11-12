@@ -100,6 +100,20 @@ final class WineReleaseTests: XCTestCase {
         <entry><title>11.21</title><link href="https://github.com/x/releases/tag/11.21"/></entry></feed>
         """
         XCTAssertEqual(WineReleaseService.tags(inAtom: atom), ["9.0", "11.21"])
+        // MetalSharp's feed: free-text titles, the tag only in the release
+        // link, and release notes that link to other releases.
+        let metalSharp = """
+        <feed><entry>
+            <id>tag:github.com,2008:Repository/1311450638/v6.0</id>
+            <link rel="alternate" type="text/html" href="https://github.com/metalsharp/MetalSharp-Wine/releases/tag/v6.0"/>
+            <title>MetalSharp Wine 6.0</title>
+            <content type="html">see &lt;a href=&quot;https://github.com/metalsharp/MetalSharp-Wine/releases/tag/v5.3&quot;&gt;5.3&lt;/a&gt;.</content>
+        </entry><entry>
+            <link rel="alternate" type="text/html" href="https://github.com/metalsharp/MetalSharp-Wine/releases/tag/v5.0"/>
+            <title>MetalSharp Wine 5.0</title>
+        </entry><entry><title>not a tag name</title></entry></feed>
+        """
+        XCTAssertEqual(WineReleaseService.tags(inAtom: metalSharp), ["v6.0", "v5.0"])
 
         let hash = String(repeating: "c", count: 64)
         let html = """

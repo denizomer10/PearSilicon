@@ -30,7 +30,8 @@ struct ContentView: View {
                     detail
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                StatusBar(message: state.statusMessage, busy: state.isBusy, runtimeRefresh: state.runtimeRefresh)
+                StatusBar(message: state.statusMessage, busy: state.isBusy, runtimeRefresh: state.runtimeRefresh,
+                          wineEngineInstall: state.wineEngineInstall)
             }
         }
         .frame(minWidth: 1040, minHeight: 660)
@@ -56,10 +57,8 @@ struct ContentView: View {
                 candidates: picker.executables
             ) { executable in
                 wineExecutablePicker = nil
-                Task {
-                    await state.importWindowsFolder(
-                        at: picker.folder, executablePath: executable, engineID: picker.engineID
-                    )
+                withWineEngine { engineID in
+                    await state.importWindowsFolder(at: picker.folder, executablePath: executable, engineID: engineID)
                 }
             } onCancel: {
                 wineExecutablePicker = nil
@@ -282,7 +281,7 @@ struct ContentView: View {
                 detail: !state.searchText.isEmpty ? "Try a different search." : state.platform == .macOS
                     ? "Drop a native .app here or click + to copy one into the library."
                     : (state.wineEngines.isEmpty
-                       ? "Register a Wine engine in Settings, then add a Windows game."
+                       ? "Add a Windows game with +. MetalSharp Wine is downloaded and installed automatically."
                        : "Add a Windows game folder or executable with +.")
             )
         } else {
@@ -444,13 +443,6 @@ struct ContentView: View {
     }
 
     private func addWindowsGame() {
-        guard let engine = state.wineEngines.first else {
-            alert = AlertPayload(
-                title: "No Wine engine",
-                message: "Register an open-source Wine engine in Settings before adding a Windows game. PearSilicon can download the latest WineHQ Staging or Development build for you."
-            )
-            return
-        }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
@@ -466,7 +458,7 @@ struct ContentView: View {
                 alert = AlertPayload(title: "Unsupported file", message: "Choose a Windows .exe or a program folder.")
                 return
             }
-            Task { await state.importWindowsExecutable(at: url, engineID: engine.id) }
+            withWineEngine { engineID in await state.importWindowsExecutable(at: url, engineID: engineID) }
             return
         }
 
@@ -489,15 +481,20 @@ struct ContentView: View {
                 )
             }
         } else if candidates.count == 1 {
-            Task {
-                await state.importWindowsFolder(
-                    at: url, executablePath: candidates[0].path, engineID: engine.id
-                )
+            withWineEngine { engineID in
+                await state.importWindowsFolder(at: url, executablePath: candidates[0].path, engineID: engineID)
             }
         } else {
-            wineExecutablePicker = WineExecutablePicker(
-                folder: url, executables: candidates, engineID: engine.id
-            )
+            wineExecutablePicker = WineExecutablePicker(folder: url, executables: candidates)
+        }
+    }
+
+    /// Runs a Windows import with an engine: an installed one, or MetalSharp
+    /// downloaded and installed first (progress at the bottom of the window).
+    private func withWineEngine(_ action: @escaping @MainActor (String) async -> Void) {
+        Task {
+            guard let engine = await state.ensureDefaultWineEngine() else { return }
+            await action(engine.id)
         }
     }
 
@@ -588,7 +585,6 @@ struct WineExecutablePicker: Identifiable {
     let id = UUID()
     let folder: URL
     let executables: [WineExecutableCandidate]
-    let engineID: String
 }
 
 /// Bottom status bar rendered as a glass strip.
@@ -596,9 +592,29 @@ struct StatusBar: View {
     let message: String
     let busy: Bool
     var runtimeRefresh: AppState.RuntimeRefreshProgress? = nil
+    var wineEngineInstall: AppState.WineEngineInstallProgress? = nil
 
     var body: some View {
         HStack(spacing: 8) {
+            if let install = wineEngineInstall {
+                // Bottom-left: Wine engine download for Windows games.
+                HStack(spacing: 8) {
+                    if let fraction = install.fraction {
+                        ProgressView(value: fraction)
+                            .progressViewStyle(.linear)
+                            .frame(width: 140)
+                        Text("\(install.phase) \(Int((fraction * 100).rounded()))%")
+                            .font(.callout.monospacedDigit())
+                            .lineLimit(1)
+                    } else {
+                        ProgressView().controlSize(.small)
+                        Text(install.phase).font(.callout).lineLimit(1)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Installing \(install.name)")
+                Divider().frame(height: 14)
+            }
             if let refresh = runtimeRefresh {
                 // Bottom-left: background iOS runtime update after a
                 // PearSilicon update. The rest of the window stays usable.

@@ -742,3 +742,12 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - Targeted validation: 24 tests, one optional skip, zero failures, including synthetic import → bootstrapper/child → discovery → persisted EXE → application launch. No real Steam setup was run.
 
 - Final Wine setup run: 350 XCTest tests (22 optional skips) plus 24 backup tests passed, zero failures.
+
+### 2026-11-12 — PearWine removed; MetalSharp Wine is the default engine
+
+- PearWine (separate repository, Python/Swift compatibility API, overlay, assessment, `wine-compat`) is removed from PearSilicon; the PearWine 2.0 plans are cancelled.
+- Wine catalog: **MetalSharp Wine** (`metalsharp/MetalSharp-Wine`, signed `MetalSharp-Wine-*-arm64.zip`, GitHub SHA-256 checked) is the default; WineHQ Staging/Development are optional. WhiskyWine is no longer offered.
+- Adding a Windows game (or launching one) with no engine installed downloads and installs MetalSharp automatically, with a progress bar at the bottom-left; the Settings detour is gone.
+- MetalSharp defaults (msync, WINEDEBUG=-all, cursor confinement, GCMouse raw input, Option as Alt) are built in (`MetalSharpDefaults`) instead of an overlay.
+- Existing "PearWine 1.0.1" engines are the same signed MetalSharp 6.0 app: they load as MetalSharp Wine 6.0 with the same engine ID, so games stay linked.
+- Steam on MetalSharp starts as `C:\PearSiliconSteam\Steam.exe` (link to the Steam folder), avoiding MetalSharp's `\Steam\bin\cef\` launcher rule that crashed StorageService. A drive-letter alias was rejected: Steam saved the drive root as its install folder and asked to repair it on the next start. User confirmed Steam opened with the folder link.

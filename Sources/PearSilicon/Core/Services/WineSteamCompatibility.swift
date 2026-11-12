@@ -1,41 +1,61 @@
 import Foundation
 
-/// MetalSharp v6's kernelbase launcher rule matches "\Steam\bin\cef\"
-/// and appends flags to *every* Steam CEF child, including StorageService.
-/// Starting the unchanged client through a private drive-root alias avoids
-/// that path rule. Steam and Chromium keep their own child arguments.
+/// MetalSharp Wine's kernelbase launcher rule matches the path
+/// "\Steam\bin\cef\" and appends flags to every Steam CEF child, which makes
+/// StorageService fail (FATAL target_services.cc, process_state_.InitCalled()).
+///
+/// The installed client is started unchanged through a link at the root of C:
+/// (`C:\PearSiliconSteam` → its folder), which avoids that path. A drive
+/// letter mapped to the Steam folder avoided it too, but Steam then records the
+/// drive root as its install folder and asks to repair it on the next start.
+/// Client files, registry and the signed engine stay untouched, and an existing
+/// file or link with the alias name is never replaced.
 enum WineSteamCompatibility {
-    static let driveLetter = "s"
+    /// Not containing "\Steam\", so the CEF path no longer matches the rule.
+    static let aliasName = "PearSiliconSteam"
+    /// Files that identify the installed client, never SteamSetup or a game's
+    /// Steam API library.
+    static let clientMarkers = ["steamclient64.dll", "bin/cef/cef.win64/steamwebhelper.exe"]
 
     static func prepareLaunchPath(for entry: LibraryEntry, engine: WineEngine) throws -> String? {
-        guard entry.platform == .wine,
-              PearWineCompatibilityService.runtimeKey(for: engine) == "pearwine-metalsharp-arm64@1.0.1",
+        guard entry.platform == .wine, engine.distribution == .metalSharp,
               let launch = entry.manifest.wineLaunchPath,
               launch.hasPrefix("Prefix/drive_c/") else { return nil }
         let executable = try WineInstallation.validatedLaunchURL(entry)
         let folder = executable.deletingLastPathComponent()
         guard executable.lastPathComponent.lowercased() == "steam.exe",
               folder.lastPathComponent.lowercased() == "steam" else { return nil }
-        // A file named steam.exe alone is insufficient. This is the installed
-        // client, never SteamSetup or an arbitrary game's Steam API library.
-        for marker in ["steamclient64.dll", "bin/cef/cef.win64/steamwebhelper.exe"] {
-            guard FileManager.default.fileExists(atPath: folder.appendingPathComponent(marker).path) else { return nil }
-            _ = try ManagedAppFiles.regularFile(folder.appendingPathComponent(marker), inside: entry.directoryURL)
+        // Markers must be regular files inside the client folder (no links).
+        // Installers often make that folder group-writable (Steam uses 0775),
+        // so no ownership rule applies to the client's own folder.
+        for marker in clientMarkers {
+            var current = folder
+            for part in marker.split(separator: "/") {
+                current.appendPathComponent(String(part))
+                if (try? FileManager.default.destinationOfSymbolicLink(atPath: current.path)) != nil { return nil }
+            }
+            var directory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: current.path, isDirectory: &directory), !directory.boolValue else { return nil }
         }
-        let relative = String(launch.dropFirst("Prefix/".count))
-        let target = "../" + (relative as NSString).deletingLastPathComponent
-        let devices = entry.prefixURL.appendingPathComponent("dosdevices")
-        if !ManagedAppFiles.exists(devices) { try ManagedAppFiles.makeDirectory(devices) }
-        _ = try ManagedAppFiles.existingDirectory(devices)
-        guard LibraryPath.isInside(devices, root: entry.directoryURL) else { throw PearError.invalidPackage("Wine drives escape the entry") }
-        let link = devices.appendingPathComponent("\(driveLetter):")
+        let driveC = entry.prefixURL.appendingPathComponent("drive_c")
+        guard LibraryPath.isInside(folder, root: driveC) else { return nil }
+
+        // The link target is relative to drive_c, so the entry stays portable.
+        let relative = String(launch.dropFirst("Prefix/drive_c/".count))
+        let target = (relative as NSString).deletingLastPathComponent
+        guard !target.isEmpty, target != aliasName else { return nil }
+        _ = try ManagedAppFiles.existingDirectory(driveC)
+        let link = driveC.appendingPathComponent(aliasName)
         if ManagedAppFiles.exists(link) {
             guard (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) == target else {
-                throw PearError.launchFailed("Steam compatibility needs the private S: drive, but this prefix already uses it for another location.")
+                throw PearError.launchFailed("\(entry.displayName) needs C:\\\(aliasName) as a link to its folder, but that name is already used in this prefix.")
             }
         } else {
             try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target)
         }
-        return "S:\\" + URL(fileURLWithPath: launch).lastPathComponent
+        guard LibraryPath.isInside(link.appendingPathComponent(executable.lastPathComponent), root: entry.directoryURL) else {
+            throw PearError.invalidPackage("Program alias escapes the entry")
+        }
+        return "C:\\" + aliasName + "\\" + URL(fileURLWithPath: launch).lastPathComponent
     }
 }

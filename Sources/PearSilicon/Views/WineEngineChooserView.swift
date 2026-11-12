@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The Wine distribution list: PearWine first (recommended), then the Apple
-/// silicon fallbacks. Used as the launch-time engine chooser and in Settings.
+/// The Wine distribution list: MetalSharp Wine first (default), then the optional
+/// WineHQ builds. Used as the launch-time engine chooser and in Settings.
 struct WineDistributionList: View {
     @EnvironmentObject private var state: AppState
     /// Called with the chosen distribution. In Settings this installs it; at
@@ -33,7 +33,7 @@ struct WineDistributionList: View {
                 HStack(spacing: 6) {
                     Text(distribution.name).font(.callout.weight(.semibold))
                     if distribution.recommended {
-                        Text("Recommended")
+                        Text("Default")
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(Capsule().fill(Color.green.opacity(0.2)))
@@ -91,7 +91,7 @@ struct WineEngineChooserSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Choose a Wine engine for \(entry.displayName)")
                 .font(.title3.weight(.semibold))
-            Text("PearWine gives the best compatibility on Apple silicon. If the game does not run, come back here and pick one of the other engines. They are tried in this order.")
+            Text("MetalSharp Wine runs Windows programs natively on Apple silicon and is the default. WineHQ builds are optional and need Rosetta 2.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

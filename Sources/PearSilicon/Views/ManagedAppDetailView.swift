@@ -278,7 +278,7 @@ struct ManagedAppDetailView: View {
                 Button {
                     state.wineEngineChoiceEntry = entry
                 } label: {
-                    Label("Choose Engine (PearWine recommended)…", systemImage: "star.circle")
+                    Label("Choose Engine…", systemImage: "star.circle")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.glassProminent)
@@ -288,8 +288,8 @@ struct ManagedAppDetailView: View {
                     set: { state.setWineEngine($0, for: entry) }
                 )) {
                     ForEach(state.wineEngines) { engine in
-                        let recommended = engine.distribution == .pearWine
-                        Text("\(engine.name) \(engine.version)\(recommended ? " — Recommended" : "")").tag(engine.id)
+                        let recommended = engine.distribution == .metalSharp
+                        Text("\(engine.name) \(engine.version)\(recommended ? " — Default" : "")").tag(engine.id)
                     }
                 }
                 .labelsHidden()
@@ -325,21 +325,8 @@ struct ManagedAppDetailView: View {
             .buttonStyle(.glass)
             .disabled(state.isBusy)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("PearWine compatibility").font(.caption).foregroundStyle(.secondary)
-                if let report = state.wineCompatibilityReports[entry.id] {
-                    Text(report.summary).font(.caption)
-                    Text(report.note).font(.caption2).foregroundStyle(.secondary)
-                } else if let error = state.wineCompatibilityErrors[entry.id] {
-                    Text(error).font(.caption2).foregroundStyle(.secondary)
-                } else {
-                    Text("Architecture and host checks; no gameplay result yet.").font(.caption2).foregroundStyle(.secondary)
-                }
-                if let issue = state.wineStartupHealthIssues[entry.id] {
-                    Text(issue).font(.caption2).foregroundStyle(.orange)
-                }
-                Button("Analyze Compatibility") { Task { await state.analyzeWineCompatibility(entry) } }
-                    .disabled(state.isBusy || running)
+            if let issue = state.wineStartupHealthIssues[entry.id] {
+                Text(issue).font(.caption2).foregroundStyle(.orange)
             }
 
             Text("Graphics: Wine engine defaults").font(.caption).foregroundStyle(.secondary)

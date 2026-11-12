@@ -241,14 +241,14 @@ struct ManagedAppService: Sendable {
             guard ManagedAppFiles.exists(entry.prefixURL.appendingPathComponent("system.reg")) else {
                 throw PearError.launchFailed("Wine did not initialize the private prefix")
             }
-            // PearWine prefix defaults (GCMouse raw input, Option as Alt). Best
-            // effort: a failed import never blocks the game.
-            // The prefix has no host root drive, so the file is copied into C:.
-            if let registry = WineDistributionInstaller.registryDefaults(for: engine) {
-                let staged = entry.prefixURL.appendingPathComponent("drive_c/pearwine-defaults.reg")
+            // MetalSharp prefix defaults (GCMouse raw input, Option as Alt).
+            // Best effort: a failed import never blocks the game.
+            // The prefix has no host root drive, so the file is written into C:.
+            if MetalSharpDefaults.applies(to: engine) {
+                let staged = entry.prefixURL.appendingPathComponent("drive_c/pearsilicon-defaults.reg")
                 try? FileManager.default.removeItem(at: staged)
-                try? FileManager.default.copyItem(at: registry, to: staged)
-                configuration.arguments = ["regedit.exe", "/S", "C:\\pearwine-defaults.reg"]
+                try? Data(MetalSharpDefaults.registry.utf8).write(to: staged)
+                configuration.arguments = ["regedit.exe", "/S", "C:\\pearsilicon-defaults.reg"]
                 if let importer = try? spawn(configuration, entry: entry, purpose: .wineBootstrap, activate: false) {
                     let deadline = ContinuousClock.now.advanced(by: .seconds(20))
                     while importer.isRunning, ContinuousClock.now < deadline {
@@ -566,7 +566,7 @@ struct ManagedAppService: Sendable {
                 result["WINEDLLPATH"] = runtime.appendingPathComponent("lib/wine", isDirectory: true).path
                 result["WINEDATADIR"] = runtime.appendingPathComponent("share/wine", isDirectory: true).path
                 result["DYLD_FALLBACK_LIBRARY_PATH"] = runtime.appendingPathComponent("lib", isDirectory: true).path
-                // What a `bin/wine` wrapper would export (MetalSharp/PearWine):
+                // What a `bin/wine` wrapper would export (MetalSharp):
                 // the bundled GStreamer plugins for in-game video and audio.
                 let gstreamer = runtime.appendingPathComponent("lib/gstreamer-1.0", isDirectory: true)
                 if FileManager.default.fileExists(atPath: gstreamer.path) {
@@ -581,10 +581,12 @@ struct ManagedAppService: Sendable {
                     result["VK_ICD_FILENAMES"] = moltenVK.path
                     result["VK_DRIVER_FILES"] = moltenVK.path
                 }
-                // PearWine ships its own launch defaults (msync, cursor
-                // confinement…). They never override a value set above.
-                for (key, value) in WineDistributionInstaller.environmentDefaults(for: engine) where result[key] == nil {
-                    result[key] = value
+                // MetalSharp launch defaults (msync, cursor confinement…).
+                // They never override a value set above.
+                if MetalSharpDefaults.applies(to: engine) {
+                    for (key, value) in MetalSharpDefaults.environment where result[key] == nil {
+                        result[key] = value
+                    }
                 }
                 let graphics = engine.rootURL.appendingPathComponent("Graphics", isDirectory: true)
                 if entry.manifest.wineEngineGraphics != true {

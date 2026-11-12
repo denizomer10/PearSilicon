@@ -192,14 +192,14 @@ struct SettingsView: View {
                     },
                     actionTitle: { _, installed in installed ? "Reinstall" : "Install" }
                 )
-                Text("Windows games use PearWine when it is installed. If a game stops right after starting, its detail pane offers the next engine in this list.")
+                Text("Windows games use MetalSharp Wine, which PearSilicon downloads and installs automatically the first time you add a Windows game. WineHQ builds are optional; if a game stops right after starting, its detail pane offers the next installed engine.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("Registered engines") {
                 if state.wineEngines.isEmpty {
-                    Text("No Wine engine registered. Install PearWine above (recommended) or add a custom runtime.")
+                    Text("No Wine engine installed yet. MetalSharp Wine is installed automatically when you add a Windows game, or install it above now.")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(state.wineEngines) { engine in

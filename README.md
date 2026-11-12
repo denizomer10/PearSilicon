@@ -239,17 +239,20 @@ pearsilicon mousetouch com.example.game off
 Imported games live under `wine-apps/<id>/` with `Payload`, `Data` and `Prefix`.
 The prefix is private to the game; absolute host drive mappings are removed.
 
-- **PearWine is the recommended engine** ([PearWine](https://github.com/denizomer10/PearWine)):
-  native arm64 Wine 11 with FEX, Mullion (Direct3D 10–12 on Metal), DXVK and
-  VKD3D, and no Rosetta. When a Windows game is opened without an engine, the
-  engine chooser offers PearWine first. Once PearWine is installed, games use it
-  automatically.
-- **Fallbacks**: if a game stops right after starting, its detail pane offers the
-  next engine in this order: WhiskyWine,
-  WineHQ Staging, WineHQ Development. **Settings → Wine** lists them all.
-  Every download is checked against its SHA-256 before installation.
-- Install open-source WineHQ **Staging** or **Development** engines from
-  **Settings → Wine**, or register a local runtime.
+- **MetalSharp Wine is the default engine**
+  ([metalsharp/MetalSharp-Wine](https://github.com/metalsharp/MetalSharp-Wine)):
+  native arm64 Wine with FEX for 32- and 64-bit Windows programs, Direct3D on
+  Metal, DXVK and VKD3D, no Rosetta. The first time you add a Windows game,
+  PearSilicon downloads the signed arm64 release, checks GitHub's SHA-256 and
+  installs it, with progress at the bottom-left of the window. No trip to
+  Settings is needed.
+- **Optional WineHQ builds**: WineHQ Staging and Development (x86_64, need
+  Rosetta 2) can be installed from **Settings → Wine**. If a game stops right
+  after starting, its detail pane offers the next installed engine.
+- **Steam** on MetalSharp starts through `C:\PearSiliconSteam`, a link to the
+  Steam folder. MetalSharp's launcher rule for `\Steam\bin\cef\` otherwise
+  crashes Steam's browser (StorageService). Steam's files stay where they are.
+- Or register a local runtime in **Settings → Wine**.
 - Remove a registered engine from Settings; game prefixes and saves are kept.
 - Community engines: paste a GitHub repository URL. The newest release archive
   is resolved automatically; if there is no release, the source ZIP is used.
@@ -313,7 +316,6 @@ PearSilicon is split into separate projects:
 |---|---|
 | [PearRuntime](https://github.com/denizomer10/PearRuntime) | Modular compatibility layer for modern arm64 iOS apps (`runtime/`, git submodule) |
 | [PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine) | 32-bit iOS engine |
-| [PearWine](https://github.com/denizomer10/PearWine) | Recommended Wine engine for Apple silicon |
 | [PearDebug](https://github.com/denizomer10/PearDebug) | Log sessions, log analysis and engine probes (`Vendor/PearDebug`, git submodule) |
 
 After a PearSilicon update, installed iOS apps get the new runtime
@@ -373,14 +375,17 @@ output of `pearsilicon doctor`.
 MIT — see [LICENSE](LICENSE). Apple frameworks and installed apps retain their own
 licenses. PearSilicon does not provide app licenses, accounts or iOS firmware.
 
-### Signed PearWine runtime (0.8.2)
+### Signed MetalSharp runtime
 
-PearWine 1.0.1 uses the pinned MetalSharp Wine 6.0 arm64 ZIP. The installer
-verifies its SHA-256, checks archive paths and links before extraction, and
-verifies the app signature after applying the external PearWine overlay.
-`Runtime/MetalSharp-Wine.app` stays intact; PearWine defaults live beside it
-in `Runtime/share/pearwine`. The original Developer ID signature and
-cross-architecture entitlement are retained. No upstream app is re-signed.
+The MetalSharp install uses the signed `MetalSharp-Wine-<version>-arm64.zip`
+release asset. The installer verifies its SHA-256, checks archive paths and
+links before extraction, and verifies the app signature.
+`Runtime/MetalSharp-Wine.app` stays intact, keeping the original Developer ID
+signature and the cross-architecture entitlement 32-bit programs need. No
+upstream app is re-signed. PearSilicon applies its MetalSharp defaults (msync,
+GCMouse raw input, Option as Alt) at launch and prefix creation. Engines
+installed earlier as "PearWine" are this same signed app and load as MetalSharp
+Wine 6.0 without reinstalling.
 
 Windows executable admission permits sections overlapping `SizeOfHeaders`,
 as seen in GTA Vice City, while rejecting truncated raw sections and headers.
