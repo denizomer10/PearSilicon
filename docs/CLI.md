@@ -545,3 +545,9 @@ Windows program folder.
 can record a bounded process observation. It does not certify gameplay; fresh
 known Steam CEF startup failures yield exit status 1. The observation is
 written to the entry's `Data/wine-launch-observation.json`.
+
+`wine-status <id>` lists every process of the entry's private prefix (game,
+launchers, re-executed clients, Wine services) and says whether a Windows
+program is running. `wine-stop <id>` force-quits all of them: `wineserver -k9`
+through the entry's engine, then SIGKILL to anything left, including orphans.
+Other prefixes are not touched. The app's Stop button does the same.

@@ -138,6 +138,8 @@ enum CLI {
         case "pointerlock": return try pointerLockCommand(parsed)
         case "wine-import": return try wineImportCommand(parsed)
         case "wine-launch": return try wineLaunchCommand(parsed)
+        case "wine-status": return try wineStatusCommand(parsed)
+        case "wine-stop": return try wineStopCommand(parsed)
         case "compat", "compatibility": return try compatCommand(parsed)
         case "legacy": return try compatibilityOverrideCommand(parsed, kind: .legacyBridge)
         case "mousetouch": return try compatibilityOverrideCommand(parsed, kind: .mouseTouch)
@@ -939,6 +941,31 @@ enum CLI {
         return 0
     }
 
+    private static func wineStatusCommand(_ args: CLIArguments) throws -> Int32 {
+        guard let id = args.positionals.first else { throw CLIError.message("usage: wine-status <entry-id>") }
+        let entry = try managedWineEntry(id)
+        let members = WinePrefixProcesses.scan([entry])[entry.id] ?? []
+        print(WinePrefixProcesses.hasProgram(members) ? "\(entry.displayName): running" : "\(entry.displayName): not running")
+        for member in members {
+            print("  \(member.pid)  \(member.name.isEmpty ? "?" : member.name)\(member.isWineService ? "  (Wine service)" : "")")
+        }
+        return 0
+    }
+
+    private static func wineStopCommand(_ args: CLIArguments) throws -> Int32 {
+        guard let id = args.positionals.first else { throw CLIError.message("usage: wine-stop <entry-id>") }
+        let entry = try managedWineEntry(id)
+        let engine = try entry.manifest.wineEngineID.flatMap {
+            try WineEngineStore(rootURL: CLIPaths.shared.support.appendingPathComponent("Engines")).engine(id: $0)
+        }
+        let left = try awaitBridge { await WinePrefixProcesses.forceStop(entry, engine: engine) }
+        guard left.isEmpty else {
+            throw CLIError.message("\(left.count) process(es) of \(entry.displayName) could not be stopped: \(left.map { String($0.pid) }.joined(separator: ", "))")
+        }
+        print("Stopped \(entry.displayName)")
+        return 0
+    }
+
     private static func wineLaunchCommand(_ args: CLIArguments) throws -> Int32 {
         guard let id = args.positionals.first else { throw CLIError.message("usage: wine-launch <entry-id> [--wait] [--observe-seconds 30] [--diagnostics]") }
         let seconds: Double
@@ -1502,6 +1529,8 @@ enum CLI {
           pointerlock <id|name> [on|off]  Allow or disallow the game's pointer lock
           wine-import <folder> --exe <file.exe> --engine <id>
           wine-launch <id> [--wait] [--observe-seconds N] [--diagnostics]
+          wine-status <id>     List every process of the Wine entry's prefix
+          wine-stop <id>       Force-quit every process of the Wine entry's prefix
           compat <id|name> [--json]  Show the detected compatibility profile
           legacy <id|name> [on|off|auto]  Override the legacy window bridge
           mousetouch <id|name> [on|off|auto]  Override mouse-to-touch fallback

@@ -326,6 +326,7 @@ final class AppState: ObservableObject {
             try await refreshLibrary()
             refreshRuntimesIfPearSiliconWasUpdated()
             startAutomaticUpdates()
+            startWineProcessMonitor()
         } catch {
             statusMessage = L10n.error("Could not initialize library: \(error.localizedDescription)")
         }
@@ -516,6 +517,37 @@ final class AppState: ObservableObject {
 
     func isRunning(_ entry: LibraryEntry) -> Bool {
         managedRunning[entry.id]?.isRunning == true || activeWineInstallations.contains(entry.id)
+            || runningWineEntryIDs.contains(entry.id)
+    }
+
+    /// Wine entries with a Windows program open, from a scan of each prefix's
+    /// processes. This also covers programs a launcher re-executed (Steam) and
+    /// games started outside the process PearSilicon launched.
+    @Published private(set) var runningWineEntryIDs: Set<String> = []
+    private var wineProcessMonitor: Task<Void, Never>?
+    /// Entries being force-stopped; shown as not running right away.
+    private var stoppingWineEntryIDs: Set<String> = []
+
+    func startWineProcessMonitor() {
+        guard observesWorkspace, wineProcessMonitor == nil else { return }
+        wineProcessMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshWineProcesses()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    func refreshWineProcesses() async {
+        let entries = managedEntries.filter { $0.platform == .wine }
+        guard !entries.isEmpty else {
+            if !runningWineEntryIDs.isEmpty { runningWineEntryIDs = [] }
+            return
+        }
+        let scan = await Task.detached(priority: .utility) { WinePrefixProcesses.scan(entries) }.value
+        let running = Set(entries.map(\.id).filter { WinePrefixProcesses.hasProgram(scan[$0]) })
+            .subtracting(stoppingWineEntryIDs)
+        if running != runningWineEntryIDs { runningWineEntryIDs = running }
     }
 
     @Published private(set) var wineStartupHealthIssues: [String: String] = [:]
@@ -815,25 +847,36 @@ final class AppState: ObservableObject {
         await launch(refreshed)
     }
 
+    /// Stop force-quits everything the entry runs. For Windows programs that is
+    /// every process of its private prefix (game, launchers, re-executed
+    /// clients, orphans and Wine's services), whichever engine started them.
     func stop(_ entry: LibraryEntry) {
-        if activeWineInstallations.contains(entry.id),
-           let id = entry.manifest.wineEngineID, let engine = wineEngines.first(where: { $0.id == id }) {
-            let stop = Process()
-            stop.executableURL = engine.executableURL.deletingLastPathComponent().appendingPathComponent("wineserver")
-            stop.arguments = ["-k"]
-            stop.environment = ManagedAppService.environment(for: entry, engine: engine)
-            stop.standardOutput = FileHandle.nullDevice
-            stop.standardError = FileHandle.nullDevice
-            do { try stop.run(); updateManifest(entry) { $0.wineInstallState = "chooseProgram" } }
-            catch { statusMessage = L10n.error("Close the Windows installer before removing this entry") }
-        }
-        guard let process = managedRunning[entry.id] else { return }
-        process.stop()
+        let process = managedRunning[entry.id]
         managedRunning[entry.id] = nil
+        guard entry.platform == .wine else {
+            process?.stop()
+            if process != nil { statusMessage = "Stopping \(entry.displayName)…" }
+            return
+        }
+        if activeWineInstallations.contains(entry.id) {
+            updateManifest(entry) { $0.wineInstallState = "chooseProgram" }
+        }
+        let engine = entry.manifest.wineEngineID.flatMap { id in wineEngines.first { $0.id == id } }
+        stoppingWineEntryIDs.insert(entry.id)
+        runningWineEntryIDs.remove(entry.id)
         statusMessage = "Stopping \(entry.displayName)…"
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1))
-            self?.statusMessage = L10n.ready
+            process?.stop()
+            let left = await Task.detached(priority: .userInitiated) {
+                await WinePrefixProcesses.forceStop(entry, engine: engine)
+            }.value
+            guard let self else { return }
+            self.stoppingWineEntryIDs.remove(entry.id)
+            self.activeWineInstallations.remove(entry.id)
+            await self.refreshWineProcesses()
+            self.statusMessage = left.isEmpty
+                ? "Stopped \(entry.displayName)"
+                : L10n.error("\(left.count) process(es) of \(entry.displayName) could not be stopped")
         }
     }
 

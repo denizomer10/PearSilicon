@@ -751,3 +751,9 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - MetalSharp defaults (msync, WINEDEBUG=-all, cursor confinement, GCMouse raw input, Option as Alt) are built in (`MetalSharpDefaults`) instead of an overlay.
 - Existing "PearWine 1.0.1" engines are the same signed MetalSharp 6.0 app: they load as MetalSharp Wine 6.0 with the same engine ID, so games stay linked.
 - Steam on MetalSharp starts as `C:\PearSiliconSteam\Steam.exe` (link to the Steam folder), avoiding MetalSharp's `\Steam\bin\cef\` launcher rule that crashed StorageService. A drive-letter alias was rejected: Steam saved the drive root as its install folder and asked to repair it on the next start. User confirmed Steam opened with the folder link.
+
+### 2026-11-12 — Wine running state and force stop
+
+- Running state of Wine entries comes from a 2-second scan of each prefix's processes (working directory inside the entry, or the prefix's wineserver folder `/tmp/.wine-<uid>/server-<dev>-<inode>`), so relaunched clients (Steam) and games started by a launcher show as running. Wine's background services alone do not count.
+- Stop force-quits the whole prefix: `wineserver -k9` with the entry's engine (MetalSharp or WineHQ), then SIGKILL to anything left, including orphans. CLI: `wine-status <id>`, `wine-stop <id>`.
+- Verified live with Vice City: all 10 prefix processes found, `gta-vc.exe` reported as the program, `wine-stop` cleared everything in 0.34 s.
