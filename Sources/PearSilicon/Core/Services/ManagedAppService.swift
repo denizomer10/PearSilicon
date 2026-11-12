@@ -193,7 +193,8 @@ struct ManagedAppService: Sendable {
     @MainActor
     func launch(
         _ entry: LibraryEntry, engine: WineEngine? = nil,
-        metalHUDEnabled: Bool? = nil, activate: Bool = true
+        metalHUDEnabled: Bool? = nil, activate: Bool = true,
+        arguments extraArguments: [String] = [], diagnostics: Bool = false
     ) async throws -> ManagedAppProcess {
         guard !runningProcesses.contains(where: { $0.entryDirectoryURL == entry.directoryURL.standardizedFileURL }) else {
             throw PearError.launchFailed("This managed entry already has a tracked running process")
@@ -270,9 +271,15 @@ struct ManagedAppService: Sendable {
             // Use a real Windows drive letter for the program path. Without it,
             // GameMaker resolves data.win through \\?\unix\... and shows a file
             // dialog instead of starting the game.
-            configuration.arguments = [try Self.prepareWineGameDrive(for: entry)]
+            configuration.arguments = [try Self.prepareWineGameDrive(for: entry)] + extraArguments
+            if diagnostics { configuration.environment["WINEDEBUG"] = "err+all" }
         }
-        return try spawn(configuration, entry: entry, purpose: .application, activate: activate)
+        let launched = try spawn(configuration, entry: entry, purpose: .application, activate: activate)
+        if entry.platform == .wine, let engine {
+            launched.trackWineSession(server: engine.executableURL.deletingLastPathComponent().appendingPathComponent("wineserver"),
+                                      environment: configuration.environment)
+        }
+        return launched
     }
 
     @MainActor var runningProcesses: [ManagedAppProcess] {
@@ -297,8 +304,11 @@ struct ManagedAppService: Sendable {
         process.standardError = log
         let handle = ManagedAppProcess(process: process, entry: entry, purpose: purpose)
         let id = handle.id
-        process.terminationHandler = { _ in
-            Task { @MainActor in Self.processes.removeValue(forKey: id) }
+        handle.onSessionEnded = { Self.processes.removeValue(forKey: id) }
+        process.terminationHandler = { [weak handle] _ in
+            Task { @MainActor in
+                if let handle, !handle.isRunning { Self.processes.removeValue(forKey: id) }
+            }
         }
         try process.run()
         Self.processes[id] = handle
@@ -753,7 +763,7 @@ struct ManagedAppService: Sendable {
 struct ManagedAppLaunchConfiguration: Sendable {
     let executableURL: URL
     var arguments: [String]
-    let environment: [String: String]
+    var environment: [String: String]
     let workingDirectoryURL: URL
     let sandboxProfile: String
 }
@@ -768,8 +778,14 @@ final class ManagedAppProcess: Identifiable {
     let purpose: Purpose
     private let process: Process
     var processIdentifier: Int32 { process.processIdentifier }
-    var isRunning: Bool { process.isRunning }
-    var terminationStatus: Int32? { process.isRunning ? nil : process.terminationStatus }
+    private var sessionMonitoring = false
+    private var monitor: Task<Void, Never>?
+    private var waiter: Process?
+    private var server: URL?
+    private var serverEnvironment: [String: String] = [:]
+    fileprivate var onSessionEnded: (() -> Void)?
+    var isRunning: Bool { process.isRunning || sessionMonitoring }
+    var terminationStatus: Int32? { isRunning ? nil : process.terminationStatus }
 
     fileprivate init(process: Process, entry: LibraryEntry, purpose: Purpose) {
         self.process = process
@@ -777,7 +793,57 @@ final class ManagedAppProcess: Identifiable {
         self.purpose = purpose
     }
 
+    /// Keep tracking the private Wine session across Steam/bootstrapper re-exec.
+    /// A per-prefix wineserver wait is never a machine-wide process-name probe.
+    fileprivate func trackWineSession(server: URL, environment: [String: String]) {
+        guard FileManager.default.isExecutableFile(atPath: server.path) else { return }
+        self.server = server
+        self.serverEnvironment = environment
+        sessionMonitoring = true
+        monitor = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.sessionMonitoring = false
+                self.waiter = nil
+                if !self.process.isRunning { self.onSessionEnded?() }
+            }
+            var exitedAt: ContinuousClock.Instant?
+            do {
+                while !Task.isCancelled {
+                    let child = Process()
+                    child.executableURL = server
+                    child.arguments = ["-w"]
+                    child.environment = environment
+                    child.standardOutput = FileHandle.nullDevice
+                    child.standardError = FileHandle.nullDevice
+                    self.waiter = child
+                    try child.run()
+                    while child.isRunning { try await Task.sleep(for: .milliseconds(200)) }
+                    if !self.process.isRunning {
+                        if self.process.terminationStatus != 0 { break }
+                        if exitedAt == nil { exitedAt = .now }
+                        if ContinuousClock.now - exitedAt! >= .seconds(2) { break }
+                    }
+                    try await Task.sleep(for: .milliseconds(250))
+                }
+            } catch { /* Stop/cancellation closes only the owned session. */ }
+        }
+    }
+
     func stop() {
+        monitor?.cancel()
+        if let waiter, waiter.isRunning { kill(waiter.processIdentifier, SIGKILL) }
+        if let server {
+            let shutdown = Process()
+            shutdown.executableURL = server
+            shutdown.arguments = ["-k"]
+            shutdown.environment = serverEnvironment
+            shutdown.standardOutput = FileHandle.nullDevice
+            shutdown.standardError = FileHandle.nullDevice
+            try? shutdown.run()
+        }
+        sessionMonitoring = false
+        onSessionEnded?()
         // The process is still running, so this PID is still ours. SIGKILL
         // bypasses hung run loops and blocked input handlers.
         if process.isRunning { kill(process.processIdentifier, SIGKILL) }

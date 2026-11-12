@@ -39,3 +39,11 @@ Tests on this M1:
 
 Computer Use permission was unavailable. Rendering, menus, controls and actual
 playability are not visually verified. The game is not included in releases.
+
+## 2026-11-12 integration follow-up
+
+The subsequent PearWine 2.0 integration used the real game folder again. The
+integrated CLI observed 35 seconds of execution and the user confirmed correct
+menu/game image. This supersedes the earlier lack of visual confirmation for
+that local run only. See [scoped evidence and Steam blocker](PEARWINE_INTEGRATION.md)
+for the exact executable hash, host and limits; sustained gameplay is unverified.

@@ -510,6 +510,29 @@ final class AppState: ObservableObject {
         managedRunning[entry.id]?.isRunning == true || activeWineInstallations.contains(entry.id)
     }
 
+    @Published private(set) var wineCompatibilityReports: [String: WineCompatibilityReport] = [:]
+    @Published private(set) var wineCompatibilityErrors: [String: String] = [:]
+    @Published private(set) var wineStartupHealthIssues: [String: String] = [:]
+
+    func analyzeWineCompatibility(_ entry: LibraryEntry) async {
+        guard entry.platform == .wine, !isBusy else { return }
+        isBusy = true
+        defer { finishBusyWork() }
+        do {
+            let resolved = try resolveWineEngine(for: entry)
+            let report = try await Task.detached(priority: .userInitiated) {
+                try PearWineCompatibilityService().assess(resolved.entry, engine: resolved.engine)
+            }.value
+            try PearWineCompatibilityService.persist(report, for: resolved.entry)
+            wineCompatibilityReports[entry.id] = report
+            wineCompatibilityErrors[entry.id] = nil
+            statusMessage = report.summary
+        } catch {
+            wineCompatibilityErrors[entry.id] = error.localizedDescription
+            statusMessage = L10n.error(error.localizedDescription)
+        }
+    }
+
     @Published private(set) var activeWineInstallations: Set<String> = []
     @Published var wineInstalledProgramChoice: LibraryEntry?
 
@@ -601,7 +624,30 @@ final class AppState: ObservableObject {
                 let saved = target.manifest
                 updateManifest(target) { $0 = saved }
             }
+            if target.platform == .wine, let selectedEngine = engine {
+                let assessedTarget = target
+                wineCompatibilityReports[target.id] = nil
+                do {
+                    let report = try await Task.detached(priority: .userInitiated) {
+                        try PearWineCompatibilityService().assess(assessedTarget, engine: selectedEngine)
+                    }.value
+                    try PearWineCompatibilityService.persist(report, for: target)
+                    wineCompatibilityReports[target.id] = report
+                    wineCompatibilityErrors[target.id] = nil
+                } catch {
+                    // Analysis is optional when Python is absent; it cannot
+                    // silently substitute another engine or graphics backend.
+                    wineCompatibilityErrors[target.id] = error.localizedDescription
+                    if error is WineCompatibilityFailure { throw error }
+                }
+                if let report = wineCompatibilityReports[target.id], report.signatureVerified,
+                   let check = report.assessment?.runtime, !check.eligible {
+                    throw PearError.launchFailed(check.reasons.joined(separator: "; "))
+                }
+            }
             statusMessage = target.manifest.wineInstallState == "running" ? "Running setup — complete the Windows installer…" : "Launching \(target.displayName)…"
+            let startupHealth = WineStartupHealth(entry: target)
+            wineStartupHealthIssues[target.id] = nil
             let process: ManagedAppProcess
             if target.platform == .macOS {
                 process = try await macApps.launch(
@@ -625,6 +671,19 @@ final class AppState: ObservableObject {
                     watchWineInstallation(process, entry: target, engine: engine)
                 } else {
                     watchForEarlyWineFailure(process, entry: target, engine: engine)
+                    let watchedEntry = target
+                    Task { @MainActor [weak self] in
+                        for _ in 0..<20 {
+                            try? await Task.sleep(for: .seconds(1))
+                            guard self?.managedRunning[watchedEntry.id]?.id == process.id else { return }
+                            if let issue = startupHealth.issues().first {
+                                self?.wineStartupHealthIssues[watchedEntry.id] = issue
+                                self?.statusMessage = L10n.error(issue)
+                                return
+                            }
+                            if !process.isRunning { return }
+                        }
+                    }
                 }
             }
         } catch {

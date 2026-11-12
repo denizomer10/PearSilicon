@@ -325,6 +325,23 @@ struct ManagedAppDetailView: View {
             .buttonStyle(.glass)
             .disabled(state.isBusy)
 
+            VStack(alignment: .leading, spacing: 5) {
+                Text("PearWine compatibility").font(.caption).foregroundStyle(.secondary)
+                if let report = state.wineCompatibilityReports[entry.id] {
+                    Text(report.summary).font(.caption)
+                    Text(report.note).font(.caption2).foregroundStyle(.secondary)
+                } else if let error = state.wineCompatibilityErrors[entry.id] {
+                    Text(error).font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("Architecture and host checks; no gameplay result yet.").font(.caption2).foregroundStyle(.secondary)
+                }
+                if let issue = state.wineStartupHealthIssues[entry.id] {
+                    Text(issue).font(.caption2).foregroundStyle(.orange)
+                }
+                Button("Analyze Compatibility") { Task { await state.analyzeWineCompatibility(entry) } }
+                    .disabled(state.isBusy || running)
+            }
+
             Text("Graphics: Wine engine defaults").font(.caption).foregroundStyle(.secondary)
             Button(entry.manifest.wineInstaller == true ? "Run Setup Again…" : "Run as Installer…") { state.runWineSetup(entry) }
                 .disabled(running || state.isBusy)

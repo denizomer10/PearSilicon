@@ -22,6 +22,7 @@ final class WineSetupFlowTests: XCTestCase {
             const char *prefix = getenv("WINEPREFIX");
             char path[4096], from[4096];
             if (argc > 1 && !strcmp(argv[1], "-w")) { sleep(2); return 0; }
+            if (argc > 1 && !strcmp(argv[1], "-k")) return 0;
             if (argc > 1 && strstr(argv[1], "wineboot")) {
                 snprintf(path,sizeof(path),"%s/system.reg",prefix);
                 FILE *f=fopen(path,"w"); fputs("WINE REGISTRY Version 2\n",f); fclose(f); return 0;

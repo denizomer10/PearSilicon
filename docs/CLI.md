@@ -535,3 +535,13 @@ when the CLI installs or removes an app, so an open window stays in sync.
 ### Mouse input and pointer lock
 
 Pointer lock defaults to off for apps without a saved preference. Enable it for a game that needs relative mouse input using `pointerlock <id> on`; explicit per-app choices remain in effect. Legacy window bridging and **mouse-to-touch fallback** are detected automatically from the game's `Info.plist`. `compat <id>` shows the profile and effective state; `legacy` and `mousetouch` accept `on`, `off` or `auto` to store or clear a manual override. Overrides are preserved for existing installations but no longer appear in the GUI. Both settings take effect on relaunch. The selected app must be stopped before refreshing its runtime. A runtime refresh stages and signs a copy of the app; game data is kept separately.
+
+### Wine runtime assessment and launch observation
+
+`wine-import <folder> --exe <relative.exe> --engine <id>` imports a complete
+Windows program folder. `wine-compat <id> --json` reads the pinned PearWine API.
+`wine-launch <id> [--wait] [--observe-seconds N] [--stop-after-observation]
+[--diagnostics] [--arguments-json JSON]` launches with the existing engine and
+can record a bounded process observation. It does not certify gameplay; fresh
+known Steam CEF startup failures yield exit status 1. See
+[the integration contract and local test evidence](PEARWINE_INTEGRATION.md).
