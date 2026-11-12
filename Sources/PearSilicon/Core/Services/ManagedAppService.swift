@@ -271,7 +271,8 @@ struct ManagedAppService: Sendable {
             // Use a real Windows drive letter for the program path. Without it,
             // GameMaker resolves data.win through \\?\unix\... and shows a file
             // dialog instead of starting the game.
-            configuration.arguments = [try Self.prepareWineGameDrive(for: entry)] + extraArguments
+            let steamPath = try engine.flatMap { try WineSteamCompatibility.prepareLaunchPath(for: entry, engine: $0) }
+            configuration.arguments = [try steamPath ?? Self.prepareWineGameDrive(for: entry)] + extraArguments
             if diagnostics { configuration.environment["WINEDEBUG"] = "err+all" }
         }
         let launched = try spawn(configuration, entry: entry, purpose: .application, activate: activate)
