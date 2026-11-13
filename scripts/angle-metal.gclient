@@ -1,6 +1,6 @@
 solutions = [{
   'name': '.',
-  'url': 'https://github.com/denizomer10/angle.git',
+  'url': 'https://github.com/denizomer10/PearANGLE.git',
   'managed': False,
   'custom_vars': {
     'checkout_angle_dawn_deps': False,

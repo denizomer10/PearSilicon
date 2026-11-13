@@ -2,8 +2,8 @@
 
 ## Implemented and verified
 
-- Work branches: `codex/angle-metal-bridge` in PearSilicon/PearRuntime;
-  `codex/pearruntime-metal` in the existing `denizomer10/angle` fork checkout.
+- Branches: `main` in PearSilicon/PearRuntime (work branch `codex/angle-metal-bridge` merged);
+  `main` of the [PearANGLE](https://github.com/denizomer10/PearANGLE) fork (renamed from `denizomer10/angle`; the work branch `codex/pearruntime-metal` was merged into `main`).
 - PearRuntime pins the fork as `third_party/angle`. The initial upstream base
   was `686adbb2a39854ab687da009e534f6842a85f453`; the tested Apple thread-exit
   fixes are `9e214cf` (thread cleanup) and `f405241` (host-layer positioning)
@@ -227,5 +227,5 @@ ANGLE is an explicitly selected, licensed third-party dependency; it is not
 presented as original clean-room PearRuntime implementation or as a legal
 provenance certification. No Apple OS implementation is included.
 
-References: [ANGLE fork](https://github.com/denizomer10/angle),
+References: [ANGLE fork](https://github.com/denizomer10/PearANGLE),
 [upstream support matrix](https://chromium.googlesource.com/angle/angle/+/main/README.md).
