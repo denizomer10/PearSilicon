@@ -1076,18 +1076,24 @@ extension RuntimeRevision {
     /// relative path → content hash, ignoring code signatures.
     private static func contentManifest(of component: URL, scratch: URL) throws -> [String: String] {
         try UpdateTree.validate(component, maximumBytes: 2 * 1024 * 1024 * 1024, maximumEntries: 100_000)
-        var items = [component]
+        // Relative paths come from the enumerator itself. Cutting a fixed
+        // prefix length off enumerated URLs broke when the enumerator reported
+        // resolved paths (/private/var/... for /var/...): every entry of a
+        // directory component (PearANGLE, MarketplaceKit.framework) was
+        // misnamed and an up-to-date app was refreshed again on every check.
+        let name = component.lastPathComponent
+        var entries: [(relative: String, url: URL)] = [(name, component)]
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: component.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            guard let enumerator = FileManager.default.enumerator(at: component, includingPropertiesForKeys: nil) else {
-                throw AppUpdateError.integrity("Cannot enumerate runtime component \(component.lastPathComponent).")
+            guard let enumerator = FileManager.default.enumerator(atPath: component.path) else {
+                throw AppUpdateError.integrity("Cannot enumerate runtime component \(name).")
             }
-            while let item = enumerator.nextObject() as? URL { items.append(item) }
+            while let sub = enumerator.nextObject() as? String {
+                entries.append((name + "/" + sub, component.appendingPathComponent(sub)))
+            }
         }
         var manifest: [String: String] = [:]
-        let base = component.deletingLastPathComponent().path.count + 1
-        for item in items {
-            let relative = String(item.path.dropFirst(base))
+        for (relative, item) in entries {
             if relative.split(separator: "/").contains("_CodeSignature") || relative.hasSuffix("/CodeResources") { continue }
             switch try AppUpdateService.fileType(item) {
             case S_IFDIR: manifest[relative] = "directory"

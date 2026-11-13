@@ -45,4 +45,32 @@ final class RuntimeRevisionTests: XCTestCase {
         try FileManager.default.removeItem(at: copy)
         XCTAssertFalse(try RuntimeRevision.installedRuntimeMatches(installed: installed, source: source))
     }
+
+    /// Directory components (PearANGLE, MarketplaceKit.framework) are compared
+    /// by their entries' paths relative to the component. In an unresolved
+    /// /var/... temporary path the directory enumerator reports /private/var
+    /// paths; the comparison must still see identical trees as current.
+    func testDirectoryComponentsMatchUnderSymlinkedTemporaryPath() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("runtime-tree-\(UUID().uuidString)")
+        XCTAssertFalse(root.path.hasPrefix("/private/"), "the test needs the unresolved temporary path")
+        let source = root.appendingPathComponent("Resources", isDirectory: true)
+        let installed = root.appendingPathComponent("Frameworks", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for base in [source, installed] {
+            let angle = base.appendingPathComponent("PearANGLE", isDirectory: true)
+            try FileManager.default.createDirectory(at: angle, withIntermediateDirectories: true)
+            try Data("runtime".utf8).write(to: base.appendingPathComponent("libPearRuntime.dylib"))
+            try Data("bridge".utf8).write(to: base.appendingPathComponent("libPearOpenGLES.dylib"))
+            try Data("egl".utf8).write(to: angle.appendingPathComponent("libEGL.dylib"))
+            try Data("gles".utf8).write(to: angle.appendingPathComponent("libGLESv2.dylib"))
+        }
+        XCTAssertTrue(try RuntimeRevision.installedRuntimeMatches(installed: installed, source: source))
+
+        try Data("gles v2".utf8).write(to: source.appendingPathComponent("PearANGLE/libGLESv2.dylib"))
+        XCTAssertFalse(try RuntimeRevision.installedRuntimeMatches(installed: installed, source: source))
+
+        try FileManager.default.removeItem(at: installed.appendingPathComponent("PearANGLE"))
+        XCTAssertFalse(try RuntimeRevision.installedRuntimeMatches(installed: installed, source: source),
+                       "a missing required ANGLE component is never current")
+    }
 }
