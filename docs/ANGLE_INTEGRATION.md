@@ -78,10 +78,11 @@ failures were caught before enabling any game routing.
 
 ## Remaining routing work
 
-1. Bind EAGL's public context/sharegroup interface to the tested context core.
-2. Connect the tested native-layer surface to an EAGL renderbuffer/FBO adapter.
-   Detached-layer tests are not onscreen game presentation. Track attachment
-   formats, multisampling and retained backing explicitly; add GLES1 presentation.
+1. Route game class imports to the separately named, tested public-selector
+   adapter. Audit dynamic class lookups; system and ANGLE contexts cannot mix.
+2. Extend the RGBA8 renderbuffer adapter for RGB565/sRGB, multisampling,
+   scheduled presentation and GLES1. Detached-layer tests are not onscreen game
+   presentation. Track deletion/reuse of GL names in the import wrappers.
 3. Import/re-export routing for linked GLES calls as well as dynamic
    `EAGLGetProcAddress` lookups. Do not mix system GL objects with ANGLE ones.
 4. One geometry snapshot for logical game points, drawable pixels, visible
@@ -91,6 +92,44 @@ failures were caught before enabling any game routing.
 5. Complete license/dependency notices and packaging/signing. Then native
    surface/readback and actual-game
    resize, fullscreen, touch, rendering and performance checks before defaults.
+
+## EAGL selector and renderbuffer milestone
+
+- `PearEAGLContext`/`PearEAGLSharegroup` implement the public context,
+  sharegroup, current-context, drawable-storage and immediate-presentation
+  selectors over ANGLE. They retain distinct Objective-C class names and do
+  not intercept installed games. Wrapper TLS retains the current wrapper;
+  the context core independently owns/unbinds the native EGL context.
+- Drawable-property constant values were checked through the system's public
+  exported constants in a separate read-only probe. The adapter includes no
+  Apple implementation and calls no system GL entry points.
+- `ANGLEDrawable.mm` allocates the bound ANGLE renderbuffer at EGL's actual
+  pixel dimensions, validates RGBA8/single-sample storage and presents through
+  a private cached FBO. The FBO is detached from the game renderbuffer after
+  each presentation and freed when its native context is destroyed. Caller
+  read/draw FBOs, renderbuffer, viewport/scissor and existing GL errors survive.
+- Source renderbuffer contents survive presentation, including retained
+  backing. Nil drawable releases storage. Unsupported formats and scheduled
+  presentation fail explicitly; they are not silently approximated.
+- Successful allocation publishes one immutable geometry record containing
+  logical bounds, drawable pixels, scale and a generation. Input-thread
+  queries require no GL context or GL state changes. A changed layer, an
+  invalidated storage record or a stale event generation is rejected.
+  These mappings are not yet connected to the game's UIKit touch events.
+- The render thread checks actual renderbuffer dimensions/format/sample count
+  before presentation. Direct engine reallocation invalidates mismatched
+  metadata. Future GL import wrappers must track deletion/name reuse; metadata
+  alone cannot distinguish a deleted and recreated identical GL name.
+- Real GLES2/3 tests passed EAGL-style allocation/presentation, retained blue
+  pixel readback, separate read/draw FBO restoration, resize generation and
+  input-thread mapping. A selector-level test passed RGBA8 magenta readback,
+  sharegroup version guards, context ownership and eight implicit thread-exit
+  wrapper-release cycles. The full Catalyst runtime builds successfully.
+
+The public adapter and renderbuffer bridge are development components. They
+do not yet route a game's imported GLES functions, dynamic proc/class lookups,
+or resize/touch dispatch. Do not infer a Minecraft or Cut the Rope fix from
+these tests. No installed application or default graphics profile was changed.
 
 `scripts/audit-angle-imports.py` inventories public ABI imports only. The main
 Cut the Rope executable imports 50 GL functions and EAGLContext; Minecraft's

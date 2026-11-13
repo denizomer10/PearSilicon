@@ -52,14 +52,18 @@ manifest = {
                          for path in [*sorted((workspace / 'scripts').glob('angle-*-smoke.mm')),
                                       workspace / 'scripts/test-angle-backend.sh',
                                       *sorted((workspace / 'runtime/include').glob('PearANGLE*.h')),
-                                      *sorted((workspace / 'runtime/modules/graphics-gl').glob('ANGLE*.mm'))]},
+                                      *sorted((workspace / 'runtime/include').glob('PearEAGL*.h')),
+                                      *sorted((workspace / 'runtime/modules/graphics-gl').glob('ANGLE*.mm')),
+                                      workspace / 'runtime/modules/graphics-gl/EAGLContextAdapter.mm']},
     'artifacts': {name: hashlib.sha256((out / name).read_bytes()).hexdigest()
                   for name in ['libEGL.dylib', 'libGLESv2.dylib']},
     'validated': ['Catalyst Metal pbuffer readback', 'loader lifecycle',
                   'context sharing, resize, ownership, thread-exit cleanup',
                   'GLES2/3 framebuffer copy and GL state preservation',
                   'GLES2/3 GLSL compile/link and Metal triangle readback',
-                  'detached native layers: readback/swap, scale rebind, host coordinates'],
+                  'detached native layers: readback/swap, scale rebind, host coordinates',
+                  'GLES2/3 renderbuffer storage/presentation, input-thread geometry generations',
+                  'original EAGL selectors, sharegroups, drawable properties and TLS release'],
     'gameRoutingValidated': False,
 }
 (out / 'pearruntime-build.json').write_text(json.dumps(manifest, indent=2) + '\n')

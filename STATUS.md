@@ -1,6 +1,6 @@
 # PearSilicon — Çalışma Durumu
 
-> Güncel çalışma — 2026-11-13: `codex/angle-metal-bridge`. ANGLE kaynak derlemesi, context/pbuffer ve native katman sunum testleri geçti; oyun EAGL yönlendirmesi henüz etkin değil. Güncel ayrıntılar belgenin sonundaki ANGLE kayıtlarında ve `docs/ANGLE_INTEGRATION.md` içinde. Önceki sürüm bölümleri tarihsel kayıttır.
+> Güncel çalışma — 2026-11-13: `codex/angle-metal-bridge`. ANGLE kaynak derlemesi, context/native katman, RGBA8 renderbuffer ve EAGL selector adaptörü testleri geçti; oyun GL/EAGL yönlendirmesi henüz etkin değil. Güncel ayrıntılar belgenin sonundaki ANGLE kayıtlarında ve `docs/ANGLE_INTEGRATION.md` içinde. Önceki sürüm bölümleri tarihsel kayıttır.
 
 ## 0.8.3 (28) — 2026-11-11
 
@@ -850,3 +850,11 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - Kendi test sürecinde, görünür pencere/odak/otomatik giriş olmadan gerçek GPU clear/readback/swap; 1×/2×/1,5× yeniden bağlama; eski geometriyi reddetme; aynı host'u ikinci context'e bağlamayı reddedip eski pbuffer'ı koruma ve detach temizliği geçti. GLES2/3 shader, GL durumunu koruma, paylaşım ve 16 thread-exit testi de geçti. Tam PearRuntime Catalyst derlemesi başarılı.
 - Kaynak/ikili manifestine test ve köprü kaynaklarının hash'leri eklendi; yeni derleme eski başarı manifestini geçersiz kılıyor.
 - Test kaydı: `/tmp/pear-angle-native-final-validation.log`; runtime derlemesi: `/tmp/pear-angle-native-runtime-build.log`. Minecraft/oyun EAGL yönlendirmesi, tam ekran/input transaction, GLES1 sunumu ve dağıtım/lisans paketlemesi tamamlanmış sayılmaz. Kurulu oyunlar yeni ANGLE çekirdeğine geçirilmedi; release/tag yok.
+
+### ANGLE renderbuffer / EAGL selector adaptörü — 2026-11-13
+
+- Özgün `PearEAGLContext`/`PearEAGLSharegroup`, public context/sharegroup/current-context, drawable tahsisi ve anlık sunum selector'larını ANGLE çekirdeğine bağlıyor. Sistem EAGL sınıfıyla aynı ad altında kaydedilmiyor; oyun yönlendirmesi henüz yok. Apple public sabit değerleri ayrı, salt okunur export probuyla doğrulandı; Apple uygulama kodu eklenmedi.
+- `ANGLEDrawable.mm`, bound renderbuffer'ı gerçek EGL piksel boyutunda RGBA8/single-sample tahsis ediyor; saklanan özel FBO üzerinden sunuyor. Sunum sonrasında oyun renderbuffer'ını özel FBO'dan ayırıyor. Retained backing kaynak piksel içeriğini koruyor; nil drawable storage'ı bırakıyor. RGB565/sRGB, MSAA, zamanlanmış sunum ve GLES1 sunumu henüz uygulanmadı.
+- Başarılı tahsis bounds/piksel/scale/generation geometrisini birlikte yayımlıyor. GL context'i olmayan input thread'inden okuma/eşleme doğrulandı. Resize sonrası eski nesil ve değişmiş katman reddediliyor; bu API henüz UIKit olaylarına bağlanmış değil. Import sarmalayıcıları GL silme/aynı isimle yeniden oluşturmayı ayrıca takip etmeli.
+- Gerçek GLES2/3 testleri: tahsis/sunum, retained mavi piksel okuma, ayrı read/draw FBO ve viewport/scissor/renderbuffer durumunu koruma, engine GL hatasını tüketmeme, resize nesli, input thread'inden koordinat dönüşümü geçti. Selector testi RGBA8 pembe/magenta piksel okuma, sharegroup sürüm kontrolü, thread sahipliği ve 8 örtük çıkışta wrapper serbest bırakmayı geçti. Önceki context/shader/native surface testleri de geçti.
+- Kayıtlar: `/tmp/pear-angle-eagl-final-validation.log`, `/tmp/pear-angle-eagl-final-build.log`. Kurulu oyunlar ve kayıtlar değiştirilmedi; Minecraft/oyun tam ekran dokunması için çözüm iddiası yok. Sonraki gerekli bağlantı: linked GL importları + dinamik fonksiyon/sınıf aramalarının birlikte yönlendirilmesi, oyun resize/input işlemi, paketleme ve canlı oyun doğrulaması.

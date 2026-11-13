@@ -30,3 +30,14 @@ xcrun clang++ "${common[@]}" "$root/scripts/angle-surface-smoke.mm" \
   "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
   "$root/runtime/modules/graphics-gl/ANGLEContext.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/surfaces"
 "$angle_smoke_root/surfaces" "$angle_dir"
+xcrun clang++ "${common[@]}" "$root/scripts/angle-drawable-smoke.mm" \
+  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
+  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" \
+  "$root/runtime/modules/graphics-gl/ANGLEDrawable.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/drawables"
+"$angle_smoke_root/drawables" "$angle_dir"
+xcrun clang++ "${common[@]}" "$root/scripts/angle-eagl-smoke.mm" \
+  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
+  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" \
+  "$root/runtime/modules/graphics-gl/ANGLEDrawable.mm" \
+  "$root/runtime/modules/graphics-gl/EAGLContextAdapter.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/eagl"
+"$angle_smoke_root/eagl" "$angle_dir"
