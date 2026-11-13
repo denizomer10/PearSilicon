@@ -20,14 +20,18 @@
   backend selection. Neither test creates a window or generates input.
 
 The first probe used existing staged binaries. The current suite defaults to
-the **source-built fork** in `runtime/third_party/angle/out/PearMetal`.
-Run `bash scripts/build-angle-metal.sh --sync` to provision/build/test it,
-or omit `--sync` once dependencies are present. It uses DEPS-pinned Chromium
-Clang, the local Xcode SDK, Metal only and four compile jobs by default.
-`pearruntime-build.json` records the revision, tracked source diff, GN args
-and dylib/test-source hashes after tests pass. A new build invalidates any old
-success manifest before compilation. These binaries are not yet bundled for
-64-bit games. Final redistribution requires dependency license notices.
+the **source-built fork compiled for Mac Catalyst** in
+`runtime/third_party/angle/out/PearCatalyst` (`arm64-apple-ios15.0-macabi`,
+GN args `scripts/angle-catalyst-args.gn`). Run
+`bash scripts/build-angle-metal.sh --sync` to provision/build/test it, or omit
+`--sync` once dependencies are present; `PEAR_ANGLE_TARGET=macos` builds the
+macOS variant into `out/PearMetal` instead. It uses DEPS-pinned Chromium Clang,
+the local Xcode SDK, Metal only and four compile jobs by default.
+`pearruntime-build.json` records the revision, tracked source diff, GN args,
+platform and dylib/test-source hashes after tests pass. A new build invalidates
+any old success manifest before compilation. `runtime/build.sh` stages the
+Catalyst dylibs and ANGLE's license into `build/PearANGLE`, and refuses to
+continue without them.
 
 ## Context and presentation milestone
 

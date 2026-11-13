@@ -49,6 +49,11 @@ plist() { /usr/bin/plutil -extract "$1" raw "$APP/Contents/Info.plist"; }
 [[ "$(plist CFBundleVersion)" == "$BUILD" ]] || fail "built app build number mismatch"
 [[ -f "$APP/Contents/Resources/PearLegacyEngine/touchHLE_dylibs/angle/libEGL.dylib" ]] \
   || fail "PearLegacyEngine is bundled without ANGLE; 32-bit games would not start"
+for component in libPearOpenGLES.dylib PearANGLE/libEGL.dylib PearANGLE/libGLESv2.dylib; do
+  [[ -f "$APP/Contents/Resources/$component" ]] || fail "$component is missing; iOS OpenGL ES games could not be prepared"
+  /usr/bin/vtool -show-build "$APP/Contents/Resources/$component" | grep -q "platform MACCATALYST" \
+    || fail "$component is not a Mac Catalyst binary"
+done
 /usr/bin/codesign --verify --deep --strict "$APP"
 SHA="$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] || fail "the build changed tracked files"

@@ -60,6 +60,18 @@ fi
 if [[ -d "$BUILD_DIR/MarketplaceKit.framework" ]]; then
   cp -R "$BUILD_DIR/MarketplaceKit.framework" "$OUT/Contents/Resources/"
 fi
+# OpenGL ES runs only on ANGLE: the installer copies the GLES/EAGL bridge and
+# the Catalyst ANGLE dylibs into every compatibility app and refuses to
+# prepare one without them. Never fall back to another copy's resources.
+for component in libPearOpenGLES.dylib PearANGLE/libEGL.dylib PearANGLE/libGLESv2.dylib; do
+  if [[ ! -f "$BUILD_DIR/$component" ]]; then
+    echo "ERROR: $BUILD_DIR/$component is missing (runtime/build.sh stages it)." >&2
+    exit 1
+  fi
+done
+cp "$BUILD_DIR/libPearOpenGLES.dylib" "$OUT/Contents/Resources/"
+rm -rf "$OUT/Contents/Resources/PearANGLE"
+cp -R "$BUILD_DIR/PearANGLE" "$OUT/Contents/Resources/PearANGLE"
 
 # --- 3a-legacy) Bundle PearLegacyEngine (32-bit iOS runtime) --------------
 if [[ -n "${PEAR_LEGACY_ENGINE_REPO:-}" ]]; then

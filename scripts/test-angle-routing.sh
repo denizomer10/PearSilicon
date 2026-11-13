@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-angle_dir="${1:-$root/runtime/third_party/angle/out/PearMetal}"
+angle_dir="${1:-$root/runtime/third_party/angle/out/PearCatalyst}"
 angle_dir="$(cd "$angle_dir" && pwd)"
 probe="$(mktemp -d "${TMPDIR:-/tmp}/pear-angle-routing.XXXXXX")"
 if [[ "${PEAR_KEEP_ROUTING_PROBE:-0}" == 1 ]]; then

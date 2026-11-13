@@ -398,8 +398,13 @@ final class PackageInstaller: @unchecked Sendable {
         // A rebase must leave every compatibility load path pointing at the
         // staged bundle's own Frameworks directory. Without this check a stale
         // absolute path could still resolve on the old disk and hide the fault.
+        // An app prepared with the ANGLE bridge must keep a complete one; an
+        // older app keeps its layout until its next runtime refresh.
+        let hasANGLEBridge = try itemExists(
+            at: stagedBundleURL.appendingPathComponent("Frameworks/libPearOpenGLES.dylib")
+        )
         try validatePreparationMode(
-            at: stagedBundleURL, mode: mode, targetBundleURL: targetBundleURL
+            at: stagedBundleURL, mode: mode, targetBundleURL: targetBundleURL, requireANGLE: hasANGLEBridge
         )
         guard !loadPaths(at: stagedBundleURL).contains(where: { $0.hasPrefix(oldRoot + "/") }) else {
             throw PearError.invalidPackage(
@@ -787,8 +792,12 @@ final class PackageInstaller: @unchecked Sendable {
         }
     }
 
+    /// `requireANGLE` is false only for relocation: a move must not update the
+    /// runtime, so an app installed before the ANGLE bridge keeps its layout
+    /// and adopts ANGLE on its next runtime refresh (the new components
+    /// change the runtime fingerprint, so that refresh always happens).
     private func preparationModeIsValid(
-        at bundleURL: URL, mode: PreparationMode, targetBundleURL: URL
+        at bundleURL: URL, mode: PreparationMode, targetBundleURL: URL, requireANGLE: Bool = true
     ) throws -> Bool {
         let app = try makeInstalledApp(fromBundleAt: bundleURL)
         let slices = try preparationLoadPaths(at: app.executableURL)
@@ -812,7 +821,7 @@ final class PackageInstaller: @unchecked Sendable {
                   try artifacts.allSatisfy({ try !itemExists(at: frameworks.appendingPathComponent($0)) })
             else { return false }
         }
-        if mode != .nativeContainer {
+        if mode != .nativeContainer && requireANGLE {
             for name in ["libPearOpenGLES.dylib", "PearANGLE/libEGL.dylib", "PearANGLE/libGLESv2.dylib"] {
                 guard regularFile(frameworks.appendingPathComponent(name)) else { return false }
             }
@@ -845,9 +854,11 @@ final class PackageInstaller: @unchecked Sendable {
     }
 
     private func validatePreparationMode(
-        at bundleURL: URL, mode: PreparationMode, targetBundleURL: URL
+        at bundleURL: URL, mode: PreparationMode, targetBundleURL: URL, requireANGLE: Bool = true
     ) throws {
-        guard try preparationModeIsValid(at: bundleURL, mode: mode, targetBundleURL: targetBundleURL) else {
+        guard try preparationModeIsValid(
+            at: bundleURL, mode: mode, targetBundleURL: targetBundleURL, requireANGLE: requireANGLE
+        ) else {
             throw PearError.invalidPackage("Preparation invariants failed for \(mode.rawValue)")
         }
     }

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-angle_dir="${1:-$root/runtime/third_party/angle/out/PearMetal}"
+angle_dir="${1:-$root/runtime/third_party/angle/out/PearCatalyst}"
 if [[ ! -f "$angle_dir/libEGL.dylib" ]]; then
   echo 'Build the fork with scripts/build-angle-metal.sh --sync, or pass an ANGLE library directory.' >&2
   exit 2

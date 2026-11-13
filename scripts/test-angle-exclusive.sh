@@ -2,7 +2,7 @@
 # A real linked GLES client with no system OpenGLES dependency, no visible UI.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-angle_dir="${1:-$root/runtime/third_party/angle/out/PearMetal}"
+angle_dir="${1:-$root/runtime/third_party/angle/out/PearCatalyst}"
 angle_dir="$(cd "$angle_dir" && pwd)"
 probe="$(mktemp -d "${TMPDIR:-/tmp}/pear-angle-exclusive.XXXXXX")"
 trap 'rm -rf "$probe"' EXIT
@@ -29,3 +29,18 @@ xcrun clang++ "${common[@]}" -DPEAR_EXCLUSIVE_PROBE "$root/scripts/angle-routing
 # No injection: the client loads the runtime through its bridge dependency.
 PEAR_GRAPHICS_BACKEND=angle PEAR_ANGLE_LIB_DIR="$angle_dir" "$app/Contents/MacOS/ExclusiveProbe"
 /usr/bin/env -u PEAR_GRAPHICS_BACKEND PEAR_ANGLE_LIB_DIR="$angle_dir" "$app/Contents/MacOS/ExclusiveProbe"
+
+# Run-time-only GL: the client links the runtime but not the bridge, and
+# dlopens the system OpenGLES path. ANGLE comes from Frameworks/PearANGLE.
+dynamic="$probe/DynamicProbe.app"
+mkdir -p "$dynamic/Contents/MacOS"
+cp -R "$app/Contents/Frameworks" "$dynamic/Contents/Frameworks"
+mkdir -p "$dynamic/Contents/Frameworks/PearANGLE"
+cp "$angle_dir/libEGL.dylib" "$angle_dir/libGLESv2.dylib" "$dynamic/Contents/Frameworks/PearANGLE/"
+xcrun clang++ "${common[@]}" "$root/scripts/angle-dynamic-smoke.mm" \
+  -L"$dynamic/Contents/Frameworks" -lPearRuntime -framework Foundation \
+  -Wl,-rpath,@executable_path/../Frameworks -o "$dynamic/Contents/MacOS/DynamicProbe"
+if otool -L "$dynamic/Contents/MacOS/DynamicProbe" | grep -qE "OpenGLES|libPearOpenGLES"; then
+  echo "FAIL: dynamic probe must not link OpenGL ES" >&2; exit 1
+fi
+/usr/bin/env -u PEAR_GRAPHICS_BACKEND -u PEAR_ANGLE_LIB_DIR "$dynamic/Contents/MacOS/DynamicProbe"
