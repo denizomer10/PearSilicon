@@ -27,9 +27,11 @@ fail() { echo "error: $*" >&2; exit 1; }
   || fail "uncommitted changes; commit them first (the app embeds HEAD)"
 git fetch -q origin
 HEAD_COMMIT="$(git rev-parse HEAD)"
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-[[ "$(git rev-parse "origin/$BRANCH" 2>/dev/null)" == "$HEAD_COMMIT" ]] \
-  || fail "HEAD $HEAD_COMMIT is not pushed to origin/$BRANCH"
+# The branch's upstream (a work branch may track origin/main), else origin/<branch>.
+UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null \
+  || echo "origin/$(git rev-parse --abbrev-ref HEAD)")"
+[[ "$(git rev-parse "$UPSTREAM" 2>/dev/null)" == "$HEAD_COMMIT" ]] \
+  || fail "HEAD $HEAD_COMMIT is not pushed to $UPSTREAM"
 if gh release view "$TAG" >/dev/null 2>&1 || git ls-remote --exit-code origin "refs/tags/$TAG" >/dev/null 2>&1; then
   fail "$TAG already exists; bump APP_VERSION/APP_BUILD in scripts/build-app.sh"
 fi
