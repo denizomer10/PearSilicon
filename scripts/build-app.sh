@@ -133,9 +133,43 @@ if [[ -n "$LEGACY_BIN" ]]; then
     echo "WARNING: ANGLE is not staged in $LEGACY_STAGE/touchHLE_dylibs/angle" >&2
     echo "         run scripts/setup-legacy-engine.sh, or set PEAR_ANGLE_LIB_DIR at runtime" >&2
   fi
+  # The engine binary is GPL-3.0-or-later; its license, notices and source
+  # pointer are staged by scripts/setup-legacy-engine.sh. Stage them here when
+  # the engine came from somewhere else.
+  if [[ ! -f "$LEGACY_STAGE/SOURCE.txt" || "$LEGACY_FROM_STAGE" == 0 ]]; then
+    LEGACY_SRC_REPO="${PEAR_LEGACY_ENGINE_HOME:-}"
+    for candidate in "$LEGACY_REPO" "$ROOT/../PearLegacyEngine"; do
+      [[ -z "$LEGACY_SRC_REPO" && -f "$candidate/LICENSE" ]] && LEGACY_SRC_REPO="$candidate"
+    done
+    "$ROOT/scripts/stage-legacy-licenses.sh" "$LEGACY_STAGE" "${LEGACY_SRC_REPO:?no PearLegacyEngine checkout found for the engine license files}" \
+      "${PEAR_DYNARMIC_ROOT:-$ROOT/../PearLegacyJIT}"
+  fi
   rm -rf "$OUT/Contents/Resources/PearLegacyEngine"
   cp -R "$LEGACY_STAGE" "$OUT/Contents/Resources/PearLegacyEngine"
 fi
+
+# --- 3a-licenses) License texts, notices and source pointers -------------
+# The ZIP holds only the app, so everything the redistributed components
+# require travels inside it. scripts/verify-licenses.sh fails the build when
+# something is missing.
+LICENSES="$OUT/Contents/Resources/Licenses"
+mkdir -p "$LICENSES"
+cp "$ROOT/LICENSE" "$LICENSES/LICENSE.PearSilicon"
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$LICENSES/THIRD_PARTY_NOTICES.md"
+cp "$ROOT/runtime/LICENSE" "$LICENSES/LICENSE.PearRuntime"
+cp "$ROOT/Vendor/PearDebug/LICENSE" "$LICENSES/LICENSE.PearDebug"
+sub_commit() { git -C "$ROOT/$1" rev-parse HEAD 2>/dev/null || echo unknown; }
+cat > "$LICENSES/SOURCE.txt" <<SOURCE
+PearSilicon $APP_VERSION (build $APP_BUILD) was built from these public sources:
+
+  PearSilicon   https://github.com/denizomer10/PearSilicon/tree/$COMMIT
+  PearRuntime   https://github.com/denizomer10/PearRuntime/tree/$(sub_commit runtime)
+  PearDebug     https://github.com/denizomer10/PearDebug/tree/$(sub_commit Vendor/PearDebug)
+  PearANGLE     https://github.com/denizomer10/PearANGLE/tree/$(sub_commit runtime/third_party/angle)
+
+PearLegacyEngine/SOURCE.txt lists the sources of the 32-bit iOS engine.
+SOURCE
+"$ROOT/scripts/verify-licenses.sh" "$OUT"
 
 # --- 3b) App icon from the repo logo -------------------------------------
 ICON_KEY=""

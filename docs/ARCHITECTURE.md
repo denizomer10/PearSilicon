@@ -118,7 +118,7 @@ this tree:
 
 | Component | Repository | Pin | License |
 | --- | --- | --- | --- |
-| PearLegacyEngine | `denizomer10/PearLegacyEngine` (`trunk`) | `84e3f1bd` (v0.7.2) | MPL-2.0, derived from touchHLE |
+| PearLegacyEngine | `denizomer10/PearLegacyEngine` (`trunk`) | `1a1c8a0f` (v0.7.2-9) | source MPL-2.0, binary GPL-3.0-or-later; derived from touchHLE |
 | PearLegacyJIT | `denizomer10/PearLegacyJIT` (`master`) | `1fc35bfd` | 0BSD, derived from Dynarmic |
 
 `scripts/setup-legacy-engine.sh` resolves both checkouts
@@ -130,10 +130,15 @@ the Metal-backed ANGLE runtime in `touchHLE_dylibs/angle`), `touchHLE_fonts` and
 building; `--no-build` only re-stages. `scripts/build-app.sh` then copies that
 directory into `PearSilicon.app/Contents/Resources/PearLegacyEngine`.
 
-The engine is launched as a separate process and is not linked into
-PearSilicon, so MPL-2.0 applies to the engine's own files only. See
-[THIRD_PARTY_NOTICES](../THIRD_PARTY_NOTICES.md) for the redistribution terms and
-the guest-content policy.
+The staged tree also gets the engine's license files
+(`scripts/stage-legacy-licenses.sh`): the engine's source files are MPL-2.0,
+but the binary statically links OpenAL Soft (LGPL) and is distributed under
+GPL-3.0-or-later, so `COPYING`, `NOTICES.txt` (the binary's `--copyright`
+output) and `SOURCE.txt` (the exact commits of the Corresponding Source) ship
+with it. The engine is launched as a separate process and is not linked into
+PearSilicon, so the GPL does not extend to the app. See
+[THIRD_PARTY_NOTICES](../THIRD_PARTY_NOTICES.md) for every component and the
+guest-content policy.
 
 ## Mac Catalyst execution path
 

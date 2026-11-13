@@ -145,4 +145,6 @@ for lib in libEGL.dylib libGLESv2.dylib; do
     fi
 done
 
+"$repo_root/scripts/stage-legacy-licenses.sh" "$stage" "$engine_home" "$jit_home"
+
 echo ">> Ready: $stage/touchHLE ($engine_rev, JIT $jit_rev)"

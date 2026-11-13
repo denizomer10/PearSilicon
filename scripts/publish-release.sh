@@ -55,6 +55,9 @@ for component in libPearOpenGLES.dylib PearANGLE/libEGL.dylib PearANGLE/libGLESv
     || fail "$component is not a Mac Catalyst binary"
 done
 /usr/bin/codesign --verify --deep --strict "$APP"
+# Every license text and notice is in the archive, and every commit the
+# source pointers name (engine, JIT, ANGLE fork, runtime) is on GitHub.
+scripts/verify-licenses.sh --remote "$ZIP"
 SHA="$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] || fail "the build changed tracked files"
 
@@ -78,6 +81,7 @@ for tag in "$TAG" "$TAG-beta"; do
   ditto -x -k "$CHECK/$tag/PearSilicon.zip" "$CHECK/$tag/x"
   embedded="$(/usr/bin/plutil -extract PearBuildCommit raw "$CHECK/$tag/x/PearSilicon.app/Contents/Info.plist")"
   [[ "$embedded" == "$tag_commit" ]] || fail "$tag: downloaded app embeds $embedded, tag is $tag_commit"
+  scripts/verify-licenses.sh "$CHECK/$tag/PearSilicon.zip" || fail "$tag: downloaded archive lacks license notices"
   echo ">> $tag OK: commit $tag_commit, sha256 $SHA"
 done
 echo ">> Published $TAG and $TAG-beta"
