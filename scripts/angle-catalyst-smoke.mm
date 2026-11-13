@@ -51,6 +51,23 @@ int main(int argc, char **argv) {
     bool valid = abs(int(pixel[0]) - 64) <= 1 && abs(int(pixel[1]) - 128) <= 1 &&
                  abs(int(pixel[2]) - 191) <= 1 && pixel[3] == 255 && renderer && strstr(renderer, "Metal");
     printf("EGL %d.%d renderer=%s readback=%u,%u,%u,%u %s\n", major, minor, renderer ?: "nil", pixel[0], pixel[1], pixel[2], pixel[3], valid ? "PASS" : "FAIL");
+    // iOS games ship PVRTC and only upload compressed textures when the extension is
+    // advertised (GTA: LCS drew every surface with its 1x1 fallback texture without it).
+    auto genTextures = (void (*)(GLsizei, GLuint *))getProc("glGenTextures");
+    auto bindTexture = (void (*)(GLenum, GLuint))getProc("glBindTexture");
+    auto compressed = (void (*)(GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void *))getProc("glCompressedTexImage2D");
+    auto getError = (GLenum (*)())getProc("glGetError");
+    if (!genTextures || !bindTexture || !compressed || !getError) return 7;
+    const char *extensions = (const char *)string(GL_EXTENSIONS);
+    bool pvrtcAdvertised = extensions && strstr(extensions, "GL_IMG_texture_compression_pvrtc");
+    GLuint texture = 0; genTextures(1, &texture); bindTexture(GL_TEXTURE_2D, texture);
+    static const unsigned char blocks[32] = {}; // 8x8 PVRTC 4bpp: four 8-byte blocks
+    while (getError() != GL_NO_ERROR) {}
+    compressed(GL_TEXTURE_2D, 0, 0x8C02 /* GL_COMPRESSED_RGBA_PVRTC_4BPPV1_IMG */, 8, 8, 0, sizeof(blocks), blocks);
+    GLenum pvrtcError = getError();
+    bool pvrtc = pvrtcAdvertised && pvrtcError == GL_NO_ERROR;
+    printf("PVRTC advertised=%d upload=0x%x %s\n", pvrtcAdvertised, pvrtcError, pvrtc ? "PASS" : "FAIL");
+    valid = valid && pvrtc;
     eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroyContext(display, context); eglDestroySurface(display, surface); eglTerminate(display);
     dlclose(library);

@@ -18,9 +18,10 @@ xcrun clang++ "${common[@]}" -dynamiclib \
   "$root/runtime/modules/graphics-gl/ANGLEContext.mm" \
   "$root/runtime/modules/graphics-gl/ANGLEDrawable.mm" \
   "$root/runtime/modules/graphics-gl/EAGLContextAdapter.mm" \
+  "$root/runtime/modules/graphics-gl/GLKitAdapter.mm" \
   "$root/runtime/modules/graphics-gl/ANGLEGameRouting.mm" \
   "$root/runtime/modules/core/ModuleRegistry.mm" \
-  -framework Foundation -framework QuartzCore -framework CoreGraphics "${PEAR_EAGL_ALIAS_FLAGS[@]}" \
+  -framework Foundation -framework QuartzCore -framework CoreGraphics -framework UIKit "${PEAR_EAGL_ALIAS_FLAGS[@]}" \
   -Wl,-install_name,@rpath/libPearRuntime.dylib -o "$app/Contents/Frameworks/libPearRuntime.dylib"
 bash "$root/runtime/build-angle-bridge.sh" "$app/Contents/Frameworks/libPearRuntime.dylib"
 xcrun clang++ "${common[@]}" -DPEAR_EXCLUSIVE_PROBE "$root/scripts/angle-routing-smoke.mm" \
