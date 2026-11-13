@@ -67,12 +67,44 @@ int main(int argc, char **argv) {
         assert([second presentRenderbuffer:GL_RENDERBUFFER] && !second.lastError);
         dispatch_semaphore_t checked = dispatch_semaphore_create(0);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            assert(![PearEAGLContext setCurrentContext:second]);
-            assert(PearEAGLContext.currentContext == nil);
+            assert([PearEAGLContext setCurrentContext:second]);
+            assert(PearEAGLContext.currentContext == second && PearANGLEContext.currentContext == second.angleContext);
+            // Real shared GL state, not a logical wrapper over EGL_NO_CONTEXT.
+            GLint bound = 0;
+            auto get = (void (*)(GLenum, GLint *))PearANGLEGetProcAddress("glGetIntegerv");
+            get(GL_RENDERBUFFER_BINDING, &bound);
+            assert((GLuint)bound == rb);
+            clearColor(0, 1, 1, 1); clear(GL_COLOR_BUFFER_BIT);
+            assert(glError() == GL_NO_ERROR);
+            assert([PearEAGLContext setCurrentContext:nil]);
             dispatch_semaphore_signal(checked);
         });
         assert(dispatch_semaphore_wait(checked, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0);
         assert(PearEAGLContext.currentContext == second);
+        unsigned char sharedRGBA[4] = {};
+        read(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sharedRGBA);
+        assert(sharedRGBA[0] == 0 && sharedRGBA[1] == 255 && sharedRGBA[2] == 255 && sharedRGBA[3] == 255);
+        assert(glError() == GL_NO_ERROR);
+        assert([second presentRenderbuffer:GL_RENDERBUFFER]);
+        // Two simultaneous peer bindings must allocate unique real GL names;
+        // releasing either peer must not unmake the main thread's context.
+        dispatch_group_t peers = dispatch_group_create();
+        NSMutableSet<NSNumber *> *names = [NSMutableSet set];
+        for (int peer = 0; peer < 2; ++peer) {
+            dispatch_group_async(peers, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                assert([PearEAGLContext setCurrentContext:second]);
+                for (int iteration = 0; iteration < 256; ++iteration) {
+                    GLuint name = 0; gen(1, &name); assert(name);
+                    @synchronized(names) { assert(![names containsObject:@(name)]); [names addObject:@(name)]; }
+                }
+                assert(glError() == GL_NO_ERROR);
+                assert([PearEAGLContext setCurrentContext:nil]);
+            });
+        }
+        assert(dispatch_group_wait(peers, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0);
+        assert(names.count == 512);
+        assert(PearANGLEContext.currentContext == second.angleContext);
+        assert([second presentRenderbuffer:GL_RENDERBUFFER]);
         assert([second renderbufferStorage:GL_RENDERBUFFER fromDrawable:nil]);
         assert(![second presentRenderbuffer:GL_RENDERBUFFER]);
         assert([PearEAGLContext setCurrentContext:nil]);

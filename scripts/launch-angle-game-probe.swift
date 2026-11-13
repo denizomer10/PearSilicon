@@ -55,6 +55,30 @@ if legacy {
 }
 environment["PEAR_ALLOW_POINTER_LOCK"] = index == 1 ? "1" : "0"
 environment["PEAR_DEBUG_POINTER"] = "1"
+if CommandLine.arguments.contains("--disable-device") { environment["PEAR_RUNTIME_DISABLE"] = "device" }
+if CommandLine.arguments.contains("--no-fit") {
+    environment["PEAR_NO_GL_FIT"] = "1"
+    environment["PEAR_NO_GL_VIEWPORT_FIT"] = "1"
+}
+if CommandLine.arguments.contains("--legacy-identity") {
+    environment["PEAR_DEVICE_MODEL"] = "iPhone6,1"
+}
+if CommandLine.arguments.contains("--wait-for-debugger") {
+    let gate = app.appendingPathComponent("Frameworks/libPearProbeWait.dylib")
+    guard FileManager.default.fileExists(atPath: gate.path) else { fatalError("Missing probe-only debugger gate") }
+    environment["DYLD_INSERT_LIBRARIES"] = gate.path + ":" + environment["DYLD_INSERT_LIBRARIES"]!
+    environment["PEAR_NO_SIGNAL_LOG"] = "1"
+}
+if CommandLine.arguments.contains("--trace-paths") {
+    environment["PEAR_DEBUG_PATHS"] = "1"
+    environment["PEAR_DEBUG_ALL_PATHS"] = "1"
+    environment["PEAR_FS_LOG_FILE"] = manifest.deletingLastPathComponent().appendingPathComponent("\(index)-files.log").path
+}
+if CommandLine.arguments.contains("--native-window") {
+    for key in ["PEAR_LEGACY_ATTACH_LAYER", "PEAR_LEGACY_WINDOW_LAYER_ONLY", "PEAR_DIRECT_LEGACY_TOUCH"] {
+        environment.removeValue(forKey: key)
+    }
+}
 config.environment = environment
 var finished = false
 NSWorkspace.shared.openApplication(at: app, configuration: config) { running, error in
