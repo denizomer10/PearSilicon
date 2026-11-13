@@ -49,7 +49,9 @@ int main(int argc, char **argv) {
         gen(1, &rb); bind(GL_RENDERBUFFER, rb);
         PearTestDrawable *drawable = [PearTestDrawable layer];
         drawable.bounds = CGRectMake(0, 0, 24, 16); drawable.contentsScale = 2;
-        drawable.drawableProperties = @{@"EAGLDrawablePropertyColorFormat": @"EAGLColorFormat565"};
+        // sRGB drawables are not implemented and must be refused, not faked.
+        // (RGB565 is supported; the exclusive bridge probe covers it.)
+        drawable.drawableProperties = @{@"EAGLDrawablePropertyColorFormat": @"EAGLColorFormatS8888"};
         assert(![second renderbufferStorage:GL_RENDERBUFFER fromDrawable:drawable] && second.lastError);
         drawable.drawableProperties = @{@"EAGLDrawablePropertyColorFormat": @"EAGLColorFormat8888", @"EAGLDrawablePropertyRetained": @YES};
         assert([second renderbufferStorage:GL_RENDERBUFFER fromDrawable:drawable] && !second.lastError);

@@ -30,6 +30,16 @@ xcrun clang++ "${common[@]}" -DPEAR_EXCLUSIVE_PROBE "$root/scripts/angle-routing
 # No injection: the client loads the runtime through its bridge dependency.
 PEAR_GRAPHICS_BACKEND=angle PEAR_ANGLE_LIB_DIR="$angle_dir" "$app/Contents/MacOS/ExclusiveProbe"
 /usr/bin/env -u PEAR_GRAPHICS_BACKEND PEAR_ANGLE_LIB_DIR="$angle_dir" "$app/Contents/MacOS/ExclusiveProbe"
+# Chained fixups (the default for current linkers, e.g. Angry Birds
+# Transformers): import routing reads the chains from the file on disk.
+chained=()
+for flag in "${common[@]}"; do [[ "$flag" == -Wl,-no_fixup_chains ]] || chained+=("$flag"); done
+xcrun clang++ "${chained[@]}" -Wl,-fixup_chains -DPEAR_EXCLUSIVE_PROBE "$root/scripts/angle-routing-smoke.mm" \
+  -L"$app/Contents/Frameworks" -lPearOpenGLES -framework Foundation -framework QuartzCore \
+  -Wl,-rpath,@executable_path/../Frameworks -o "$app/Contents/MacOS/ChainedProbe"
+otool -l "$app/Contents/MacOS/ChainedProbe" | grep -q LC_DYLD_CHAINED_FIXUPS \
+  || { echo "FAIL: chained probe was linked without chained fixups" >&2; exit 1; }
+/usr/bin/env -u PEAR_GRAPHICS_BACKEND PEAR_ANGLE_LIB_DIR="$angle_dir" "$app/Contents/MacOS/ChainedProbe" | sed 's/^PASS:/PASS (chained fixups):/'
 
 # Run-time-only GL: the client links the runtime but not the bridge, and
 # dlopens the system OpenGLES path. ANGLE comes from Frameworks/PearANGLE.

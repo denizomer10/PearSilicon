@@ -15,6 +15,16 @@
 - (BOOL)presentRenderbuffer:(NSUInteger)target;
 @end
 extern "C" void *EAGLGetProcAddress(const char *);
+#ifdef PEAR_EXCLUSIVE_PROBE
+// iOS-only GL_APPLE_framebuffer_multisample, implemented on ANGLE by the runtime.
+extern "C" void glRenderbufferStorageMultisampleAPPLE(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+extern "C" void glResolveMultisampleFramebufferAPPLE(void);
+@interface PearRGB565Layer : CALayer
+@property(nonatomic, copy) NSDictionary *drawableProperties;
+@end
+@implementation PearRGB565Layer
+@end
+#endif
 int main(int argc, char **argv) { @autoreleasepool {
     if (argc == 2) {
         assert(!strcmp(argv[1], "--native"));
@@ -68,6 +78,39 @@ int main(int argc, char **argv) { @autoreleasepool {
     glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     assert(rgba[0] == 255 && rgba[1] == 255 && rgba[2] == 0 && glGetError() == GL_NO_ERROR);
     assert([context presentRenderbuffer:GL_RENDERBUFFER]);
+#ifdef PEAR_EXCLUSIVE_PROBE
+    // Games see an iPhone's compression extensions: PVRTC, no desktop DXT/S3TC
+    // (GTA III otherwise loads a DXT pack the iOS bundle does not ship).
+    const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+    assert(extensions && strstr(extensions, "GL_IMG_texture_compression_pvrtc"));
+    assert(!strstr(extensions, "texture_compression_dxt") && !strstr(extensions, "texture_compression_s3tc"));
+    // MSAA through the APPLE entry points: render blue, resolve into rb.
+    GLuint msaaRB = 0, msaaFBO = 0;
+    glGenRenderbuffers(1, &msaaRB); glBindRenderbuffer(GL_RENDERBUFFER, msaaRB);
+    glRenderbufferStorageMultisampleAPPLE(GL_RENDERBUFFER, 4, 0x8058 /* GL_RGBA8_OES */, 32, 24);
+    glGenFramebuffers(1, &msaaFBO); glBindFramebuffer(GL_FRAMEBUFFER, msaaFBO);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, msaaRB);
+    assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    glClearColor(0, 0, 1, 1); glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(0x8CA8 /* READ_FRAMEBUFFER_APPLE */, msaaFBO);
+    glBindFramebuffer(0x8CA9 /* DRAW_FRAMEBUFFER_APPLE */, fbo);
+    glResolveMultisampleFramebufferAPPLE();
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    assert(rgba[0] == 0 && rgba[1] == 0 && rgba[2] == 255 && glGetError() == GL_NO_ERROR);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb);
+    // RGB565 drawables (GTA III) get storage and an opaque layer.
+    GLuint rgb565 = 0;
+    glGenRenderbuffers(1, &rgb565); glBindRenderbuffer(GL_RENDERBUFFER, rgb565);
+    PearRGB565Layer *layer565 = [PearRGB565Layer layer];
+    layer565.bounds = CGRectMake(0, 0, 8, 8); layer565.contentsScale = 1;
+    layer565.drawableProperties = @{@"EAGLDrawablePropertyColorFormat": @"EAGLColorFormat565"};
+    assert([context renderbufferStorage:GL_RENDERBUFFER fromDrawable:layer565] && layer565.opaque);
+    glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &width);
+    assert(width == 8);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb);
+    puts("PASS: iPhone extension profile, APPLE multisample resolve, RGB565 drawable");
+#endif
     PearANGLEContext *core = [(id)context angleContext];
     PearANGLEDrawableGeometry geometry;
     assert([core copyDrawableGeometry:&geometry forRenderbuffer:rb]);
