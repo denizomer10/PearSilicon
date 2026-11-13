@@ -530,6 +530,14 @@ final class PackageInstaller: @unchecked Sendable {
             return
         }
         let target = targetBundleURL ?? bundleURL
+        if mode == .nativeContainer {
+            for file in try machOTargets(in: bundleURL) {
+                let paths = try preparationLoadPaths(at: file).flatMap { $0.dependencies.map(\.path) }
+                if paths.contains(where: { Self.isOpenGLESDependency($0) || $0.contains("libPearOpenGLES.dylib") }) {
+                    throw PearError.invalidPackage("OpenGL ES applications require ANGLE compatibility mode; native-container mode has no graphics bridge")
+                }
+            }
+        }
         try patchInfoPlist(at: bundleURL)
         removeLegacySignatureArtifacts(at: bundleURL)
         try installMarketplaceKitStubIfNeeded(at: bundleURL, targetBundleURL: target)
@@ -788,7 +796,7 @@ final class PackageInstaller: @unchecked Sendable {
         let targetFrameworks = targetBundleURL.appendingPathComponent("Frameworks")
         let marker = Self.injectionMarkerURL(in: bundleURL)
         let markerExists = try itemExists(at: marker)
-        let artifacts = ["libPearRuntime.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib"]
+        let artifacts = ["libPearRuntime.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib", "libPearOpenGLES.dylib", "PearANGLE"]
         func regularFile(_ url: URL) -> Bool {
             (try? fileManager.attributesOfItem(atPath: url.path)[.type]) as? FileAttributeType == .typeRegular
         }
@@ -803,6 +811,15 @@ final class PackageInstaller: @unchecked Sendable {
             guard !markerExists,
                   try artifacts.allSatisfy({ try !itemExists(at: frameworks.appendingPathComponent($0)) })
             else { return false }
+        }
+        if mode != .nativeContainer {
+            for name in ["libPearOpenGLES.dylib", "PearANGLE/libEGL.dylib", "PearANGLE/libGLESv2.dylib"] {
+                guard regularFile(frameworks.appendingPathComponent(name)) else { return false }
+            }
+            for file in try machOTargets(in: bundleURL) {
+                let dependencies = try preparationLoadPaths(at: file).flatMap { $0.dependencies.map(\.path) }
+                guard !dependencies.contains(where: Self.isOpenGLESDependency) else { return false }
+            }
         }
 
         return slices.allSatisfy { paths in
@@ -843,7 +860,7 @@ final class PackageInstaller: @unchecked Sendable {
         if try itemExists(at: marker) {
             try fileManager.removeItem(at: marker)
         }
-        for name in ["libPearRuntime.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib"] {
+        for name in ["libPearRuntime.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib", "libPearOpenGLES.dylib", "PearANGLE"] {
             let url = frameworks.appendingPathComponent(name)
             if try itemExists(at: url) {
                 try fileManager.removeItem(at: url)
@@ -889,6 +906,7 @@ final class PackageInstaller: @unchecked Sendable {
         }
         try fileManager.copyItem(at: runtime.resolvingSymlinksInPath(), to: destination)
         try validateBinaryForPreparation(at: destination, in: bundleURL)
+        try installANGLE(at: bundleURL, source: runtime.deletingLastPathComponent(), targetFrameworks: targetFrameworks)
 
         // Normalize old/duplicate paths in load-command mode too. Environment
         // mode only removes these commands; it must never create a runtime load.
@@ -950,6 +968,38 @@ final class PackageInstaller: @unchecked Sendable {
             )
         }
         try BinaryPatcher.addRPath(at: app.executableURL, path: targetFrameworks.path)
+    }
+
+    private static func isOpenGLESDependency(_ path: String) -> Bool {
+        path.contains("/OpenGLES.framework/") || path == "OpenGLES.framework/OpenGLES"
+    }
+
+    /// Every compatibility bundle carries its own Catalyst ANGLE runtime.
+    /// Replace OpenGLES dependency paths in all app images, not OS frameworks.
+    private func installANGLE(at bundle: URL, source: URL, targetFrameworks: URL) throws {
+        let frameworks = bundle.appendingPathComponent("Frameworks", isDirectory: true)
+        for name in ["libPearOpenGLES.dylib", "PearANGLE/libEGL.dylib", "PearANGLE/libGLESv2.dylib"] {
+            let artifact = source.appendingPathComponent(name)
+            guard (try? fileManager.attributesOfItem(atPath: artifact.path)[.type]) as? FileAttributeType == .typeRegular else {
+                throw PearError.missingRuntimeComponent(name)
+            }
+            try validateBinaryForPreparation(at: artifact, in: source)
+        }
+        for name in ["libPearOpenGLES.dylib", "PearANGLE"] {
+            let artifact = source.appendingPathComponent(name)
+            let destination = frameworks.appendingPathComponent(name)
+            if try itemExists(at: destination) { try fileManager.removeItem(at: destination) }
+            try fileManager.copyItem(at: artifact, to: destination)
+        }
+        let replacement = targetFrameworks.appendingPathComponent("libPearOpenGLES.dylib").path
+        for file in try machOTargets(in: bundle) {
+            let dependencies = try preparationLoadPaths(at: file).flatMap { $0.dependencies.map(\.path) }
+            for path in Set(dependencies) where Self.isOpenGLESDependency(path) || path.contains("libPearOpenGLES.dylib") {
+                if path != replacement {
+                    _ = try preparationTools.run("/usr/bin/install_name_tool", ["-change", path, replacement, file.path])
+                }
+            }
+        }
     }
 
     private func patchInfoPlist(at bundleURL: URL) throws {

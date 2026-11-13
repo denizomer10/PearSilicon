@@ -5,6 +5,7 @@
 #include <GLES2/gl2.h>
 #include <dlfcn.h>
 #include <cassert>
+#include <mach-o/dyld.h>
 #import "../runtime/include/PearEAGLContext.h"
 @interface EAGLContext : NSObject
 - (instancetype)initWithAPI:(NSUInteger)api;
@@ -45,8 +46,18 @@ int main(int argc, char **argv) { @autoreleasepool {
     unsigned char rgba[4] = {};
     glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     assert(rgba[0] == 0 && rgba[1] == 255 && rgba[2] == 0 && rgba[3] == 255);
-    void *handle = dlopen("/System/iOSSupport/System/Library/Frameworks/OpenGLES.framework/OpenGLES", RTLD_NOW | RTLD_LOCAL);
+#ifdef PEAR_EXCLUSIVE_PROBE
+    void *handle = dlopen("@rpath/libPearOpenGLES.dylib", RTLD_NOW | RTLD_LOCAL);
+#else
+    void *handle = RTLD_DEFAULT;
+#endif
     assert(handle);
+#ifdef PEAR_EXCLUSIVE_PROBE
+    void *legacyName = dlopen("/System/Library/Frameworks/OpenGLES.framework/OpenGLES", RTLD_NOW | RTLD_LOCAL);
+    assert(legacyName); // Redirected to our ABI bridge, not the named OS path.
+    assert(dlsym(legacyName, "glClear") == EAGLGetProcAddress("glClear"));
+    dlclose(legacyName);
+#endif
     void *dynamicClear = dlsym(handle, "glClear");
     assert(dynamicClear && dynamicClear == EAGLGetProcAddress("glClear"));
     assert(dlsym(RTLD_DEFAULT, "OBJC_CLASS_$_EAGLContext") == (__bridge void *)EAGLContext.class);
@@ -63,5 +74,10 @@ int main(int argc, char **argv) { @autoreleasepool {
     glDeleteRenderbuffers(1, &rb);
     assert(![core copyDrawableGeometry:&geometry forRenderbuffer:rb]);
     assert([EAGLContext setCurrentContext:nil]);
+#ifdef PEAR_EXCLUSIVE_PROBE
+    for (uint32_t index = 0; index < _dyld_image_count(); ++index)
+        assert(!strstr(_dyld_get_image_name(index), "/OpenGLES.framework/"));
+    puts("PASS: exclusive GLES/EAGL bridge, no system OpenGLES image loaded");
+#endif
     puts("PASS: Mach-O GL/class slots, dynamic proc/class lookup, Metal readback/presentation");
 } }

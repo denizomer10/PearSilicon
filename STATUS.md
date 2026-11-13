@@ -1,5 +1,7 @@
 # PearSilicon — Çalışma Durumu
 
+> **DEVİR NOTU — 2026-11-13:** Kullanıcı kalan işi başka ajana devrediyor. Son hedef: GL/EAGL yolu tamamen ANGLE; sistem OpenGLES bağımlılığı/fallback kaldırılacak. Yeni exclusive geçiş **WIP**, bitmedi; 45 kurucu testinde 1 hata açık. Önce belgenin sonundaki **“Sonraki ajana devir — tamamen ANGLE”** bölümünü oku. Çalışan önceki checkpoint `fd11163` / runtime `26096cc`.
+
 > Güncel çalışma — 2026-11-13: `codex/angle-metal-bridge`. Opt-in GL/EAGL import ve dinamik çağrı yönlendirmesi eklendi. Kullanıcı ayrı test kopyalarında Cut the Rope için küçük/tam ekran + dokunmayı, Minecraft için görüntü/giriş/native fare yakalamayı doğruladı. Minecraft native Metal kullanıyor; Metal→ANGLE çevirisi iddiası yok. Normal kurulumlar otomatik değiştirilmedi. Ayrıntılar belgenin sonunda ve `docs/ANGLE_INTEGRATION.md` içinde; önceki bölümler tarihsel kayıttır.
 
 ## 0.8.3 (28) — 2026-11-11
@@ -870,3 +872,80 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - Minecraft testinde zorunlu legacy responder ayarı kaldırıldı, adaptive fallback ve native pointer lock izni açıldı. Kullanıcı son testte Cut küçük/tam ekran + PLAY/ip kesme için **“İkisi de düzgün”**, Minecraft için **“Yakalama, görüntü ve giriş düzgün”** doğrulaması verdi. Bu doğrulama yeni test profillerine aittir; eski Minecraft kaynak/ayar cache'i veya her dünya için genellenmez.
 - Otomatik kontroller: gerçek Mach-O import slotları + dinamik proc/class + Metal piksel okuma/sunum; backend kapalı native korunumu; GL modülü kapalı reddetme; mevcut GLES2/3 context/shader/storage testleri; native/sentetik dokunma ve worker screen cache testleri; 7 AppLauncherEnvironmentTests, 0 hata. Runtime Catalyst derlemesi geçti. Test komutları `docs/ANGLE_INTEGRATION.md` içinde.
 - Kullanıcı test sonuçları ve çalıştırılan runtime SHA'ları yerel `build/diagnostics/angle-game-validation.json` dosyasına yazıldı. Hazırlama/başlatma yardımcıları depoya eklendi; sonraki kopyalarda mutlak dependency/rpath'ler de yalnız kopyada yenileniyor. Kurulu uygulamalar otomatik ANGLE'a geçirilmedi; release/tag ve genel dağıtım lisans paketlemesi yapılmadı.
+
+## Sonraki ajana devir — tamamen ANGLE (2026-11-13)
+
+### Kullanıcının son hedefi ve durma noktası
+
+- Son talimat: **“tamamen ANGLE kullanmalı, sistem EAGL'yi sileceğiz.”** Ardından kullanıcı token limiti nedeniyle kalan işi bu dosyaya kaydetmemi, başka ajanla devam edeceğini söyledi. Bu aşamada yeni geliştirme durduruldu; aşağıdaki exclusive değişiklikler tamamlanmış/kararlı sayılmıyor.
+- Kaldırılacak olan **PearRuntime'ın sistem OpenGLES/EAGL renderer yolu ve oyunların bu framework'e doğrudan bağımlılığı**. macOS sistem dosyaları silinmeyecek. Native Metal çağrıları ANGLE'ın girdisi değildir; Minecraft'ın native Metal yolunu ANGLE'a çevirdiğimiz iddia edilmeyecek.
+- Modüler tasarım ve clean-room ilkesi korunacak: bridge kaynakları özgün; ANGLE lisanslı üçüncü taraf. Apple OS uygulama kodu kopyalanmadı; public API/SDK arayüzleri kullanılıyor.
+- Son çalışan, GitHub'a gönderilmiş checkpoint: PearSilicon **`fd11163`**, PearRuntime **`26096cc`**, ANGLE fork **`f405241`**. Root/runtime dalı `codex/angle-metal-bridge`; ANGLE dalı `codex/pearruntime-metal`. Yeni exclusive aşama bu checkpoint'in üzerinde **WIP** olarak saklanıyor; HEAD'leri `git log -1`, `git -C runtime log -1`, `git -C runtime/third_party/angle log -1` ile kontrol et.
+
+### Gerçek oyunlarda zaten doğrulanan, bozulmaması gereken kısım
+
+- Önceki opt-in import-slot yolu ile Cut the Rope: 57 GL/EAGL import ANGLE'a bağlandı, gerçek ANGLE GLES2→Metal çizim/sunum görüldü. Yükleme ekranının donması, geçici resize'da storage metadata'sının silinmesiydi; düzeldi.
+- `PearLegacyTouch` subclass'ı UITouch taban sınıfı dönüşümünü atlıyordu. Native/sentetik **current ve previous** koordinatlar `PearGLMapTouchPoint` üzerinden aynı dönüşüme alındı. Kullanıcı küçük pencere/tam ekran, PLAY/ip kesme için **“İkisi de düzgün”** doğruladı.
+- Minecraft test kopyası: 92 import yönlendirildi ama örnekleme **native Metal renderer** gösteriyor, EAGL context açılışı gözlenmedi. Zorunlu legacy responder input kaldırıldı, native pointer lock izni açıldı; UIScreen worker cache'i düzeltildi. Kullanıcı **“Yakalama, görüntü ve giriş düzgün”** dedi. Yeni/ayrı test home'u kullanıldı; eski Minecraft kaynak/ayar cache'inin kök nedeni çözülmüş sayılmaz.
+- Çalışan test kopyaları: `build/angle-game-tests/`, manifest `games.json`, runtime günlükleri `0-runtime.log` / `1-runtime.log`, PID dosyaları `0.pid` / `1.pid`. Son bilinen test PID'leri Cut `63126`, Minecraft `63128`; **yeniden kontrol et, PID'ye körlemesine işlem yapma**. Orijinal Minecraft daha önce PID `46857` ile açıktı ve değiştirilmedi. Açık kullanıcı oyunlarını kapatma; çalışan test kopyalarını da bu devirde yeniden başlatmadım.
+- Manuel sonuçlar ve denenmiş runtime SHA'ları: `build/diagnostics/angle-game-validation.json`. Bu kopyalar hâlâ önceki macOS-target ANGLE (`out/PearMetal`) / import-slot sürümünü kullanıyor; yeni exclusive paketleme/Catalyst sürümü bu oyunlarda henüz denenmedi.
+
+### Yeni exclusive aşamada yazılanlar
+
+**PearRuntime:**
+
+- `generate-angle-forwarders.py`: pinlenmiş Khronos GLES registry + ANGLE export listesinden **728 typed GLES forwarder** üretir. Üretilen `.mm/.o` build çıktısıdır, kaynak devasa generated dosyası commit edilmez.
+- `bridge/EAGLExports.mm`: özgün EAGL public sabitleri, `EAGLGetVersion`, strict proc lookup. Sabitlerde `extern` eklendi; yeni tam derleme ile exportları tekrar kontrol et.
+- `bridge/context-aliases.sh`: runtime'ın özgün `PearEAGLContext`/sharegroup class/metaclass sembollerine public EAGL ABI alias'ları verir. ObjC kayıt adları özgün kalır; native sınıf implementation'ı kopyalanmıyor.
+- `build-angle-bridge.sh`: **`libPearOpenGLES.dylib`** üretir; runtime'ı re-export eder. `build.sh` alias flag'lerini ve bridge derlemesini çağırıyor. **ANGLE dylib'lerini `build/PearANGLE` içine stage etme henüz yazılmadı.**
+- `GLShim.mm`: `OpenGLESHandle`, native `dlsym` fallback ve native EAGLContext seçimi kaldırıldı. GL query/proc yalnız ANGLE. Routing açık değilse GL hook kurulmaz.
+- `ANGLEGameRouting.mm`: bridge image'ı kendi runtime artifact'i olarak atlar. Bind stream dylib ordinal'ını takip eder; import zaten `libPearOpenGLES`'ten geliyorsa typed forwarder'ı atlamaz, slotu yerinde bırakır. Dinamik lookup'lar hâlâ aynı ANGLE domain'ine bağlanır.
+- `dlopen` app importu da route edilir: `OpenGLES.framework` adları yüklü kendi bridge'imize yönlendirilir, native OS framework'e fallback yapılmaz. Alakasız dlopen/dlsym için musttail caller semantiğini korur.
+- `PEAR_GRAPHICS_BACKEND=system` artık açıkça reddedilir. Bridge yüklenmişse `PEAR_GRAPHICS_BACKEND` olmadan da auto ANGLE etkinleşir. Varsayılan libs yolu flat iOS app için `Frameworks/PearANGLE`; dev override `PEAR_ANGLE_LIB_DIR` kalır.
+
+**Önemli bootstrap eksiği:** yalnız dinamik GL kullanan / başlangıçta bridge LC_LOAD'u olmayan compatibility app'lerde constructor henüz yalnız yüklü bridge'i algılıyor. Hazırlanmış sibling `libPearOpenGLES.dylib` dosyasını algılayarak otomatik etkinleştirme veya launcher'ın güvenilir paket yolunu seçmesi eklenmeli. `PearBridgePath` de bu durumda local artifact'e ayarlanmalı. Sistem fallback geri getirilmemeli. `graphics-gl` bilinçli kapalı ve GL gerektirmeyen core-only probe'ları gereksiz yere öldürmemeye dikkat et.
+
+**Root/Swift paketleme (WIP):**
+
+- `PackageInstaller.installANGLE(...)` eklendi: her compatibility pakete `libPearOpenGLES.dylib`, `PearANGLE/libEGL.dylib`, `PearANGLE/libGLESv2.dylib` zorunlu kopyalar; tüm app Mach-O'larında sistem OpenGLES dependency'lerini final target bridge yoluna çevirir. Staging mutlak yolu yazılmamalı.
+- Compatibility invariant'ları yeni bileşenleri ve doğrudan sistem OpenGLES dependency'sinin kalmamasını denetliyor. Native container cleanup yeni artifact'leri de kaldırıyor. Statik OpenGLES/bridge dependency'si olan oyunu no-runtime `nativeContainer` kipine geçirmek açıkça reddediliyor; bu kiple gizlice native EAGL fallback yok.
+- `RuntimeRevision.componentNames` yeni bridge + `PearANGLE` içeriyor; source'ta bu zorunlu bileşenler varsa installed'da eksikleri current sayılmıyor.
+- `PreparationModeTests` / `InstallerIntegrityTests` fixture'larına yeni Catalyst stand-in artifact'leri eklendi. Gerçek codesign testi yeni stand-in dylib'leri gerçek Catalyst hedefinde derliyor.
+- `scripts/angle-catalyst-args.gn` ve `scripts/test-angle-exclusive.sh` eklendi; eski routing smoke, strict sistem backend reddetmesine uyarlandı.
+
+### ANGLE fork'un yeni Catalyst port düzeltmeleri
+
+- Kaynak doğrudan **`arm64-apple-ios15.0-macabi`** ile derlendi; Mach-O platform bilgisi sonradan taklit edilmiyor.
+- `BUILD.gn`: Catalyst'te host modelini okuyan mevcut platform helper için public IOKit link dependency eklendi.
+- `mtl_utils.mm`: yalnız macOS'ta derlenen IOKit vendor helper'ı Catalyst'te çağrılmıyor; mevcut public Metal device-name vendor fallback'i kullanılıyor.
+- `gni/angle.gni`: Catalyst için framework yerine normal `.dylib` üretimi.
+- `system_utils_ios.cpp`, `system_utils.cpp`, `system_utils_posix.cpp`: Catalyst `.dylib` uzantısı ve module-relative yükleme; gerçek iOS'ta framework/bundle kuralları korunuyor. Bu, `PearANGLE/` içindeki iki dylib'in birlikte taşınabilmesini sağlıyor.
+- İlk framework→dylib geçişinde `out/PearCatalyst/obj/libEGL` / `obj/libGLESv2` eski output **dosyaları** yeni object dizinleriyle çakıştı; yalnız bu iki eski build dosyası silinip derleme tamamlandı. Aynı eski out ile yeniden framework tipini değiştirirsen bu çakışmaya dikkat et.
+- Çıktılar: `runtime/third_party/angle/out/PearCatalyst/libEGL.dylib` + `libGLESv2.dylib`, platform **MACCATALYST**, minOS 15.0. Eski `out/PearMetal` dosyaları çalışan testler için bırakıldı.
+
+### Son test durumu — açık hata var
+
+- **GEÇTİ:** `/tmp/pear-angle-catalyst-gpu-tests.log`: gerçek Catalyst ANGLE ile pbuffer piksel okuma, loader, sharing, GLES2/3 sunum/durum, 16 thread-exit, GLSL shader, native katman, renderbuffer/input generation, EAGL selector + 8 TLS cycle testleri.
+- **GEÇTİ (önceki exclusive snapshot):** `/tmp/pear-exclusive-angle-first-test.log`, `/tmp/pear-exclusive-angle-automatic-test.log`: kendi GLES/EAGL bridge'ine gerçek linkli test; Metal piksel okuma/sunum ve **test sürecinde hiç sistem OpenGLES image'ı yüklenmediği** kontrolü. Sonradan eklenen ikinci auto-backend koşusu ve legacy-name `dlopen` redirect assertion'ı henüz tekrar çalıştırılmadı; ayrıca testi yeni Catalyst libs ile çalıştır.
+- **AÇIK HATA:** `/tmp/pear-exclusive-installer-tests.log`: **45 test, 1 failure**. `PreparationModeTests.testRuntimeRefreshRunsOffTheMainThread` satır ~366: ikinci refresh `false` olmalı, `true` geliyor (**“a refreshed app must be reported as current”**). Yeni artifact/normalizasyon/contentManifest karşılaştırmasını incele; nedeni varsayılıp test gevşetilmedi. Diğer installer tests ve RuntimeRevision testi geçti.
+- Son full runtime build `/tmp/pear-exclusive-runtime-build.log` bridge'i üretti, ancak **daha sonraki strict bootstrap/GLShim değişiklikleri ve extern sabit düzeltmelerinden önce** idi. Güncel kaynakla yeniden derle. Şu an `runtime/build/PearANGLE` gerçek Catalyst binary staging'i yok; installer'ı normal oyunlara uygulama.
+- Önceki çalışan checkpoint'in testleri: tüm GPU/import/input/screen smoke + 7 AppLauncherEnvironmentTests geçti. Yeni exclusive packaging değişikliklerinden sonra **full Swift suite henüz çalışmadı**.
+- İlgili diğer loglar: `/tmp/pear-angle-catalyst-flat-build.log` (başarılı), `/tmp/pear-angle-catalyst-dylib-build.log` (eski output çakışması, superseded), `/tmp/pear-angle-catalyst-final-build.log` (önceki IOKit link hatası, superseded).
+
+### Öncelikli kalan adımlar
+
+1. **Önce installer tekrar-refresh hatasını çöz.** 45 seçili testi tekrar geçir; eksik artifact ve rollback invariant'larını gevşetme. Runtime kodunun yeniden imzalanmasının gerçek code change sayılmaması ilkesi korunmalı.
+2. `scripts/build-angle-metal.sh` hâlâ varsayılan olarak **macOS `out/PearMetal`** derliyor. Catalyst hedefini/script seçimini entegre et; `angle-catalyst-args.gn` + `out/PearCatalyst` ana compatibility çıktısı olacak. Test varsayılanları, helper/probe launcher ve provenance manifestindeki platform/yollar buna uyarlanmalı. Exclusive testi build validation zincirine ekle.
+3. Gerçek Catalyst ANGLE çıktısını **`runtime/build/PearANGLE/{libEGL.dylib,libGLESv2.dylib}`** içine stage eden adımı ekle; gereken üçüncü taraf lisans/notice dosyalarını koru. `runtime/build.sh` / parent build pipeline bunu üretmeli veya açık eksik-artifact hatası vermeli. **Mac dylib'inin platformunu patchleyerek admission'ı atlama.**
+4. `scripts/build-app.sh`, `.app/Contents/Resources` içine yeni **`libPearOpenGLES.dylib` + `PearANGLE/`** bileşenlerini de paketlemeli. Yeni runtime/source yollarının seçildiğini kontrol et; eski `/Applications` kaynaklarına sessizce geri düşme.
+5. Yukarıdaki bootstrap eksiğini kapat: fresh prepared dynamic-only GL + environment-injection kipi de auto ANGLE kullanmalı. Explicit sistem backend/fallback yok; no-runtime nativeContainer'ın anlamı korunmalı, GL gerekiyorsa açık ret.
+6. Güncel runtime'ı ve bridge'i derle; alias/sabit/GLES exportlarını `nm`, app dependency'lerini `otool -L`, platformu `vtool` ile doğrula. `bash scripts/test-angle-exclusive.sh <.../out/PearCatalyst>` dahil bütün ilgili smoke'ları geçir. Exclusive testte gerçek typed export çağrıları **GL slotlarına doğrudan raw-pointer patch uygulanmadan** deneniyor; bu kontrol korunmalı.
+7. Yeni, **ayrı** exclusive oyun kopyalarında (eski doğrulanan test süreçlerine/normal oyunlara dokunmadan veya kullanıcının çıkışını bekleyerek) PackageInstaller akışını test et. Main + embedded Mach-O'larda sistem OpenGLES load command kalmamalı. Typed bridge → Catalyst ANGLE → Metal yolunu, Cut dokunma/drag/small/fullscreen ve Minecraft'ın native Metal input/scale/capture profilini yeniden doğrula. Minecraft Metal çağrılarını ANGLE'a çevirdik deme.
+8. Full Swift testleri, final runtime build + API/graphics testleri; sonra fork→runtime→root commit/submodule pointer/push. Şu anki exclusive değişiklikler **WIP**; release/tag yayınlama, tüm oyunlar/M5/M6 için doğrulama iddiası yapma. Yalnız bu Apple M1 test makinesi var. Chained/threaded fixups, arm64e, GLES1 sunumu, RGB565/sRGB/MSAA/zamanlanmış sunum hâlâ desteklenmiyor.
+
+### Çalışma sınırları / araçlar
+
+- CWD `/Users/mac/PearSilicon`; Türkçe iletişim. Ekran görüntüsü/desktop otomasyonu/odak çalma/otomatik tıklama yok. Arka planda CLI/NSWorkspace launch, salt okunur process/window metadata ve kendi headless GPU/bellek içi testleri kullanıldı.
+- Asıl oyun verileri korunacak. Test kopyalarının home'ları `build/angle-game-tests/*.home`, normal kayıtlar ayrı. Doğrulanan açık testleri bu exclusive devirde overwrite etme.
+- `gh` ve `ninja`: `/opt/homebrew/bin/`; depot_tools `build/angle-tools/depot_tools`; Clang 24 ANGLE DEPS içinde. Full disk erişimi var; approval policy never, `sandbox_permissions` verme.
+- Yeni task/agent spawn edilmedi. Kullanıcı başka ajanla devam edeceğini söyledi; bu dosyadaki devirden sonra geliştirmeye devam etme.

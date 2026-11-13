@@ -468,6 +468,11 @@ private final class PreparationFixture {
             .write(to: bundleURL.appendingPathComponent("Info.plist"))
         try Self.machO(platform: 2, headerPadding: headerPadding, needsCxx: needsCxx).write(to: executableURL)
         try Self.machO(platform: 6).write(to: runtimeURL)
+        for name in ["libPearOpenGLES.dylib", "PearANGLE/libEGL.dylib", "PearANGLE/libGLESv2.dylib"] {
+            let component = runtimeURL.deletingLastPathComponent().appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: component.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Self.machO(platform: 6).write(to: component)
+        }
         if needsCxx {
             try Self.machO(platform: 6).write(to: runtimeURL.deletingLastPathComponent().appendingPathComponent("libcxxcompat.dylib"))
             try BinaryPatcher.addLoadDylib(at: executableURL, path: "/usr/lib/libc++.1.dylib")

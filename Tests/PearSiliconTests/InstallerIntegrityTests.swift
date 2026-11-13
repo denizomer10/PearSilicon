@@ -156,6 +156,10 @@ final class InstallerIntegrityTests: XCTestCase {
             "-dynamiclib", "-install_name", "@rpath/libPearRuntime.dylib",
             runtimeSource.path, "-o", fixture.runtime.path
         ])
+        for name in ["libPearOpenGLES.dylib", "PearANGLE/libEGL.dylib", "PearANGLE/libGLESv2.dylib"] {
+            let component = fixture.runtime.deletingLastPathComponent().appendingPathComponent(name)
+            _ = try Shell.run("/usr/bin/xcrun", common + ["-dynamiclib", runtimeSource.path, "-o", component.path])
+        }
         let before = try fixture.snapshot(fixture.source)
         var tools = fixture.tools()
         tools.run = { try Shell.run($0, $1) }
@@ -615,6 +619,11 @@ private final class IntegrityFixture {
             .write(to: source.appendingPathComponent("Info.plist"))
         try Self.image().write(to: source.appendingPathComponent("Game"))
         try Self.image(platform: 6, type: 6).write(to: runtime)
+        for name in ["libPearOpenGLES.dylib", "PearANGLE/libEGL.dylib", "PearANGLE/libGLESv2.dylib"] {
+            let component = runtime.deletingLastPathComponent().appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: component.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Self.image(platform: 6, type: 6).write(to: component)
+        }
         let signature = source.appendingPathComponent("_CodeSignature")
         try FileManager.default.createDirectory(at: signature, withIntermediateDirectories: false)
         try Data("original-signature".utf8).write(to: signature.appendingPathComponent("CodeResources"))

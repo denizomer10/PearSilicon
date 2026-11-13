@@ -51,12 +51,14 @@ xcrun clang++ "${common[@]}" "$root/scripts/angle-routing-smoke.mm" "$probe/Open
   -Wl,-rpath,@executable_path/../Frameworks -o "$app/Contents/MacOS/RoutingProbe"
 PEAR_GRAPHICS_BACKEND=angle PEAR_ANGLE_LIB_DIR="$angle_dir" \
   DYLD_INSERT_LIBRARIES="$app/Contents/Frameworks/libPearRuntime.dylib" "$app/Contents/MacOS/RoutingProbe"
+set +e
 PEAR_GRAPHICS_BACKEND=system DYLD_INSERT_LIBRARIES="$app/Contents/Frameworks/libPearRuntime.dylib" \
   "$app/Contents/MacOS/RoutingProbe" --native
-set +e
+status=$?
+[[ "$status" == 78 ]] || { echo 'System backend must be refused' >&2; exit 1; }
 PEAR_GRAPHICS_BACKEND=angle PEAR_RUNTIME_DISABLE=graphics-gl PEAR_ANGLE_LIB_DIR="$angle_dir" \
   DYLD_INSERT_LIBRARIES="$app/Contents/Frameworks/libPearRuntime.dylib" "$app/Contents/MacOS/RoutingProbe"
 status=$?
 set -e
 [[ "$status" == 78 ]] || { echo 'Disabled GL module must refuse ANGLE routing' >&2; exit 1; }
-echo 'PASS: explicit backend selection and disabled-module rejection'
+echo 'PASS: system backend and disabled-module rejection'

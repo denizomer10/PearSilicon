@@ -968,7 +968,8 @@ enum UpdateURLPolicy {
 /// fingerprint, so their addition/removal also triggers a parent's refresh.
 enum RuntimeRevision {
     static let componentNames = [
-        "libPearRuntime.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib", "MarketplaceKit.framework"
+        "libPearRuntime.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib", "MarketplaceKit.framework",
+        "libPearOpenGLES.dylib", "PearANGLE"
     ]
 
     static func sha256(of file: URL) throws -> String {
@@ -1050,6 +1051,10 @@ extension RuntimeRevision {
     static func installedRuntimeMatches(installed: URL, source: URL) throws -> Bool {
         guard FileManager.default.fileExists(atPath: installed.appendingPathComponent(componentNames[0]).path) else {
             return false
+        }
+        for required in ["libPearOpenGLES.dylib", "PearANGLE"] where
+            FileManager.default.fileExists(atPath: source.appendingPathComponent(required).path) {
+            guard FileManager.default.fileExists(atPath: installed.appendingPathComponent(required).path) else { return false }
         }
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("pear-runtime-compare-\(UUID().uuidString)", isDirectory: true)
