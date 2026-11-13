@@ -8,10 +8,10 @@ final class DeviceProfileTests: XCTestCase {
     func testDefaultsHaveExactlyTheCanonicalTenFieldSchema() throws {
         let profile = RuntimeDeviceProfile.defaults(bundleID: bundleID)
         let expected: [String: Any] = [
-            "schema": 1, "bundle": bundleID, "model": "iPhone15,2", "name": "iPhone",
-            "idiom": "phone", "systemName": "iOS", "systemVersion": "16.0",
-            "systemBuild": "20A000", "darwinRelease": "22.6.0",
-            "vendorIdentifier": "B4A3F689-6E09-DA2C-D424-25100162AAE5",
+            "schema": 1, "bundle": bundleID, "model": "iPhone19,2", "name": "iPhone",
+            "idiom": "phone", "systemName": "iOS", "systemVersion": "27.2.1",
+            "systemBuild": "24B91034", "darwinRelease": "27.2.0",
+            "vendorIdentifier": "704306C4-6EDD-D693-508A-61C136FB5FA1",
         ]
         XCTAssertTrue(NSDictionary(dictionary: profile.propertyList).isEqual(to: expected))
         XCTAssertEqual(profile.propertyList.count, 10)
@@ -109,11 +109,11 @@ final class DeviceProfileTests: XCTestCase {
             "PEAR_FAKE_IOS_VERSION", "PEAR_FAKE_IOS_BUILD", "PEAR_FAKE_DARWIN",
         ]))
         XCTAssertEqual(profile.runtimeEnvironment, [
-            "PEAR_DEVICE_MODEL": "iPhone15,2", "PEAR_DEVICE_NAME": "iPhone",
-            "PEAR_DEVICE_IDIOM": "phone", "PEAR_FAKE_IOS_VERSION": "16.0",
-            "PEAR_FAKE_IOS_BUILD": "20A000", "PEAR_FAKE_DARWIN": "22.6.0",
+            "PEAR_DEVICE_MODEL": "iPhone19,2", "PEAR_DEVICE_NAME": "iPhone",
+            "PEAR_DEVICE_IDIOM": "phone", "PEAR_FAKE_IOS_VERSION": "27.2.1",
+            "PEAR_FAKE_IOS_BUILD": "24B91034", "PEAR_FAKE_DARWIN": "27.2.0",
             "PEAR_DEVICE_PROFILE_SOURCE": "host-v1", "PEAR_DEVICE_PROFILE_BUNDLE": bundleID,
-            "PEAR_DEVICE_VENDOR_UUID": "B4A3F689-6E09-DA2C-D424-25100162AAE5",
+            "PEAR_DEVICE_VENDOR_UUID": "704306C4-6EDD-D693-508A-61C136FB5FA1",
         ])
         XCTAssertNil(profile.runtimeEnvironment["PEAR_DEVICE_UI_DETAILS"])
     }
@@ -236,16 +236,16 @@ final class DeviceProfileTests: XCTestCase {
         let identifier = try XCTUnwrap(UUID(uuidString: profile.vendorIdentifier))
         var uuid = identifier.uuid
         XCTAssertEqual(withUnsafeBytes(of: &uuid) { Array($0) }, [
-            0xb4, 0xa3, 0xf6, 0x89, 0x6e, 0x09, 0xda, 0x2c,
-            0xd4, 0x24, 0x25, 0x10, 0x01, 0x62, 0xaa, 0xe5,
+            0x70, 0x43, 0x06, 0xc4, 0x6e, 0xdd, 0xd6, 0x93,
+            0x50, 0x8a, 0x61, 0xc1, 0x36, 0xfb, 0x5f, 0xa1,
         ])
         XCTAssertNotEqual(profile.vendorIdentifier, "00000000-0000-0000-0000-000000000000")
         XCTAssertEqual(RuntimeDeviceProfile.defaults(bundleID: bundleID), profile)
         XCTAssertEqual(try RuntimeDeviceProfile(bundleID: bundleID, environment: [
             "PEAR_DEVICE_MODEL": "iPad14,3",
         ]).vendorIdentifier, "6D65E7B3-97F2-6817-6DA0-6954C23B0F58")
-        XCTAssertEqual(RuntimeDeviceProfile.defaults(bundleID: "test.pear.other").vendorIdentifier, "9E76E8E9-1651-9A93-AEA0-0A876EBDF075")
-        XCTAssertEqual(RuntimeDeviceProfile.defaults(bundleID: "test.pear.é").vendorIdentifier, "6AD16AC7-F9CD-D327-4A42-4EFDC7C701E3")
+        XCTAssertEqual(RuntimeDeviceProfile.defaults(bundleID: "test.pear.other").vendorIdentifier, "82A0D8AF-165D-9D2C-D2CA-2D622A2E992D")
+        XCTAssertEqual(RuntimeDeviceProfile.defaults(bundleID: "test.pear.é").vendorIdentifier, "1687B3B3-F991-1205-36AF-648466A590CE")
         XCTAssertEqual(try RuntimeDeviceProfile(bundleID: bundleID, environment: [
             "PEAR_DEVICE_NAME": "Another name", "PEAR_DEVICE_IDIOM": "pad", "PEAR_FAKE_IOS_VERSION": "17",
             "PEAR_FAKE_IOS_BUILD": "21A", "PEAR_FAKE_DARWIN": "23",

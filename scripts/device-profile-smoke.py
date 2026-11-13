@@ -34,8 +34,8 @@ INPUTS = {
     "systemVersion": "PEAR_FAKE_IOS_VERSION", "systemBuild": "PEAR_FAKE_IOS_BUILD",
     "darwinRelease": "PEAR_FAKE_DARWIN",
 }
-DEFAULTS = dict(model="iPhone15,2", name="iPhone", idiom="phone", systemVersion="16.0",
-                systemBuild="20A000", darwinRelease="22.6.0")
+DEFAULTS = dict(model="iPhone19,2", name="iPhone", idiom="phone", systemVersion="27.2.1",
+                systemBuild="24B91034", darwinRelease="27.2.0")
 OVERRIDES = dict(model="iPad14,3", name="Pear 平板 🍐", idiom="pad", systemVersion="18.2.1",
                  systemBuild="22C_123-a", darwinRelease="24.2.0")
 VALUE_FIELDS = ("bundle", "model", "name", "idiom", "systemName", "systemVersion", "systemBuild",

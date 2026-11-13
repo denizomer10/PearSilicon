@@ -27,8 +27,11 @@ struct RuntimeDeviceProfile: Equatable, Sendable {
 
     static func defaults(bundleID: String) -> RuntimeDeviceProfile {
         RuntimeDeviceProfile(
-            bundleID: bundleID, model: "iPhone15,2", name: "iPhone", idiom: "phone",
-            systemVersion: "16.0", systemBuild: "20A000", darwinRelease: "22.6.0"
+            // iPhone 18 Pro (iPhone19,2, board V63AP) on iOS 27.2.1 (24B91034,
+            // Darwin 27.2.0). Games increasingly gate features (controllers,
+            // graphics presets) on a current device and OS.
+            bundleID: bundleID, model: defaultModel, name: "iPhone", idiom: "phone",
+            systemVersion: "27.2.1", systemBuild: "24B91034", darwinRelease: "27.2.0"
         )
     }
 
@@ -195,6 +198,8 @@ struct RuntimeDeviceProfile: Equatable, Sendable {
             (1...4).contains($0.utf8.count) && $0.utf8.allSatisfy(isDigit)
         }
     }
+
+    static let defaultModel = "iPhone19,2"
 
     private static func vendorIdentifier(bundleID: String, model: String) -> String {
         // Preserve DeviceShim's legacy FNV pair and little-endian byte order,
