@@ -6,6 +6,21 @@ import XCTest
 @MainActor
 final class PortableLibraryAppStateTests: XCTestCase {
 
+    func testManagedSelectionDoesNotLeakAcrossPlatformTabs() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.writeManifest(.wine, id: "wine.game", at: fixture.root.appendingPathComponent("wine-apps/wine.game"))
+        let state = fixture.state()
+        try await state.refreshLibrary()
+        state.platform = .wine
+        state.selectedManagedEntryID = try XCTUnwrap(state.platformEntries.first).id
+        XCTAssertNotNil(state.selectedManagedEntry)
+        state.platform = .macOS
+        XCTAssertNil(state.selectedManagedEntry)
+        state.platform = .wine
+        XCTAssertNotNil(state.selectedManagedEntry)
+    }
+
     func testStateScansAllPlatformsWithoutCreatingEmptyFolders() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

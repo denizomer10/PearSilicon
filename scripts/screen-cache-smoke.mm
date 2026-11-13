@@ -4,6 +4,8 @@
 #include <cassert>
 #include <unistd.h>
 #import "../runtime/include/PearRuntime.h"
+static CGRect PearReportedBounds(void);
+static bool gReenterBounds;
 @interface PearScreenWindow : NSObject
 @property(nonatomic) CGSize size;
 @property(nonatomic) NSUInteger reads;
@@ -16,13 +18,22 @@
 }
 @end
 static PearScreenWindow *gTestWindow;
-UIWindow *PearPrimaryWindow(void) { assert(NSThread.isMainThread); return (UIWindow *)(id)gTestWindow; }
+UIWindow *PearPrimaryWindow(void) {
+    assert(NSThread.isMainThread);
+    if (gReenterBounds) {
+        CGRect nested = PearReportedBounds();
+        assert(nested.size.width > 0 && nested.size.height > 0);
+    }
+    return (UIWindow *)(id)gTestWindow;
+}
 void PearLog(NSString *format, ...) { (void)format; }
 extern "C" int PearRuntimeModuleEnabled(const char *) { return 0; }
 #import "../runtime/modules/graphics/ScreenShim.mm"
 int main() { @autoreleasepool {
     gTestWindow = [PearScreenWindow new]; gTestWindow.size = CGSizeMake(800, 600);
+    gReenterBounds = true; // Lazy delegate.window builds its window from UIScreen.bounds.
     assert(CGSizeEqualToSize(PearReportedBounds().size, gTestWindow.size));
+    gReenterBounds = false;
     NSUInteger initialReads = gTestWindow.reads;
     gTestWindow.size = CGSizeMake(1600, 900);
     usleep(70000);

@@ -86,7 +86,7 @@ final class AppState: ObservableObject {
     }
     var selectedManagedEntry: LibraryEntry? {
         guard let selectedManagedEntryID else { return nil }
-        return managedEntries.first { $0.id == selectedManagedEntryID }
+        return platformEntries.first { $0.id == selectedManagedEntryID }
     }
 
     /// Keymap of the currently selected app, if any.
@@ -97,6 +97,8 @@ final class AppState: ObservableObject {
 
     /// Where all PearSilicon data lives (apps, game data, keymaps, ODR, logs).
     @Published private(set) var storageRootURL: URL
+    @Published private(set) var storageConnected = true
+    private var storageObservationTask: Task<Void, Never>?
 
     /// Retained copy of the previous storage after a move, if any.
     @Published private(set) var previousStorageRootURL: URL?
@@ -132,8 +134,8 @@ final class AppState: ObservableObject {
     private let observesWorkspace: Bool
     private var iosApps: IOSAppService
     private let macApps = MacAppService()
-    private let portableLibrary: PortableLibrary
-    private let wineApps: WineAppService
+    private var portableLibrary: PortableLibrary
+    private var wineApps: WineAppService
     private lazy var updater = AppUpdateService()
 
     @Published private(set) var wineReleaseCheck: WineReleaseCheck?
@@ -204,6 +206,8 @@ final class AppState: ObservableObject {
     private func reloadStorage() {
         let base = AppPaths.supportRoot
         storageRootURL = base
+        portableLibrary = PortableLibrary(rootURL: base)
+        wineApps = WineAppService(engines: WineEngineStore(rootURL: base.appendingPathComponent("Engines", isDirectory: true)))
         previousStorageRootURL = StorageLocationStore.shared.previousRootURL
         libraryURL = base.appendingPathComponent(PortableLibrary.iOSFolder, isDirectory: true)
         packageInstaller = PackageInstaller(libraryURL: libraryURL)
@@ -229,6 +233,14 @@ final class AppState: ObservableObject {
             Task { @MainActor in self?.refreshRunningApps() }
         })
 
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification,
+                     NSWorkspace.didRenameVolumeNotification] {
+            workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.scheduleStorageRefresh() }
+            })
+        }
+        scheduleStorageRefresh()
+
         // The CLI installs/removes apps in the same library. Refresh when it says
         // the library changed, so an open window stays in sync.
         workspaceObservers.append(DistributedNotificationCenter.default().addObserver(
@@ -237,6 +249,45 @@ final class AppState: ObservableObject {
             Task { @MainActor in try? await self?.refreshLibrary() }
         })
         refreshRunningApps()
+    }
+
+    private func scheduleStorageRefresh() {
+        storageObservationTask?.cancel()
+        storageObservationTask = Task { [weak self] in
+            // Coalesce mount bursts and wait for imports/runtime replacement to
+            // finish before rebuilding services bound to the old root.
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            guard let self else { return }
+            while self.isBusy || self.runtimeRefresh != nil || self.installingWineDistributionID != nil {
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            }
+            let configured = StorageLocationStore.shared.rootURL
+            let roots = await Task.detached(priority: .utility) {
+                StorageLocationStore.discoverRoots(on: FileManager.default.mountedVolumeURLs(
+                    includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]
+                ) ?? [])
+            }.value
+            guard !Task.isCancelled else { return }
+            var selected = StorageLocationStore.hasMarker(at: configured) ? configured : nil
+            // Reattach a relocated marked library only when unambiguous.
+            if selected == nil, roots.count == 1, let root = roots.first {
+                do {
+                    try StorageLocationStore.shared.commit(rootURL: root, previousRootURL: nil)
+                    selected = root
+                } catch { self.statusMessage = L10n.error(error.localizedDescription) }
+            }
+            self.storageConnected = selected != nil
+            if let selected {
+                if selected.standardizedFileURL != self.storageRootURL.standardizedFileURL { self.reloadStorage() }
+                try? await self.refreshLibrary()
+            } else {
+                self.installedApps = []
+                self.managedEntries = []
+                self.selection = nil
+                self.selectedManagedEntryID = nil
+                self.wineEngines = []
+            }
+        }
     }
 
     func refreshRunningApps() {
@@ -323,6 +374,10 @@ final class AppState: ObservableObject {
 
     func bootstrap() async {
         do {
+            let store = StorageLocationStore.shared
+            if observesWorkspace && storageRootURL == StorageLocationStore.defaultSupportRoot && !store.usesCustomRoot {
+                try store.requireAvailableRoot()
+            }
             try await refreshLibrary()
             refreshRuntimesIfPearSiliconWasUpdated()
             startAutomaticUpdates()
@@ -717,7 +772,7 @@ final class AppState: ObservableObject {
     /// linked automatically; with several engines the user must choose one, so
     /// the launcher never guesses silently across versions.
     private func resolveWineEngine(for entry: LibraryEntry) throws -> (entry: LibraryEntry, engine: WineEngine) {
-        if let id = entry.manifest.wineEngineID, let found = try wineApps.engines.engine(id: id) {
+        if let id = entry.manifest.wineEngineID, let found = try wineApps.engines.engine(id: id), found.distribution == .metalSharp {
             return (entry, found)
         }
         let installed = WineDistribution.ordered(try wineApps.engines.engines())
@@ -779,8 +834,8 @@ final class AppState: ObservableObject {
 
     /// Whether launching `entry` can proceed without installing an engine.
     private func hasUsableWineEngine(for entry: LibraryEntry) throws -> Bool {
-        if let id = entry.manifest.wineEngineID, try wineApps.engines.engine(id: id) != nil { return true }
-        return try !wineApps.engines.engines().isEmpty
+        if let id = entry.manifest.wineEngineID, try wineApps.engines.engine(id: id)?.distribution == .metalSharp { return true }
+        return try !WineDistribution.ordered(wineApps.engines.engines()).isEmpty
     }
 
     /// The engine a new Windows game should use: an installed one (MetalSharp

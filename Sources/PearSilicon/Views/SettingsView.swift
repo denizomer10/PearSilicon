@@ -192,7 +192,7 @@ struct SettingsView: View {
                     },
                     actionTitle: { _, installed in installed ? "Reinstall" : "Install" }
                 )
-                Text("Windows games use MetalSharp Wine, which PearSilicon downloads and installs automatically the first time you add a Windows game. WineHQ builds are optional; if a game stops right after starting, its detail pane offers the next installed engine.")
+                Text("Windows games use MetalSharp Wine. PearSilicon installs it automatically when you add your first Windows game.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -255,7 +255,7 @@ struct SettingsView: View {
             }
 
             Section("How games are stored") {
-                Text("Each Windows game gets Payload, Data and Prefix directories. Saves stay with the game and are included in its backup. Host root drive mappings are removed; a g: drive exposes only this game's own program folder. Wine runs as a direct native process because a nested sandbox breaks Rosetta/wineserver; this is not a virtual machine and cannot run kernel-level anti-cheat. The macOS WineHQ packages are currently x86_64; Apple silicon may require Rosetta 2.")
+                Text("Each Windows game gets Payload, Data and Prefix directories. Saves stay with the game and are included in its backup. Host root drive mappings are removed; a g: drive exposes only this game's own program folder. Wine runs as a direct native process because a nested sandbox breaks Rosetta/wineserver; this is not a virtual machine and cannot run kernel-level anti-cheat.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

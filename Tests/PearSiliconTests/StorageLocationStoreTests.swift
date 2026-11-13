@@ -4,6 +4,26 @@ import XCTest
 
 final class StorageLocationStoreTests: XCTestCase {
 
+    func testMountedDiscoveryRequiresExactMarkersAndDoesNotFollowLinks() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let volume = fixture.root.appendingPathComponent("Volume")
+        let marked = volume.appendingPathComponent("PearSilicon")
+        let foreign = volume.appendingPathComponent("Foreign")
+        let nested = foreign.appendingPathComponent("Nested")
+        for root in [marked, foreign, nested] {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        }
+        try StorageLocationStore.writeMarker(at: marked)
+        try StorageLocationStore.writeMarker(at: nested)
+        try Data("wrong marker".utf8).write(to: foreign.appendingPathComponent(StorageLocationStore.markerName))
+        try FileManager.default.createSymbolicLink(at: volume.appendingPathComponent("Alias"), withDestinationURL: marked)
+        XCTAssertEqual(StorageLocationStore.discoverRoots(on: [volume]), [marked.standardizedFileURL])
+        try FileManager.default.removeItem(at: marked)
+        XCTAssertEqual(StorageLocationStore.discoverRoots(on: [volume]), [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marked.path))
+    }
+
     func testDefaultRootAndMarkerAdoption() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

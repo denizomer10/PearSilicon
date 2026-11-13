@@ -11,8 +11,8 @@ final class WineDistributionTests: XCTestCase {
         XCTAssertTrue(WineDistribution.metalSharp.nativeArm64)
     }
 
-    func testCatalogOffersMetalSharpAndOptionalWineHQOnly() {
-        XCTAssertEqual(WineDistribution.catalog.map(\.id), ["metalsharp", "winehq-staging", "winehq-devel"])
+    func testCatalogOffersOnlyNativeMetalSharp() {
+        XCTAssertEqual(WineDistribution.catalog.map(\.id), ["metalsharp"])
         XCTAssertTrue(WineDistribution.catalog.dropFirst().allSatisfy { !$0.nativeArm64 && !$0.recommended })
     }
 
@@ -90,7 +90,7 @@ final class WineDistributionTests: XCTestCase {
             engine("custom", .community),
             engine("pearwine-1.0.1", .metalSharp),
         ])
-        XCTAssertEqual(ordered.map(\.id), ["pearwine-1.0.1", "wine-staging-11.21", "custom"])
+        XCTAssertEqual(ordered.map(\.id), ["pearwine-1.0.1"])
     }
 }
 

@@ -200,16 +200,16 @@ struct VirtualGamepadMapping: Codable, Hashable, Sendable {
 
     /// JSON consumed by `VirtualGamepadShim.mm`.
     var environmentValue: String {
-        var buttons: [String: String] = [:]
-        var mouseButtons: [String: String] = [:]
+        var buttons: [String: [String]] = [:]
+        var mouseButtons: [String: [String]] = [:]
 
         for control in VirtualPadControl.allCases {
             guard let input = input(for: control) else { continue }
             switch input.kind {
             case .key where !input.value.isEmpty:
-                buttons[input.value] = control.rawValue
+                buttons[input.value, default: []].append(control.rawValue)
             case .mouse:
-                mouseButtons[input.value] = control.rawValue
+                mouseButtons[input.value, default: []].append(control.rawValue)
             default:
                 break
             }

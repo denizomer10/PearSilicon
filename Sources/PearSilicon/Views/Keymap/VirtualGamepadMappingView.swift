@@ -182,8 +182,8 @@ struct VirtualGamepadMappingEditor: View {
 
             if !mapping.duplicateButtonKeys.isEmpty {
                 Label(
-                    "Used more than once: " + mapping.duplicateButtonKeys.map { KeyNames.display($0) }.joined(separator: ", "),
-                    systemImage: "exclamationmark.triangle.fill"
+                    "These keys press all assigned controls: " + mapping.duplicateButtonKeys.map { KeyNames.display($0) }.joined(separator: ", "),
+                    systemImage: "info.circle"
                 )
                 .font(.caption)
                 .foregroundStyle(.orange)

@@ -35,16 +35,16 @@ final class VirtualGamepadMappingTests: XCTestCase {
         let root = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any]
         )
-        let buttons = try XCTUnwrap(root["buttons"] as? [String: String])
-        XCTAssertEqual(buttons["space"], "a")
-        XCTAssertEqual(buttons["shift"], "b")
-        XCTAssertEqual(buttons["q"], "l1")
-        XCTAssertEqual(buttons["up"], "dpadUp")
+        let buttons = try XCTUnwrap(root["buttons"] as? [String: [String]])
+        XCTAssertEqual(buttons["space"], ["a"])
+        XCTAssertEqual(buttons["shift"], ["b"])
+        XCTAssertEqual(buttons["q"], ["l1"])
+        XCTAssertEqual(buttons["up"], ["dpadUp"])
         XCTAssertEqual(buttons.count, 12) // 14 controls minus two mouse triggers.
 
-        let mouse = try XCTUnwrap(root["mouseButtons"] as? [String: String])
-        XCTAssertEqual(mouse["1"], "l2")
-        XCTAssertEqual(mouse["0"], "r2")
+        let mouse = try XCTUnwrap(root["mouseButtons"] as? [String: [String]])
+        XCTAssertEqual(mouse["1"], ["l2"])
+        XCTAssertEqual(mouse["0"], ["r2"])
 
         let stick = try XCTUnwrap(root["leftStick"] as? [String: String])
         XCTAssertEqual(stick["up"], "w")
@@ -52,6 +52,15 @@ final class VirtualGamepadMappingTests: XCTestCase {
 
         XCTAssertEqual((root["sensitivity"] as? NSNumber)?.doubleValue, 1)
         XCTAssertEqual((root["invertY"] as? NSNumber)?.boolValue, false)
+    }
+
+    func testSharedPhysicalInputsPreserveEveryControl() throws {
+        var mapping = VirtualGamepadMapping.standard
+        mapping.setInput(.key("space"), for: .buttonB)
+        mapping.setInput(.mouse(0), for: .buttonX)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(mapping.environmentValue.utf8)) as? [String: Any])
+        XCTAssertEqual((root["buttons"] as? [String: [String]])?["space"], ["a", "b"])
+        XCTAssertEqual((root["mouseButtons"] as? [String: [String]])?["0"], ["x", "r2"])
     }
 
     func testClearIsOmittedFromEnvironmentValue() throws {
@@ -62,13 +71,13 @@ final class VirtualGamepadMappingTests: XCTestCase {
         let root = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(mapping.environmentValue.utf8)) as? [String: Any]
         )
-        let buttons = try XCTUnwrap(root["buttons"] as? [String: String])
+        let buttons = try XCTUnwrap(root["buttons"] as? [String: [String]])
         XCTAssertNil(buttons["space"])
-        XCTAssertEqual(buttons["e"], "x")
+        XCTAssertEqual(buttons["e"], ["x"])
 
-        let mouse = try XCTUnwrap(root["mouseButtons"] as? [String: String])
+        let mouse = try XCTUnwrap(root["mouseButtons"] as? [String: [String]])
         XCTAssertNil(mouse["1"])
-        XCTAssertEqual(mouse["0"], "r2")
+        XCTAssertEqual(mouse["0"], ["r2"])
     }
 
     func testCodableRoundTripPreservesClearsAndClampsSensitivity() throws {

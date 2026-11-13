@@ -105,7 +105,12 @@ int main(int argc, char **argv) { @autoreleasepool {
     PearRGB565Layer *layer565 = [PearRGB565Layer layer];
     layer565.bounds = CGRectMake(0, 0, 8, 8); layer565.contentsScale = 1;
     layer565.drawableProperties = @{@"EAGLDrawablePropertyColorFormat": @"EAGLColorFormat565"};
+    // EAGL acts on the receiver even when no context is current (GTA III does
+    // this from layout); the thread's current context is left as it was.
+    assert([EAGLContext setCurrentContext:nil]);
     assert([context renderbufferStorage:GL_RENDERBUFFER fromDrawable:layer565] && layer565.opaque);
+    assert(EAGLContext.currentContext == nil);
+    assert([EAGLContext setCurrentContext:context]);
     glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &width);
     assert(width == 8);
     glBindRenderbuffer(GL_RENDERBUFFER, rb);
@@ -117,6 +122,33 @@ int main(int argc, char **argv) { @autoreleasepool {
     glDeleteRenderbuffers(1, &rb);
     assert(![core copyDrawableGeometry:&geometry forRenderbuffer:rb]);
     assert([EAGLContext setCurrentContext:nil]);
+    // GLES1 fixed-function clients use OES framebuffer entry points. The
+    // native drawable bridge must allocate/present without issuing GLES2 calls.
+    EAGLContext *legacy = [[EAGLContext alloc] initWithAPI:1];
+    assert(legacy && [EAGLContext setCurrentContext:legacy]);
+    auto genLegacyRB = (void (*)(GLsizei, GLuint *))EAGLGetProcAddress("glGenRenderbuffersOES");
+    auto bindLegacyRB = (void (*)(GLenum, GLuint))EAGLGetProcAddress("glBindRenderbufferOES");
+    auto genLegacyFB = (void (*)(GLsizei, GLuint *))EAGLGetProcAddress("glGenFramebuffersOES");
+    auto bindLegacyFB = (void (*)(GLenum, GLuint))EAGLGetProcAddress("glBindFramebufferOES");
+    auto attachLegacy = (void (*)(GLenum, GLenum, GLenum, GLuint))EAGLGetProcAddress("glFramebufferRenderbufferOES");
+    GLuint legacyRB = 0, legacyFB = 0;
+    // Unsuffixed ABI aliases are used by Dr. Driving even in its GLES1 context.
+    glGenRenderbuffers(1, &legacyRB); glBindRenderbuffer(GL_RENDERBUFFER, legacyRB);
+    assert(legacyRB && glGetError() == GL_NO_ERROR);
+    CALayer *legacyLayer = [CALayer layer];
+    legacyLayer.bounds = CGRectMake(0, 0, 16, 12); legacyLayer.contentsScale = 2;
+    assert([legacy renderbufferStorage:GL_RENDERBUFFER fromDrawable:legacyLayer]);
+    genLegacyFB(1, &legacyFB); bindLegacyFB(GL_FRAMEBUFFER, legacyFB);
+    attachLegacy(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, legacyRB);
+    glClearColor(0.2f, 0.4f, 0.8f, 1); glClear(GL_COLOR_BUFFER_BIT);
+    assert(glGetError() == GL_NO_ERROR);
+    assert([legacy presentRenderbuffer:GL_RENDERBUFFER]);
+    assert(glGetError() == GL_NO_ERROR);
+    auto deleteLegacyRB = (void (*)(GLsizei, const GLuint *))EAGLGetProcAddress("glDeleteRenderbuffersOES");
+    deleteLegacyRB(1, &legacyRB);
+    assert(glGetError() == GL_NO_ERROR);
+    assert([EAGLContext setCurrentContext:nil]);
+    puts("PASS: GLES1 OES drawable allocation and ANGLE/Metal presentation preserve GL error state");
 #ifdef PEAR_EXCLUSIVE_PROBE
     for (uint32_t index = 0; index < _dyld_image_count(); ++index)
         assert(!strstr(_dyld_get_image_name(index), "/OpenGLES.framework/"));

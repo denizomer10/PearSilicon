@@ -2,7 +2,7 @@ import Foundation
 
 /// The Wine builds PearSilicon offers. MetalSharp Wine (native arm64, from
 /// metalsharp/MetalSharp-Wine) is the default and is installed automatically
-/// when a Windows game needs an engine; WineHQ builds are optional extras.
+/// when a Windows game needs an engine.
 struct WineDistribution: Identifiable, Hashable, Sendable {
     enum Source: Hashable, Sendable {
         /// Newest GitHub release asset whose name matches `assetPattern`
@@ -46,36 +46,26 @@ struct WineDistribution: Identifiable, Hashable, Sendable {
         recommended: true, nativeArm64: true
     )
 
-    /// MetalSharp first, then the optional WineHQ builds.
+    /// MetalSharp is the supported engine; x86_64/Rosetta engines are not offered.
     static let catalog: [WineDistribution] = [
         .metalSharp,
-        WineDistribution(
-            id: "winehq-staging", name: "WineHQ Staging",
-            summary: "Optional. Official WineHQ build (x86_64, needs Rosetta 2).",
-            source: .wineHQ(.staging), recommended: false, nativeArm64: false
-        ),
-        WineDistribution(
-            id: "winehq-devel", name: "WineHQ Development",
-            summary: "Optional. Newest official WineHQ build (x86_64, needs Rosetta 2).",
-            source: .wineHQ(.devel), recommended: false, nativeArm64: false
-        ),
     ]
 
     static func distribution(for engine: WineEngine) -> WineDistribution? {
         if engine.distribution == .metalSharp { return .metalSharp }
-        return catalog.first { engine.id == $0.id || engine.id.hasPrefix($0.id + "-") }
-            ?? (engine.distribution == .wineHQ ? catalog.first { $0.id == "winehq-staging" } : nil)
+        return nil
     }
 
-    /// Installed engines in the order PearSilicon prefers them: MetalSharp
-    /// first, then catalog order, then everything else by name.
+    /// Only supported MetalSharp engines appear in launch and settings lists.
     static func ordered(_ engines: [WineEngine]) -> [WineEngine] {
         func rank(_ engine: WineEngine) -> Int {
             guard let distribution = distribution(for: engine),
                   let index = catalog.firstIndex(of: distribution) else { return catalog.count }
             return index
         }
-        return engines.sorted { (rank($0), $0.name, $0.version) < (rank($1), $1.name, $1.version) }
+        return engines.filter { $0.distribution == .metalSharp }.sorted {
+            (rank($0), $0.name, $0.version) < (rank($1), $1.name, $1.version)
+        }
     }
 }
 

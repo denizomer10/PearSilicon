@@ -62,7 +62,9 @@ struct ManagedAppDetailView: View {
                     actionCard
                         .frame(width: 280)
                 }
-                isolationNote
+                DisclosureGroup("Advanced details") { isolationNote }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
             .padding(22)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -169,12 +171,17 @@ struct ManagedAppDetailView: View {
                 SectionTitle(text: L10n.overview)
                 infoRow("Identifier", entry.manifest.id)
                 infoRow("Version", entry.manifest.version)
-                infoRow("Payload", entry.payloadURL.path, selectable: true)
-                infoRow("Data", entry.dataURL.path, selectable: true)
-                if entry.platform == .wine {
-                    infoRow("Wine prefix", entry.prefixURL.path, selectable: true)
-                    infoRow("Engine", entry.manifest.wineEngineID ?? "not selected")
-                    infoRow("Program", programRelativePath, selectable: true)
+                if entry.platform == .wine { infoRow("Program", programRelativePath, selectable: true) }
+                DisclosureGroup("Storage and runtime") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        infoRow("Payload", entry.payloadURL.path, selectable: true)
+                        infoRow("Data", entry.dataURL.path, selectable: true)
+                        if entry.platform == .wine {
+                            infoRow("Wine prefix", entry.prefixURL.path, selectable: true)
+                            infoRow("Engine", entry.manifest.wineEngineID ?? "not selected")
+                            infoRow("Program", programRelativePath, selectable: true)
+                        }
+                    }.padding(.top, 8)
                 }
                 infoRow("Installed", entry.manifest.createdAt.formatted(date: .abbreviated, time: .shortened))
             }
@@ -185,14 +192,6 @@ struct ManagedAppDetailView: View {
         GlassCard {
             VStack(alignment: .leading, spacing: 14) {
                 SectionTitle(text: "Actions")
-                Button {
-                    requestLaunch()
-                } label: {
-                    Label(L10n.launch, systemImage: "play.fill").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.glass)
-                .disabled(running)
-
                 if entry.platform == .wine {
                     enginePicker
                 }

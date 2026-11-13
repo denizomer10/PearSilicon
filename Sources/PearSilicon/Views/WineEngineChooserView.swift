@@ -91,7 +91,7 @@ struct WineEngineChooserSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Choose a Wine engine for \(entry.displayName)")
                 .font(.title3.weight(.semibold))
-            Text("MetalSharp Wine runs Windows programs natively on Apple silicon and is the default. WineHQ builds are optional and need Rosetta 2.")
+            Text("MetalSharp Wine runs Windows programs on Apple silicon without Rosetta 2.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

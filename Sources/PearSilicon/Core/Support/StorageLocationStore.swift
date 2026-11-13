@@ -151,6 +151,25 @@ final class StorageLocationStore: @unchecked Sendable {
         defaults.removeObject(forKey: Self.previousRootPathKey)
     }
 
+    /// Bounded discovery: volume root and its immediate children only. Never
+    /// creates folders on a disconnected or unrelated disk.
+    static func discoverRoots(on volumes: [URL]) -> [URL] {
+        var roots = Set<URL>()
+        for volume in volumes {
+            let children = (try? FileManager.default.contentsOfDirectory(
+                at: volume, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            for candidate in [volume] + children {
+                guard let attributes = try? candidate.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                      attributes.isDirectory == true, attributes.isSymbolicLink != true,
+                      hasMarker(at: candidate) else { continue }
+                roots.insert(candidate.standardizedFileURL)
+            }
+        }
+        return roots.sorted { $0.path < $1.path }
+    }
+
     static func writeMarker(at root: URL) throws {
         try markerContents.write(
             to: root.appendingPathComponent(markerName), atomically: true, encoding: .utf8
@@ -159,7 +178,10 @@ final class StorageLocationStore: @unchecked Sendable {
 
     /// Reads a marker written by `writeMarker` without following symlinks.
     static func hasMarker(at root: URL) -> Bool {
-        guard let data = try? Data(contentsOf: root.appendingPathComponent(markerName)) else { return false }
+        let marker = root.appendingPathComponent(markerName)
+        guard let attributes = try? marker.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey]),
+              attributes.isSymbolicLink != true, attributes.isRegularFile == true,
+              let data = try? Data(contentsOf: marker) else { return false }
         return data == Data(markerContents.utf8)
     }
 }

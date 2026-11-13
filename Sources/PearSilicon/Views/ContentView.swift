@@ -30,7 +30,7 @@ struct ContentView: View {
                     detail
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                StatusBar(message: state.statusMessage, busy: state.isBusy, runtimeRefresh: state.runtimeRefresh,
+                StatusBar(message: state.statusMessage, busy: state.isBusy, storageConnected: state.storageConnected, runtimeRefresh: state.runtimeRefresh,
                           wineEngineInstall: state.wineEngineInstall)
             }
         }
@@ -108,13 +108,7 @@ struct ContentView: View {
             startPoint: .topLeading, endPoint: .bottomTrailing
         )
         .ignoresSafeArea()
-        .overlay(alignment: .topTrailing) {
-            Circle()
-                .fill(Color.accentColor.opacity(0.18))
-                .frame(width: 520, height: 520)
-                .blur(radius: 160)
-                .offset(x: 160, y: -240)
-        }
+
     }
 
     // MARK: - Top bar
@@ -591,11 +585,17 @@ struct WineExecutablePicker: Identifiable {
 struct StatusBar: View {
     let message: String
     let busy: Bool
+    var storageConnected: Bool = true
     var runtimeRefresh: AppState.RuntimeRefreshProgress? = nil
     var wineEngineInstall: AppState.WineEngineInstallProgress? = nil
 
     var body: some View {
         HStack(spacing: 8) {
+            Label(storageConnected ? "Disk connected" : "Disk disconnected",
+                  systemImage: storageConnected ? "externaldrive.badge.checkmark" : "externaldrive.badge.xmark")
+                .foregroundStyle(storageConnected ? Color.secondary : Color.orange)
+                .font(.callout)
+            Divider().frame(height: 14)
             if let install = wineEngineInstall {
                 // Bottom-left: Wine engine download for Windows games.
                 HStack(spacing: 8) {

@@ -14,12 +14,17 @@ guard let id = row["id"], id.hasSuffix(".angleprobe"), NSRunningApplication.runn
 }
 let app = URL(fileURLWithPath: row["bundle"]!)
 let home = row["home"]!
+let log = manifest.deletingLastPathComponent().appendingPathComponent("\(index)-runtime.log")
+if FileManager.default.fileExists(atPath: log.path) {
+    let previous = log.deletingLastPathComponent().appendingPathComponent("\(index)-runtime-\(Int(Date().timeIntervalSince1970)).log")
+    try FileManager.default.moveItem(at: log, to: previous)
+}
 let config = NSWorkspace.OpenConfiguration()
 config.activates = false
 config.createsNewApplicationInstance = true
 var environment = [
  "PEAR_GRAPHICS_BACKEND":"angle",
- "PEAR_ANGLE_LIB_DIR":root.appendingPathComponent("runtime/third_party/angle/out/PearMetal").path,
+ "PEAR_ANGLE_LIB_DIR":app.appendingPathComponent("Frameworks/PearANGLE").path,
  "DYLD_INSERT_LIBRARIES":app.appendingPathComponent("Frameworks/libPearRuntime.dylib").path,
  "DYLD_FRAMEWORK_PATH":"/System/iOSSupport/System/Library/Frameworks",
  "DYLD_LIBRARY_PATH":"/System/iOSSupport/usr/lib",
@@ -27,10 +32,27 @@ var environment = [
  "PEAR_HOME_DIR":home, "HOME":home, "CFFIXED_USER_HOME":home, "TMPDIR":home+"/tmp/",
  "PEAR_KEYCHAIN_DIR":home+"/Keychain", "PEAR_ODR_PATH":home+"/ODR",
  "PEAR_LOG_FILE":manifest.deletingLastPathComponent().appendingPathComponent("\(index)-runtime.log").path,
- "PEAR_DEBUG_GL":"1", "PEAR_DEBUG_TOUCH":"1", "PEAR_DEBUG_METAL":"1",
+ "PEAR_DEBUG_GL":"1", "PEAR_DEBUG_VIEWS":"1", "PEAR_DEBUG_TOUCH":"1", "PEAR_DEBUG_METAL":"1",
  "PEAR_MOUSE_TOUCH":"1",
  "PEAR_NO_BACKGROUND_EXIT":"1"
 ]
+// Mirror the normal launcher's compatibility selection, using the original
+// game's saved overrides while keeping this probe's data directory isolated.
+let info = NSDictionary(contentsOf: app.appendingPathComponent("Info.plist")) as? [String: Any] ?? [:]
+let originalID = String(row["id"]!.dropLast(".angleprobe".count))
+let defaults = UserDefaults(suiteName: "com.pearsilicon.app")!
+let sdk = (info["DTSDKName"] as? String ?? "").replacingOccurrences(of: "iphoneos", with: "")
+let sdkMajor = Int(sdk.split(separator: ".").first ?? "") ?? 0
+let detectedLegacy = info["UIApplicationSceneManifest"] == nil && sdkMajor > 0 && sdkMajor < 15
+let legacy = (defaults.object(forKey: "legacyBridge.enabled." + originalID) as? Bool) ?? detectedLegacy
+if legacy {
+    environment["PEAR_LEGACY_ATTACH_LAYER"] = "1"
+    environment["PEAR_LEGACY_WINDOW_LAYER_ONLY"] = "1"
+    environment["PEAR_DIRECT_LEGACY_TOUCH"] = "1"
+    if let size = defaults.string(forKey: "legacyBridge.resolution." + originalID), size != "auto" {
+        environment["PEAR_LEGACY_LOGICAL_SIZE"] = size
+    }
+}
 environment["PEAR_ALLOW_POINTER_LOCK"] = index == 1 ? "1" : "0"
 environment["PEAR_DEBUG_POINTER"] = "1"
 config.environment = environment

@@ -313,6 +313,7 @@ struct ManagedAppService: Sendable {
         }
         try process.run()
         Self.processes[id] = handle
+        if purpose == .application { handle.trackWindowLifetime(entry: entry) }
         if activate {
             Task { @MainActor [weak handle] in
                 try? await Task.sleep(for: .milliseconds(500))
@@ -783,6 +784,7 @@ final class ManagedAppProcess: Identifiable {
     var processIdentifier: Int32 { process.processIdentifier }
     private var sessionMonitoring = false
     private var monitor: Task<Void, Never>?
+    private var windowMonitor: Task<Void, Never>?
     private var waiter: Process?
     private var server: URL?
     private var serverEnvironment: [String: String] = [:]
@@ -794,6 +796,34 @@ final class ManagedAppProcess: Identifiable {
         self.process = process
         self.entryDirectoryURL = entry.directoryURL.standardizedFileURL
         self.purpose = purpose
+    }
+
+    /// Window metadata only; no screenshots, accessibility or generated input.
+    /// Prefix membership is refreshed before stopping detached Wine children.
+    fileprivate func trackWindowLifetime(entry: LibraryEntry) {
+        windowMonitor = Task { @MainActor [weak self] in
+            var lifetime = WindowLifetime()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let self, self.isRunning else { return }
+                var pids: Set<Int32> = []
+                if self.process.isRunning { pids.insert(self.processIdentifier) }
+                if entry.platform == .wine {
+                    let members = await Task.detached(priority: .utility) {
+                        WinePrefixProcesses.scan([entry])[entry.id] ?? []
+                    }.value
+                    pids.formUnion(members.filter { !$0.isWineService }.map(\.pid))
+                }
+                let hasWindow = WindowLifetime.hasWindow(ownedPIDs: pids)
+                if lifetime.shouldStop(hasWindow: hasWindow, now: ProcessInfo.processInfo.systemUptime) {
+                    if entry.platform == .wine {
+                        _ = await WinePrefixProcesses.forceStop(entry, engine: nil)
+                    }
+                    self.stop()
+                    return
+                }
+            }
+        }
     }
 
     /// Keep tracking the private Wine session across Steam/bootstrapper re-exec.
@@ -834,6 +864,7 @@ final class ManagedAppProcess: Identifiable {
     }
 
     func stop() {
+        windowMonitor?.cancel()
         monitor?.cancel()
         if let waiter, waiter.isRunning { kill(waiter.processIdentifier, SIGKILL) }
         if let server {

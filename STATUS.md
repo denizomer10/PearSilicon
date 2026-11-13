@@ -1,5 +1,7 @@
 # PearSilicon — Çalışma Durumu
 
+> **Güncel çalışma — 2026-11-13 akşam (bu bölüm eskilerin önündedir):** Kullanıcının yeni kapsamı: ANGLE oyun hataları, gerçek klavye/fare→gamepad eşlemeleri, pencere kapatınca sahip olunan süreci durdurma, işaretli diskleri canlı izleme, platform seçimi sızıntısı, yalnız MetalSharp ve sade Liquid Glass arayüz. Çalışma sürüyor; GTA III ve Sackboy çözülmedi. Aşağıdaki eski devir notu tarihsel kayıttır. Güncel ayrıntılar belgenin sonundaki “Akşam uyumluluk çalışması” bölümünde.
+
 > **DEVİR NOTU — 2026-11-13:** Kullanıcı kalan işi başka ajana devrediyor. Son hedef: GL/EAGL yolu tamamen ANGLE; sistem OpenGLES bağımlılığı/fallback kaldırılacak. Yeni exclusive geçiş **WIP**, bitmedi; 45 kurucu testinde 1 hata açık. Önce belgenin sonundaki **“Sonraki ajana devir — tamamen ANGLE”** bölümünü oku. Çalışan önceki checkpoint `fd11163` / runtime `26096cc`.
 
 > Güncel çalışma — 2026-11-13: `codex/angle-metal-bridge`. Opt-in GL/EAGL import ve dinamik çağrı yönlendirmesi eklendi. Kullanıcı ayrı test kopyalarında Cut the Rope için küçük/tam ekran + dokunmayı, Minecraft için görüntü/giriş/native fare yakalamayı doğruladı. Minecraft native Metal kullanıyor; Metal→ANGLE çevirisi iddiası yok. Normal kurulumlar otomatik değiştirilmedi. Ayrıntılar belgenin sonunda ve `docs/ANGLE_INTEGRATION.md` içinde; önceki bölümler tarihsel kayıttır.
@@ -1010,3 +1012,37 @@ Ayrı test kopyalarında (`build/fix-tests/`, kurulu oyunlar/kayıtlar değişme
 - Testler: `test-angle-backend/routing/exclusive` PASS (exclusive: uzantı profili, APPLE MSAA çözümleme, RGB565, chained fixups); Swift 362/23 atlama/0 hata.
 - **AÇIK:** kullanıcı "pencere içi çözünürlük ve görüntü dokunmatik basma uyuşmuyor" dedi; hangi oyunda olduğu ve görüntü henüz alınamadı (ekran kilitli). Sonraki adım: oyunu ve belirtiyi kullanıcıdan al, `PEAR_DEBUG_GL=1` ile fit/touch loglarını incele.
 - Not: kurulu oyunlar köprüye **mutlak yolla** bağlı (`.../ios-apps/<id>.app/Frameworks/libPearOpenGLES.dylib`); taşımada yeniden yazılmalı (relocation testleri bunu kapsıyor).
+
+## Akşam uyumluluk çalışması — 2026-11-13
+
+Kullanıcının son doğrulamaları:
+- Burger Shop 2: GLES1 sunumu düzeltildikten sonra çalışıyor.
+- YouTube: açılış ve ardından yerleşim düzeltildi; kullanıcı “sorun yok” dedi.
+- Dr. Driving: önce beyaz ekran giderildi, ardından GLES1 koordinat/ölçek düzeltmesi; kullanıcı “sorun yok” dedi.
+- Bejeweled Blitz: doğru imzalanmış ayrı test kopyası açıldı; kullanıcı “çalıştı” dedi. Ayrıntılı yeniden boyutlandırma/dokunma matrisi henüz ayrı doğrulanmadı.
+- GTA III: hâlâ siyah. Taze tanılama gerçek nedeni gösterdi: aynı EAGL bağlamı iki iş parçacığında kullanılıyor; EGL ikinci bağlamayı reddediyor, GL çağrıları `GLES0`/FBO durum `0` döndürüyor. Önceki ajanın “mantıksal olarak current ama EGL nil” başarı yolu kaldırıldı; bu yol komutları sessizce kaybediyordu. Gerçek, seri hale getirilmiş bağlam paylaşımı henüz yapılmadı. Sistem EAGL fallback eklenmeyecek.
+- Run Sackboy Run: hâlâ çöküyor, aynı ana oyun görüntüsü ofsetleri 914264 / 69308 / 98676 / 1019488. Hem ilk hem normal legacy profiline yaklaştırılmış testte sürüyor. Neden henüz kanıtlanmadı; GL hatası/MapBuffer/FBO tanılaması eklendi, oyun kodu disassemble edilmedi.
+
+Yapılan kaynak değişiklikleri:
+- ANGLE drawable ve presentation GLES1 desteği; core FBO adlarını GLES1 bağlamında OES'e yönlendiren özgün ABI adaptörleri; GLES1 silme/ölçüm çağrıları da doğru yola gidiyor. ANGLE fork'taki mevcut SurfaceMtl alt-katman sıralaması korundu.
+- YouTube'da UIScreen ölçü sorgusunun tembel delegate.window getter'ı üzerinden UIKit'i yeniden oluşturması engellendi: mevcut scene/legacy UIWindow listesi okunuyor. Screen cache ayrıca yeniden giriş korumalı.
+- GLES1'de pencere büyümesi mantıksal dokunma alanını değiştirmiyor; normal UIKit uygulamalarında oyun titlebar clamp'i uygulanmıyor (`UIRequiresFullScreen=false`).
+- Gamepad JSON artık aynı fiziksel tuş/fare düğmesine atanmış bütün kontrolleri koruyor; eski tekli JSON okunabiliyor. AppKit fiziksel tuş/modifier yolu, tekrar ayıklama, basılı fare+Dpad ve ortak kontrol bırakma hesapları eklendi; GCKeyboard ikinci kez aynı girdiyi üretmiyor. Gerçek GTA sanal gamepad doğrulaması bekliyor.
+- Mac/Wine ayrıntı seçimi yalnız geçerli platformdan gelir; Wine kataloğu ve görünür kurulu motorlar yalnız MetalSharp; eski x86 motor bağlı manifestler başlatmada MetalSharp'a yönlendirilir. Eski motor dosyaları ve kullanıcı prefix'leri silinmedi.
+- Disk mount/unmount/rename gözlemi, tam marker doğrulaması, sınırlı kök keşfi, tek anlamlı kütüphaneye yeniden bağlanma, Disk connected/disconnected durumu. Yol değişirken PortableLibrary ve Wine servisleri de yenileniyor. Birden fazla ayrı işaretli kökü aynı anda birleştirme henüz yok; belirsiz kök seçimi otomatik yapılmıyor.
+- iOS son oyun penceresi kapanınca süreç kapanışı; Mac/Wine sahip olunan süreç/prefix için yalnız pencere metadatasını izleyen son pencere takibi. Minimize/offscreen pencere kapatılmış sayılmıyor. Gerçek tüm-platform X kapatma testi henüz tamamlanmadı.
+- GUI ağır 520px/160px blur kaldırıldı; tek başlatma eylemi, yollar/teknik ayrıntılar açılır bölümlere alındı; mevcut native Liquid Glass kullanılıyor. Kullanıcıya görsel doğrulama bekliyor.
+
+Doğrulama:
+- `swift test`: 367 XCTest, 23 isteğe bağlı atlama, 0 hata; 24 Swift Testing geçti (`build/diagnostics/session-20261113/swift-all-final.log`).
+- ANGLE Metal kaynak derlemesi ve backend/shader/surface/drawable/EAGL/routing/exclusive testleri geçti; son eklenen opt-in FBO/MapBuffer tanılamasından sonra son tur tekrar gerekiyor.
+- `scripts/test-graphics-geometry.sh`: dokunma + ekran cache yeniden giriş/resize testleri geçti.
+- Güncel GUI paketi: `/Users/mac/PearSilicon/build/verification-20261113/PearSilicon.app`. Henüz normal kurulumla değiştirilmedi/yayınlanmadı.
+
+Test disiplini / yollar:
+- Kurulu asıllar ve veriler `/Volumes/Untitled/PearSilicon`; asıl oyunlara bu oturumda güncelleme uygulanmadı. Testler `build/compatibility-probes[-v2|-v3]-20261113` altında ayrı kimlik/home ile.
+- Kullanıcı ekran görüntüsü veya elle doğrulama sağlıyor. Ekran görüntüsü alma, otomatik tıklama veya odak çalma yapılmıyor. `launch-angle-game-probe.swift` activates=false açar; `stop-angle-game-probe.swift` yalnız manifestin birebir test yolu/kimliği eşleşen kendi test süreçlerini kapatır.
+- Test hazırlayıcısı artık framework symlink'lerini bozmaz ve içten dışa imzalar. Eski v1/v2 Bejeweled kopyaları test aracı yüzünden imza hatası verdi; v3 doğru hazırlanıp açıldı. Bu hatayı ürün ANGLE hatası olarak sayma.
+- Taze loglar her test başlatmada döndürülüyor. `PEAR_DEBUG_GL` KHR debug callback'i GL hata kuyruğunu tüketmeden yalnız tanılama açar.
+- Önceden var olan kirli değişiklikler `build/diagnostics/session-20261113/preexisting-{root,runtime,angle}.patch` dosyalarında korunuyor.
+- Açık kullanıcı sorusu yok. Yeni kararlı release/push henüz yapılmadı; GTA III, Sackboy ve gerçek gamepad/GUI/disk/kapama denemeleri kalan işler.
