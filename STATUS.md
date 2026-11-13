@@ -1,5 +1,7 @@
 # PearSilicon — Çalışma Durumu
 
+> Güncel çalışma — 2026-11-13: `codex/angle-metal-bridge`. ANGLE kaynak derlemesi ve context/pbuffer sunum testleri geçti; oyun EAGL yönlendirmesi henüz etkin değil. Güncel ayrıntılar belgenin sonundaki ANGLE kayıtlarında ve `docs/ANGLE_INTEGRATION.md` içinde. Önceki sürüm bölümleri tarihsel kayıttır.
+
 ## 0.8.3 (28) — 2026-11-11
 
 - **Wine kataloğu:** MetalSharp Wine ve Sikarugir Wine 11 kaldırıldı (PearWine
@@ -788,3 +790,55 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - **Title bar buttons not clickable in legacy games:** the direct legacy mouse→touch path swallowed every left click inside the full-size content view, title bar included. Mouse→touch and the legacy fit now use the window's content layout rect (below the title bar; whole view in full screen) via `PearWindowVisibleContentRect`. User confirmed minimize/zoom work.
 - Restricting the legacy subtree-constraint skip to scene views crashed during window controller creation (`-[NSWindow _setFrameCommon:]`); the blanket skip stays.
 - PearRuntime 0.9.2.
+
+### 2026-11-13 — Cut the Rope giriş regresyonu / Minecraft arayüzü
+
+- Kullanıcı Cut the Rope tıklamalarının ulaşmadığını, tanılama denemesinde ise yanlış konumda algılandığını bildirdi. Canlı günlükte hover/hareket olaylarının `allTouches` üzerinden native touch generation sayacını artırıp gerçek tıklama yedeğini iptal ettiği görüldü. Sayaç artık yalnız `UITouchPhaseBegan` ile ilerliyor.
+- Native basma gelmeyen, kendi touchesBegan uygulaması olan GL/Metal render görünümlerinde gecikmeli yedek artık doğrudan responder teslimini kullanabiliyor. UIControl, UIScrollView ve gesture recognizer görünümleri bu otomatik yola alınmıyor. Virtual gamepad yolu değişmedi.
+- GL window-space dönüşümü yeniden boyutlanmış pencereyi değil drawable'ın kendi mantıksal boyutunu referans alıyor. 768×1024 içeriğin 1360×998 pencerede orta/alt noktaları için geometri regresyon örnekleri eklendi. Görsel/oyun içi doğrulama bekleniyor.
+- Minecraft ekran görüntüsünde pembe arayüz dokuları ve bozuk glifler var; sahne çiziliyor. Sistem Metal günlüğünde açık shader/texture hatası bulunmadı. Doku oluşturma başarısızlıklarını format/boyut/mipmap ile en fazla 32 kayıtla raporlayan isteğe bağlı tanılama eklendi. Minecraft için çözüm iddiası yok; kayıtlar/saves değiştirilmedi.
+- Runtime derlemesi, bellek içi direct touch begin/move/end/cancel testi ve geometri testi geçti. Swift turu: **360 XCTest (22 skip) + 24 Swift Testing, 0 hata**. Değişiklikler runtime alt reposunda; commit/push/release yapılmadı.
+- Son Cut the Rope denemesinde kullanıcı **“Evet, doğru yerde çalışıyor”** yanıtıyla PLAY/bölüm tıklamalarının doğru konuma gittiğini doğruladı. Sürükleme ve tüm oyunlar için başarı genellenmez.
+- Güncel `build/PearSilicon.app` yeniden üretildi ve imzalandı; normal kurulumda kalıcılaştırmak için açık ana GUI'nin çıkışı bekleniyor. Minecraft tanılamalı açıldı; şu ana kadar nil texture allocation kaydı yok. Kullanıcının yeni görsel sonucu bekleniyor.
+
+### 2026-11-13 — resize sonrası düzeltme devamı
+
+- Kullanıcı yeniden boyutlandırma sonrasında giriş kaymasının sürdüğünü bildirdi. GL window-space dönüşümü artık mevcut drawable katmanının `convertPoint:fromLayer:` dönüşümünü kullanıyor; ilk renderbuffer boyutu/varsayılan merkez hesabına bağlı değil. Yalnız render görünümüne ait dokunmalara uygulanıyor.
+- Son görüntüde oyun solda, sağ/alt alan beyaz kaldı. GL fit yolunun "artık pencereye sığıyor" dalı transformu kaldırıyor ve büyütmeyi atlıyordu; bu dal kaldırıldı. Büyütme/küçültmede aynı aspect-fit yolu korunuyor. Bu son değişikliğin kullanıcı doğrulaması bekleniyor.
+- Güncel yerel uygulamanın ara sürümü /Applications'a kuruldu; önceki kopya `build/Backups/PearSilicon-before-resize-20261113-132609.app`. Son aspect-fit paketi yeniden derleniyor. Minecraft doku sorunu açık; cihaz modülünü kapatan tek seferlik karşılaştırma denemesi hazırlanıyor. Oyun verisi değiştirilmedi.
+
+### 2026-11-13 — GL ve Metal arka uçlarının ayrılması
+
+- Kullanıcı cihaz kimliği kapalı Minecraft denemesinde doku/glif bozulmasının sürdüğünü ve bulanıklık olduğunu bildirdi; bu deneme çözüm sayılmıyor, kalıcı tercih yapılmadı.
+- PearRuntime kaynakları `modules/graphics-gl/GLShim.mm` ve `modules/graphics-metal/MetalLayerShim.mm` olarak ayrıldı. Ortak `graphics` ekran/pencere geometrisini korur. Üst `graphics` seçimi iki çocuğu içerir; üstü kapatmak ikisini kapatır. `graphics-gl`/`graphics-metal` tek başına seçilebilir; açıkça kapatma önceliklidir. Seçim yalnız launch ortamından bir kez okunur; oyun adına/çip adına göre tahmin yapılmaz.
+- Altı ayrı süreçli modül politika testi geçti (`scripts/graphics-module-smoke.cpp`); runtime derlendi. Bu mimari ayrım Minecraft'ın pembe dokularını çözdüğü anlamına gelmez.
+- Cut the Rope için son büyütme/küçültme aspect-fit ve canlı katman input dönüşümü denemesi hazırlanıyor. Minecraft için yalnız Metal + yerel ekran davranışı karşılaştırması sonraki tanılama adımı; mevcut oyun süreci izinsiz kapatılmıyor.
+- Pencereli Cut the Rope görüntü/tıklama doğru; kullanıcı tam ekranda tıklamanın gitmediğini ve iç çözünürlüğün düşük kaldığını bildirdi. Günlükte pencere 1568×1252 → 3325×1871 iken fit ölçeği 1.223'te kalıyordu: UIKit eski transform üzerinden view bounds'u büyütüyor, GL fit bunu yeni mantıksal oyun alanı sanıyordu. Mantıksal boyut artık başarılı renderbuffer tahsisinin piksel boyutu / contentsScale değerinden alınır; pencere autoresizing'i tahsis olmadığı sürece bu alanı değiştiremez. Son paket derlendi; tam ekran doğrulaması bekleniyor.
+- Bu düzeltme 768×1024 framebuffer'ı daha yüksek çözünürlükte yeniden çizilmiş yapmaz; engine renderbuffer/viewport'u birlikte yeniden kurmadan yüksek iç çözünürlük garantisi verilmez. Keskinlik ve giriş ayrı doğrulanmalı.
+- Minecraft, güncel split runtime ile `graphics-gl` ve `UIScreen` shim'i kapalı, cihaz modülü açık tek seferlik karşılaştırmayla başlatıldı (`/tmp/pear-minecraft-metal-native-screen.log`). Günlükte yalnız `graphics-metal` backend'i var; EAGL/UIScreen hook kurulum satırı yok. Kullanıcı sonucu bekleniyor. Bu ayarlar kalıcı yapılmadı.
+- Son Cut the Rope kullanıcı testinde tıklamalar düzeldi; kalan sorun görüntünün yukarı kayması/altta boşluk. GL fit artık pencere rect'ini doğrudan parent katmana dönüştürüp anchorPoint'e göre yerleştirir; eski parent bounds merkezine güvenmez. Bounds/position/transform animasyonsuz tek CATransaction içinde uygulanır; UIKit transformu sıfırlarsa cache erken dönüşü bunu kaçırmaz. Son görsel doğrulama bekleniyor.
+- Minecraft UI materyalleri + Mojangles fontu orijinal IPA ile karşılaştırıldı: 7 dosya, 0 fark. Metal shader library/pipeline oluşturma başarısızlıkları için opt-in ve 32 kayıtla sınırlı hata tanılaması eklendi; shader/doku içeriği değiştirilmez.
+- Kullanıcı üç uygulamadan çıktı; paket `/Applications/PearSilicon.app` içine kuruldu, imzası doğrulandı. Yedek `build/Backups/PearSilicon-before-graphics-20261113-134105.app`. Cut the Rope ve Minecraft runtime yenilemeleri başlatıldı. Minecraft'ın başarısız cihaz/ekran kapatma denemeleri kalıcı tercihe yazılmadı; sonraki başlatma normal profil + tanılama olacak.
+- Son kurulu pakette kullanıcı Cut the Rope için **“Yerleşim ve tıklamalar düzgün”** yanıtıyla pencere büyütme/küçültme/tam ekran yerleşimi ve tıklamaları doğruladı. Günlükte OpenGLView bounds 768×1024 sabit; frame görünür pencere içinde ortalı, tam ekran fit ölçeği gerçek boyuta göre değişiyor. İç çözünürlük artışı bu doğrulamaya dahil değil.
+- Minecraft normal ekran/cihaz profiliyle ve library/pipeline tanılamasıyla yeniden açık. Şu ana kadar texture/library/pipeline başarısızlığı kaydı yok; pembe UI/glif sorununun nedeni halen belirsiz. Sonraki inceleme Metal API/shader validation ile kaynak bağlamalarını doğrulamak.
+
+### 2026-11-13 — kullanıcı isteğiyle ANGLE yönüne geçiş
+
+- Kullanıcı sistem OpenGLES yerine ANGLE tabanlı bağımsız GLES yolu istedi. `denizomer10/angle` zaten Google ANGLE fork'u (ADMIN erişimi doğrulandı); yeni mükerrer repo oluşturulmadı. PearSilicon/PearRuntime'da `codex/angle-metal-bridge`, ANGLE checkout'unda `codex/pearruntime-metal` dalı açıldı. Önceki değişiklikler korundu.
+- Fork, PearRuntime'a `third_party/angle` alt modülü olarak **686adbb2a39854ab687da009e534f6842a85f453** revizyonunda pinlendi. LICENSE korundu; Chromium build bağımlılıkları henüz indirilmedi. Kaynak checkout'u yaklaşık 109 MB.
+- PearRuntime `graphics-gl` modülüne orijinal ANGLE yükleyici eklendi: Metal EGL display, proc resolution, eksik kütüphaneden toparlanma ve süreç içinde değiştirilemeyen backend seçimi. EAGL yönlendirmesi henüz etkin değil; sistem GL çağrıları ile ANGLE nesneleri karıştırılmıyor.
+- **Gerçek Catalyst/Metal testi geçti:** EGL 1.5, renderer `ANGLE Metal Renderer: Apple M1`, 16×16 pbuffer RGBA readback **64,128,191,255**. Yükleyici hata/tekrar başlatma testleri geçti. Runtime derlendi ve ANGLE API export'ları dylib'de doğrulandı.
+- Önemli test sınırı: bu ilk test, mevcut 32-bit motor paketindeki macOS ANGLE dylib'lerini 64-bit Catalyst sürecinden yükledi. Pinlenen fork'un yeni derlemesi değildir; binary kaynak revizyonu doğrulanmış gibi gösterilmemeli. Oyunların ANGLE üzerinden çizildiği iddia edilmemeli.
+- ABI envanteri: Cut the Rope ana binary'sinde 50 GL import + EAGLContext; Minecraft'ta 88 + EAGLContext. Bu, aktif renderer'ı tek başına kanıtlamaz. Rapor `build/diagnostics/angle-import-audit.json`.
+- Tekrarlanabilir test: `bash scripts/test-angle-backend.sh`; sınırlar ve sonraki EAGL/context/FBO/present/import yönlendirme adımları `docs/ANGLE_INTEGRATION.md`. Native Metal girdisinin ANGLE tarafından çevrildiği iddia edilmiyor; bu ayrı adaptör gerektirir.
+- Yeni ANGLE çalışması kaynak/deneme aşamasında; oyunlara kurulmadı, commit/push/release yapılmadı.
+
+### 2026-11-13 — ANGLE context/sunum çekirdeği ve gerçek kaynak derlemesi
+
+- Orijinal `PearANGLEContext` eklendi: GLES 2/3 sharegroup nesneleri, pthread tabanlı current-context sahipliği, thread değiştirme, açık piksel boyutlu pbuffer tahsisi ve başarısız resize durumunda eski drawable'ın korunması. Yanlış thread'den kullanım/resize reddedilir.
+- RGBA8 color attachment 0 framebuffer'ı EGL drawable'a kopyalanıp sunulabilir. Read/draw FBO bağlamaları, viewport, scissor, color mask ve çağıranın mevcut GL hata durumu korunur. ES2 ANGLE blit ölçekleme desteklemediği için farklı piksel boyutları erken reddedilir; ES3 core blit kullanır.
+- Eski staged ANGLE'da thread current-context bırakmadan kapanınca tekrar bağlama `EGL_BAD_ACCESS 0x3002` veriyordu. Fork'ta Apple cleanup etkinleştirildi ve callback sırasında temizlenmiş thread TLS slotu geçici olarak geri kuruldu. Kaynak fix **9e214cf2b9154b2e4d08d44d9d1bdd0255e623ca**, `denizomer10/angle` `codex/pearruntime-metal` dalına push edildi.
+- ANGLE Metal-only **kaynaktan derlendi**: GN/DEPS-pinned Clang 24, yerel Xcode macOS 27.2 SDK. Vulkan/Dawn/OpenCL/SwiftShader/test trace bağımlılıkları bu profilin dışında. EAGL/frontend hâlâ oyuna yönlendirilmedi.
+- Kaynak binary ile gerçek Catalyst testleri geçti: Metal EGL pbuffer RGBA readback, yükleyici, paylaşımın ilk context silindikten sonra sürmesi, resize/readback, incomplete-FBO rollback, thread sahipliği ve **16 thread-exit/rebind döngüsü**. GLES2/3 GLSL shader compile/link + Metal üçgen çizimi readback **255,255,0,255** geçti.
+- Tekrarlanabilir komut: `bash scripts/build-angle-metal.sh [--sync]`; test: `bash scripts/test-angle-backend.sh`. `runtime/third_party/angle/out/PearMetal/pearruntime-build.json` kaynak commit, temiz/diff durumu, compiler/SDK, GN args, test log ve dylib hash'lerini kaydeder. `gameRoutingValidated=false`.
+- PearRuntime context çekirdeği + önceki graphics split/fixler **1386314**, `denizomer10/PearRuntime` `codex/angle-metal-bridge` dalına push edildi. Henüz yeni release/tag, 64-bit oyunlara ANGLE paketleme veya varsayılan backend değişimi yok. GLES1 sunumu, native-window EGL yüzeyi, EAGL renderbuffer/import yönlendirmesi ve MSAA/renk formatları sonraki işler.

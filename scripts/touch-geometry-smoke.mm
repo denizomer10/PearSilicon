@@ -6,6 +6,10 @@ static void near(CGPoint actual, CGFloat x, CGFloat y) {
     assert(fabs(actual.x - x) < 0.001 && fabs(actual.y - y) < 0.001);
 }
 int main() {
+    // A portrait game fitted into a landscape Mac window: the displayed
+    // centre and a point near the bottom must map into the game's own space.
+    near(PearMapFittedTouch(CGPointMake(680, 499), CGSizeMake(768, 1024), CGSizeMake(768, 1024), CGSizeMake(1360, 998), true), 384, 512);
+    near(PearMapFittedTouch(CGPointMake(680, 748.5), CGSizeMake(768, 1024), CGSizeMake(768, 1024), CGSizeMake(1360, 998), true), 384, 768);
     assert(CGSizeEqualToSize(PearOrientDrawableSize(CGSizeMake(320, 480), true, false), CGSizeMake(480, 320)));
     assert(CGSizeEqualToSize(PearOrientDrawableSize(CGSizeMake(480, 320), false, true), CGSizeMake(320, 480)));
     assert(CGSizeEqualToSize(PearOrientDrawableSize(CGSizeMake(320, 480), true, true), CGSizeMake(320, 480)));
