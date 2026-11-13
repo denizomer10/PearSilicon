@@ -99,6 +99,10 @@ final class AppState: ObservableObject {
     @Published private(set) var storageRootURL: URL
     @Published private(set) var storageConnected = true
     private var storageObservationTask: Task<Void, Never>?
+    /// The location picker: Internal Storage first, then each connected disk
+    /// that carries a marked PearSilicon library.
+    @Published private(set) var storageLocations: [StorageLocationOption] = []
+    let storageStore: StorageLocationStore
 
     /// Retained copy of the previous storage after a move, if any.
     @Published private(set) var previousStorageRootURL: URL?
@@ -176,11 +180,15 @@ final class AppState: ObservableObject {
 
     init(
         storageRootURL explicitRoot: URL? = nil,
+        storageStore: StorageLocationStore = .shared,
         packageImports: PackageImportOperations? = nil,
         observesWorkspace: Bool = true
     ) {
-        if explicitRoot == nil { AppPaths.migrateLegacySupportDirectoryIfNeeded() }
-        let base = explicitRoot ?? AppPaths.supportRoot
+        if explicitRoot == nil, storageStore === StorageLocationStore.shared {
+            AppPaths.migrateLegacySupportDirectoryIfNeeded()
+        }
+        self.storageStore = storageStore
+        let base = explicitRoot ?? storageStore.rootURL
         let library = base.appendingPathComponent(PortableLibrary.iOSFolder, isDirectory: true)
         let keymaps = base.appendingPathComponent("Keymaps", isDirectory: true)
 
@@ -189,7 +197,10 @@ final class AppState: ObservableObject {
         self.portableLibrary = PortableLibrary(rootURL: base)
         let engines = WineEngineStore(rootURL: base.appendingPathComponent("Engines", isDirectory: true))
         self.wineApps = WineAppService(engines: engines)
-        self.previousStorageRootURL = explicitRoot == nil ? StorageLocationStore.shared.previousRootURL : nil
+        self.previousStorageRootURL = explicitRoot == nil ? storageStore.previousRootURL : nil
+        self.storageLocations = StorageLocationStore.locationOptions(
+            internalRoot: storageStore.internalRootURL, selectedRoot: base, external: []
+        )
         let installer = PackageInstaller(libraryURL: library)
         self.packageInstaller = installer
         self.packageImports = packageImports ?? .live(installer: installer)
@@ -204,11 +215,11 @@ final class AppState: ObservableObject {
     /// Rebuilds the path-bound services after storage moved or another library
     /// was attached.
     private func reloadStorage() {
-        let base = AppPaths.supportRoot
+        let base = storageStore.rootURL
         storageRootURL = base
         portableLibrary = PortableLibrary(rootURL: base)
         wineApps = WineAppService(engines: WineEngineStore(rootURL: base.appendingPathComponent("Engines", isDirectory: true)))
-        previousStorageRootURL = StorageLocationStore.shared.previousRootURL
+        previousStorageRootURL = storageStore.previousRootURL
         libraryURL = base.appendingPathComponent(PortableLibrary.iOSFolder, isDirectory: true)
         packageInstaller = PackageInstaller(libraryURL: libraryURL)
         packageImports = .live(installer: packageInstaller)
@@ -261,33 +272,103 @@ final class AppState: ObservableObject {
             while self.isBusy || self.runtimeRefresh != nil || self.installingWineDistributionID != nil {
                 do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
             }
-            let configured = StorageLocationStore.shared.rootURL
-            let roots = await Task.detached(priority: .utility) {
-                StorageLocationStore.discoverRoots(on: FileManager.default.mountedVolumeURLs(
-                    includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]
-                ) ?? [])
+            let internalRoot = self.storageStore.internalRootURL
+            let external = await Task.detached(priority: .utility) {
+                StorageLocationStore.externalLocations(
+                    on: FileManager.default.mountedVolumeURLs(
+                        includingResourceValuesForKeys: [.volumeIsRootFileSystemKey, .volumeLocalizedNameKey],
+                        options: [.skipHiddenVolumes]
+                    ) ?? [],
+                    internalRoot: internalRoot
+                )
             }.value
             guard !Task.isCancelled else { return }
-            var selected = StorageLocationStore.hasMarker(at: configured) ? configured : nil
-            // Reattach a relocated marked library only when unambiguous.
-            if selected == nil, roots.count == 1, let root = roots.first {
-                do {
-                    try StorageLocationStore.shared.commit(rootURL: root, previousRootURL: nil)
-                    selected = root
-                } catch { self.statusMessage = L10n.error(error.localizedDescription) }
-            }
-            self.storageConnected = selected != nil
-            if let selected {
-                if selected.standardizedFileURL != self.storageRootURL.standardizedFileURL { self.reloadStorage() }
-                try? await self.refreshLibrary()
-            } else {
-                self.installedApps = []
-                self.managedEntries = []
-                self.selection = nil
-                self.selectedManagedEntryID = nil
-                self.wineEngines = []
+            await self.applyStorageSnapshot(externalLocations: external)
+        }
+    }
+
+    /// Applies one view of the connected disks to the picker and the library.
+    ///
+    /// When the selected external library's disk is gone, PearSilicon switches
+    /// to Internal Storage instead of showing an empty library. Nothing is
+    /// deleted: the disk's games and saves are used again once it is
+    /// reconnected and picked. Games from the lost disk are stopped first;
+    /// their executables and saves are no longer reachable.
+    func applyStorageSnapshot(externalLocations: [StorageLocationOption]) async {
+        let store = storageStore
+        let configured = store.rootURL.standardizedFileURL
+        var available: URL?
+        if !store.usesCustomRoot {
+            do { available = try store.requireAvailableRoot() }
+            catch { statusMessage = L10n.error(error.localizedDescription) }
+        } else if StorageLocationStore.hasMarker(at: configured) {
+            // A renamed or remounted disk resolves through its bookmark; record
+            // the new path so the CLI and the next launch find it directly.
+            if store.storedRootPath != configured.path { try? store.select(rootURL: configured) }
+            available = configured
+        } else {
+            let lostName = storageLocations.first { $0.rootURL == configured }?.name
+                ?? configured.deletingLastPathComponent().lastPathComponent
+            let interrupted = runningGameNames
+            if !interrupted.isEmpty { stopAllRunningGames() }
+            do {
+                try store.select(rootURL: store.internalRootURL)
+                available = store.rootURL
+                statusMessage = "\(lostName) was disconnected. Using Internal Storage; nothing on the disk was deleted."
+                    + (interrupted.isEmpty ? "" : " Stopped: \(interrupted.joined(separator: ", ")).")
+            } catch {
+                statusMessage = L10n.error("\(lostName) was disconnected and Internal Storage is unavailable: \(error.localizedDescription)")
             }
         }
+        storageConnected = available != nil
+        storageLocations = StorageLocationStore.locationOptions(
+            internalRoot: store.internalRootURL,
+            selectedRoot: available ?? configured,
+            external: externalLocations
+        )
+        if let available {
+            if available.standardizedFileURL != storageRootURL.standardizedFileURL { reloadStorage() }
+            try? await refreshLibrary()
+        } else {
+            installedApps = []
+            managedEntries = []
+            selection = nil
+            selectedManagedEntryID = nil
+            wineEngines = []
+        }
+    }
+
+    /// Switches the library to another connected location from the picker.
+    /// Running apps belong to the current library, so they must stop first.
+    func selectStorageLocation(_ option: StorageLocationOption) async {
+        guard option.rootURL.standardizedFileURL != storageRootURL.standardizedFileURL else { return }
+        guard !isBusy else { return }
+        guard runningGames.isEmpty, runningManagedEntries.isEmpty else {
+            statusMessage = L10n.error("Stop every running app before switching storage")
+            return
+        }
+        do {
+            try storageStore.select(rootURL: option.rootURL)
+            reloadStorage()
+            storageConnected = true
+            selection = nil
+            selectedManagedEntryID = nil
+            rebuildStorageLocations()
+            try await refreshLibrary()
+            statusMessage = "Using \(option.name)"
+        } catch {
+            statusMessage = L10n.error("Could not use \(option.name): \(error.localizedDescription)")
+            rebuildStorageLocations(dropping: option)
+        }
+    }
+
+    private func rebuildStorageLocations(dropping removed: StorageLocationOption? = nil) {
+        let external = storageLocations.filter {
+            $0.kind == .external && $0 != removed && StorageLocationStore.hasMarker(at: $0.rootURL)
+        }
+        storageLocations = StorageLocationStore.locationOptions(
+            internalRoot: storageStore.internalRootURL, selectedRoot: storageRootURL, external: external
+        )
     }
 
     func refreshRunningApps() {
@@ -374,8 +455,8 @@ final class AppState: ObservableObject {
 
     func bootstrap() async {
         do {
-            let store = StorageLocationStore.shared
-            if observesWorkspace && storageRootURL == StorageLocationStore.defaultSupportRoot && !store.usesCustomRoot {
+            let store = storageStore
+            if observesWorkspace && storageRootURL == store.internalRootURL && !store.usesCustomRoot {
                 try store.requireAvailableRoot()
             }
             try await refreshLibrary()
@@ -982,7 +1063,7 @@ final class AppState: ObservableObject {
         do {
             // Adopt only the known default legacy library; custom locations
             // still require their existing marker. Validate before any deletion.
-            let availableRoot = try StorageLocationStore.shared.requireAvailableRoot()
+            let availableRoot = try storageStore.requireAvailableRoot()
             guard LibraryPath.canonicalPath(availableRoot) == LibraryPath.canonicalPath(storageRootURL) else {
                 throw PearError.invalidPackage("Storage location changed; reload the library before resetting")
             }
@@ -1280,8 +1361,9 @@ final class AppState: ObservableObject {
             return
         }
         do {
-            try StorageLocationStore.shared.commit(rootURL: candidate, previousRootURL: nil)
+            try storageStore.commit(rootURL: candidate, previousRootURL: nil)
             reloadStorage()
+            rebuildStorageLocations()
             try await refreshLibrary()
             statusMessage = "Using library at \(candidate.path)"
         } catch {
@@ -1303,6 +1385,7 @@ final class AppState: ObservableObject {
                 Task { @MainActor in self.statusMessage = message }
             }
             reloadStorage()
+            rebuildStorageLocations()
             try await refreshLibrary()
             statusMessage = "Storage moved to \(result.rootURL.path). The previous copy was kept for rollback."
         } catch {
@@ -1316,7 +1399,7 @@ final class AppState: ObservableObject {
         defer { finishBusyWork() }
         do {
             try await StorageMigration().removePreviousCopy()
-            previousStorageRootURL = StorageLocationStore.shared.previousRootURL
+            previousStorageRootURL = storageStore.previousRootURL
             statusMessage = "Previous storage copy removed"
         } catch {
             statusMessage = L10n.error(error.localizedDescription)

@@ -26,8 +26,17 @@ final class StorageLocationStore: @unchecked Sendable {
     /// Kept outside the relocatable root so it survives an unavailable disk.
     let leaseFileURL: URL
 
-    init(defaults: UserDefaults = AppSettings.defaults, leaseFileURL: URL? = nil) {
+    /// The Mac's own storage ("Internal Storage" in the location picker).
+    /// Injectable so tests never touch the real Application Support folder.
+    let internalRootURL: URL
+
+    init(
+        defaults: UserDefaults = AppSettings.defaults,
+        leaseFileURL: URL? = nil,
+        internalRootURL: URL? = nil
+    ) {
         self.defaults = defaults
+        self.internalRootURL = (internalRootURL ?? Self.defaultSupportRoot).standardizedFileURL
         self.leaseFileURL = leaseFileURL ?? Self.defaultSupportRoot
             .deletingLastPathComponent()
             .appendingPathComponent("PearSilicon.storage.lock")
@@ -46,7 +55,7 @@ final class StorageLocationStore: @unchecked Sendable {
     /// when the volume was remounted at a different location.
     var rootURL: URL {
         guard let stored = defaults.string(forKey: Self.rootPathKey), !stored.isEmpty else {
-            return Self.defaultSupportRoot.standardizedFileURL
+            return internalRootURL
         }
         let storedURL = URL(fileURLWithPath: stored, isDirectory: true).standardizedFileURL
         if FileManager.default.fileExists(atPath: storedURL.path) { return storedURL }
@@ -57,6 +66,11 @@ final class StorageLocationStore: @unchecked Sendable {
         return storedURL
     }
 
+    /// The stored custom path, if any (nil means Internal Storage).
+    var storedRootPath: String? {
+        defaults.string(forKey: Self.rootPathKey).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     var previousRootURL: URL? {
         guard let stored = defaults.string(forKey: Self.previousRootPathKey), !stored.isEmpty else { return nil }
         return URL(fileURLWithPath: stored, isDirectory: true).standardizedFileURL
@@ -64,7 +78,7 @@ final class StorageLocationStore: @unchecked Sendable {
 
     /// True when the user moved the root somewhere other than the default.
     var usesCustomRoot: Bool {
-        rootURL.standardizedFileURL != Self.defaultSupportRoot.standardizedFileURL
+        rootURL.standardizedFileURL != internalRootURL
     }
 
     /// The root the migration must write into when the user picks `folder`.
@@ -131,6 +145,26 @@ final class StorageLocationStore: @unchecked Sendable {
         }
     }
 
+    /// Switches between libraries that already exist (the location picker).
+    /// Unlike `commit`, the rollback copy recorded by a migration is kept.
+    /// Selecting the internal root clears the custom path, so the internal
+    /// library is created (with its marker) on first use.
+    func select(rootURL: URL) throws {
+        let root = rootURL.standardizedFileURL
+        if root == internalRootURL {
+            defaults.removeObject(forKey: Self.rootPathKey)
+            defaults.removeObject(forKey: Self.rootBookmarkKey)
+            try requireAvailableRoot()
+            return
+        }
+        guard Self.hasMarker(at: root) else {
+            throw PearError.invalidPackage("\(root.path) is not a PearSilicon library or its disk is not connected")
+        }
+        defaults.set(root.path, forKey: Self.rootPathKey)
+        if let bookmark = root.bookmarkDataForStorage() { defaults.set(bookmark, forKey: Self.rootBookmarkKey) }
+        else { defaults.removeObject(forKey: Self.rootBookmarkKey) }
+    }
+
     /// Explicitly deletes the retained copy a migration left behind. Never runs
     /// automatically: the old data is the user's rollback until they confirm.
     func removePreviousCopy() throws {
@@ -139,7 +173,7 @@ final class StorageLocationStore: @unchecked Sendable {
         }
         let current = rootURL.standardizedFileURL
         guard previous != current,
-              previous.lastPathComponent == "PearSilicon" || previous == Self.defaultSupportRoot.standardizedFileURL,
+              previous.lastPathComponent == "PearSilicon" || previous == internalRootURL,
               fileManager.fileExists(atPath: previous.appendingPathComponent(Self.markerName).path) else {
             throw PearError.invalidPackage("The previous location is no longer a PearSilicon folder; it was left untouched")
         }
@@ -170,6 +204,59 @@ final class StorageLocationStore: @unchecked Sendable {
         return roots.sorted { $0.path < $1.path }
     }
 
+    /// Marked libraries on connected disks, one picker option each. The boot
+    /// volume and the internal root are excluded: they are "Internal Storage".
+    static func externalLocations(
+        on volumes: [URL],
+        internalRoot: URL = defaultSupportRoot,
+        isSystemVolume: (URL) -> Bool = StorageLocationStore.isSystemVolume
+    ) -> [StorageLocationOption] {
+        var options: [StorageLocationOption] = []
+        for volume in volumes where !isSystemVolume(volume) {
+            let roots = discoverRoots(on: [volume]).filter { $0 != internalRoot.standardizedFileURL }
+            let diskName = volumeDisplayName(volume)
+            for root in roots {
+                let name = roots.count > 1 && root != volume.standardizedFileURL
+                    ? "\(diskName) — \(root.lastPathComponent)"
+                    : diskName
+                options.append(StorageLocationOption(rootURL: root, name: name, kind: .external))
+            }
+        }
+        return options
+    }
+
+    static func isSystemVolume(_ volume: URL) -> Bool {
+        (try? volume.resourceValues(forKeys: [.volumeIsRootFileSystemKey]))?.volumeIsRootFileSystem == true
+    }
+
+    /// The disk's Finder name when `volume` is a mount point, else the folder name.
+    static func volumeDisplayName(_ volume: URL) -> String {
+        let values = try? volume.resourceValues(forKeys: [.volumeURLKey, .volumeLocalizedNameKey])
+        if let mount = values?.volume, mount.standardizedFileURL == volume.standardizedFileURL,
+           let name = values?.volumeLocalizedName, !name.isEmpty {
+            return name
+        }
+        return volume.lastPathComponent
+    }
+
+    /// The picker shows Internal Storage first, then every connected marked
+    /// library. A selected custom root that discovery does not reach (for
+    /// example a folder on the Mac disk) is kept visible while it exists.
+    static func locationOptions(
+        internalRoot: URL,
+        selectedRoot: URL,
+        external: [StorageLocationOption]
+    ) -> [StorageLocationOption] {
+        let internalRoot = internalRoot.standardizedFileURL
+        let selected = selectedRoot.standardizedFileURL
+        var options = [StorageLocationOption(rootURL: internalRoot, name: "Internal Storage", kind: .internal)]
+        options += external.filter { $0.rootURL != internalRoot }
+        if !options.contains(where: { $0.rootURL == selected }), hasMarker(at: selected) {
+            options.append(StorageLocationOption(rootURL: selected, name: selected.deletingLastPathComponent().lastPathComponent, kind: .external))
+        }
+        return options
+    }
+
     static func writeMarker(at root: URL) throws {
         try markerContents.write(
             to: root.appendingPathComponent(markerName), atomically: true, encoding: .utf8
@@ -184,6 +271,15 @@ final class StorageLocationStore: @unchecked Sendable {
               let data = try? Data(contentsOf: marker) else { return false }
         return data == Data(markerContents.utf8)
     }
+}
+
+/// One entry of the storage location picker.
+struct StorageLocationOption: Identifiable, Equatable, Sendable {
+    enum Kind: Sendable { case `internal`, external }
+    let rootURL: URL
+    let name: String
+    let kind: Kind
+    var id: String { rootURL.standardizedFileURL.path }
 }
 
 extension URL {

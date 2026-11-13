@@ -76,7 +76,8 @@ struct SettingsView: View {
                 HStack {
                     Button("Move Storage…") { chooseStorageFolder() }
                         .disabled(state.isBusy)
-                    if state.previousStorageRootURL != nil {
+                    if let previous = state.previousStorageRootURL,
+                       previous.standardizedFileURL != state.storageRootURL.standardizedFileURL {
                         Button("Remove Previous Copy…", role: .destructive) {
                             removingPreviousCopy = true
                         }

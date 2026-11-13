@@ -34,7 +34,7 @@ struct ContentView: View {
                           wineEngineInstall: state.wineEngineInstall)
             }
         }
-        .frame(minWidth: 1040, minHeight: 660)
+        .frame(minWidth: 1120, minHeight: 660)
         .fileImporter(
             isPresented: $showingImporter,
             allowedContentTypes: importTypes,
@@ -126,10 +126,8 @@ struct ContentView: View {
                             .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
                     )
                     .accessibilityLabel("PearSilicon")
-                Text("PearSilicon")
-                    .font(.title3.weight(.semibold))
+                storageSwitch
             }
-            .frame(width: 225, alignment: .leading)
 
             Spacer(minLength: 8)
             platformSwitch
@@ -160,6 +158,57 @@ struct ContentView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
         .background(.ultraThinMaterial.opacity(0.35))
+    }
+
+    /// Where the library lives: always Internal Storage, plus one option for
+    /// each connected disk with a PearSilicon library. A disk option appears
+    /// when the disk is mounted and disappears when it is ejected.
+    private var storageSwitch: some View {
+        let switchingBlocked = state.isBusy || !state.runningGameNames.isEmpty
+        return HStack(spacing: 4) {
+            ForEach(state.storageLocations) { location in
+                let selected = location.rootURL.standardizedFileURL == state.storageRootURL.standardizedFileURL
+                Button {
+                    Task { await state.selectStorageLocation(location) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: location.kind == .internal ? "internaldrive" : "externaldrive")
+                        Text(location.name)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 130)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .font(.callout.weight(.medium))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(selected ? .primary : .secondary)
+                .background {
+                    if selected {
+                        Capsule()
+                            .fill(Color.primary.opacity(0.10))
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+                    }
+                }
+                .disabled(!selected && switchingBlocked)
+                .help(selected
+                      ? "\(location.name) — \(location.rootURL.path)"
+                      : switchingBlocked
+                        ? "Stop running apps before switching storage"
+                        : "Show the library on \(location.name) (\(location.rootURL.path))")
+                .accessibilityLabel(location.name)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .padding(4)
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+        .animation(.snappy(duration: 0.22), value: state.storageLocations)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Storage location")
     }
 
     private var platformSwitch: some View {
