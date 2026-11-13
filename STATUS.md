@@ -781,3 +781,10 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - A missed controller connect is replayed to every observer registered after the pad connected (per observer, not "seen by any query"), except an observer that enumerated in the same main-thread turn.
 - **Default device profile:** iPhone 18 Pro `iPhone19,2` (board V63AP), iOS 27.2.1 `24B91034`, Darwin 27.2.0 (sources: The Apple Wiki, EveryiPhone, iClarified). IORegistry product name/board follow the model. Model-derived identifiers (identifierForVendor, synthetic serial/UUID) change with the model, by request.
 - PearRuntime 0.9.1. Verified: 360 XCTest (22 skips) + 24 Swift Testing, 0 failures. Genshin not installed here; not verified.
+
+### 2026-11-13 — legacy 64-bit iOS games: resolution, fit, window buttons (0.8.10)
+
+- **Low internal resolution (Gutterball rendered 557x418 in a large window):** the legacy window fit read its logical size back from the UIWindow after applying the scale transform; UIKit reports bounds = frame / scale, so the size drifted each pass (1330 → 1728 → 2245, or downwards) and engines sized their render target from it. The logical size is now deterministic: the aspect the game launched with, fitted into the window's visible area at one UIKit point per window point, applied through UIKit (window + root view) so autoresizing follows. Gutterball: 986x740 windowed (1024x768 minus title bar), 1919x1440 full screen, 4:3 kept with letterboxing (a 16:9 surface left the 4:3 HUD in part of the frame with a black strip).
+- **Title bar buttons not clickable in legacy games:** the direct legacy mouse→touch path swallowed every left click inside the full-size content view, title bar included. Mouse→touch and the legacy fit now use the window's content layout rect (below the title bar; whole view in full screen) via `PearWindowVisibleContentRect`. User confirmed minimize/zoom work.
+- Restricting the legacy subtree-constraint skip to scene views crashed during window controller creation (`-[NSWindow _setFrameCommon:]`); the blanket skip stays.
+- PearRuntime 0.9.2.
