@@ -309,6 +309,8 @@ final class AppLauncher: @unchecked Sendable {
         // Per-app input settings must not leak from a parent game or shell.
         env.removeValue(forKey: "PEAR_ALLOW_POINTER_LOCK")
         env.removeValue(forKey: "PEAR_MOUSE_TOUCH")
+        env.removeValue(forKey: "PEAR_GRAPHICS_BACKEND")
+        env.removeValue(forKey: "PEAR_ANGLE_LIB_DIR")
         env.removeValue(forKey: "PEAR_VIRTUAL_GAMEPAD")
         env.removeValue(forKey: "PEAR_VIRTUAL_GAMEPAD_MAP")
         env.removeValue(forKey: "PEAR_FPS_HUD")

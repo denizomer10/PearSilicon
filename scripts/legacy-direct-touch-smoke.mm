@@ -8,6 +8,11 @@ extern void PearCancelLegacyDirectTouch(void);
 static UIWindow *gWindow;
 UIWindow *PearPrimaryWindow(void) { return gWindow; }
 void PearLog(NSString *format, ...) { (void)format; }
+static BOOL gMapTouch;
+CGPoint PearGLMapTouchPoint(UITouch *touch, UIView *view, CGPoint point) {
+    assert(touch.view != nil);
+    return gMapTouch ? CGPointMake(point.x * 0.5, point.y * 0.5) : point;
+}
 
 @interface PearSpyView : NSObject
 @property(nonatomic) int beganCount;
@@ -55,6 +60,17 @@ int main(void) {
         PearSendLegacyDirectTouch(YES, 0.5, 0.5);
         PearCancelLegacyDirectTouch();
         assert(window.spy.beganCount == 2 && window.spy.cancelledCount == 1 && window.spy.endedCount == 1);
+        // The synthetic UITouch subclass must use the same renderer mapping as
+        // native touches; a base UITouch swizzle alone cannot intercept it.
+        gMapTouch = YES;
+        PearSendLegacyDirectTouch(YES, 0.5, 0.5);
+        assert(window.spy.observed.x == 200 && window.spy.observed.y == 150);
+        PearSendLegacyDirectTouch(YES, 0.75, 1.0);
+        assert(window.spy.observed.x == 300 && window.spy.observed.y == 300);
+        CGPoint previous = [window.spy.identity previousLocationInView:nil];
+        assert(previous.x == 200 && previous.y == 150);
+        assert(CGPointEqualToPoint([window.spy.identity preciseLocationInView:nil], window.spy.observed));
+        PearSendLegacyDirectTouch(NO, 0.75, 1.0);
         puts("PASS: in-memory legacy touch begin, move, end, cancellation and coordinates");
     }
 }

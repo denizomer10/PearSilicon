@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Create isolated ad-hoc signed probes; never edit installed games or saves."""
+import argparse
+import json
+import pathlib
+import plistlib
+import re
+import subprocess
+
+WORKSPACE = pathlib.Path(__file__).resolve().parents[1]
+
+
+def prepare(source, destination, label, bundle_id):
+    if destination.exists():
+        raise RuntimeError(f"Refusing to overwrite existing test bundle: {destination}")
+    subprocess.run(["/bin/cp", "-cR", str(source), str(destination)], check=True)
+    info_path = destination / "Info.plist"
+    info = plistlib.loads(info_path.read_bytes())
+    info["CFBundleIdentifier"] = bundle_id + ".angleprobe"
+    info["CFBundleDisplayName"] = info["CFBundleName"] = label + " ANGLE Test"
+    info_path.write_bytes(plistlib.dumps(info))
+    subprocess.run([
+        "/bin/cp", str(WORKSPACE / "runtime/build/libPearRuntime.dylib"),
+        str(destination / "Frameworks/libPearRuntime.dylib"),
+    ], check=True)
+    for image in destination.rglob("*"):
+        if not image.is_file():
+            continue
+        with image.open("rb") as handle:
+            magic = handle.read(4)
+        if magic not in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+            continue
+        dependencies = subprocess.check_output(["/usr/bin/otool", "-L", str(image)], text=True)
+        for line in dependencies.splitlines()[1:]:
+            dependency = line.strip().split(" (compatibility version")[0]
+            if dependency.startswith(str(source) + "/"):
+                replacement = str(destination) + dependency[len(str(source)):]
+                subprocess.run([
+                    "/usr/bin/install_name_tool", "-change", dependency, replacement, str(image),
+                ], check=True, capture_output=True)
+        commands = subprocess.check_output(["/usr/bin/otool", "-l", str(image)], text=True)
+        rpaths = set(re.findall(r"(?m)^\s*path (.+) \(offset \d+\)$", commands))
+        for old in rpaths:
+            if old.startswith(str(source) + "/"):
+                replacement = str(destination) + old[len(str(source)):]
+                subprocess.run([
+                    "/usr/bin/install_name_tool", "-rpath", old, replacement, str(image),
+                ], check=True, capture_output=True)
+    subprocess.run([
+        "/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(destination),
+    ], check=True, capture_output=True)
+    subprocess.run([
+        "/usr/bin/codesign", "--verify", "--deep", str(destination),
+    ], check=True, capture_output=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--library", type=pathlib.Path, default=pathlib.Path.home() /
+                        "Library/Application Support/PearSilicon/ios-apps")
+    parser.add_argument("--output", type=pathlib.Path, default=WORKSPACE / "build/angle-game-tests")
+    args = parser.parse_args()
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for bundle_id, label in [("com.zeptolab.ctrexperimentslite", "Cut the Rope"),
+                             ("com.mojang.minecraftpe", "Minecraft")]:
+        destination = output / f"{bundle_id}.angleprobe.app"
+        prepare(args.library.resolve() / f"{bundle_id}.app", destination, label, bundle_id)
+        home = output / (bundle_id + ".home")
+        for child in ("Documents", "Library/Caches", "Library/Preferences", "tmp"):
+            (home / child).mkdir(parents=True, exist_ok=True)
+        rows.append({"id": bundle_id + ".angleprobe", "bundle": str(destination),
+                     "home": str(home), "label": label})
+    (output / "games.json").write_text(json.dumps(rows, indent=2) + "\n")
+    print("Prepared isolated game bundles:", *[row["label"] for row in rows])
+
+
+if __name__ == "__main__":
+    main()

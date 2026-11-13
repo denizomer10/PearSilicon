@@ -11,7 +11,8 @@
 - The original `PearANGLEBackend` loader is compiled into `graphics-gl`.
   It initializes an explicit ANGLE Metal display, resolves EGL/GLES entry
   points and refuses backend replacement in a running process. It never
-  silently falls back to system EAGL. No initializer switches games to it yet.
+  silently falls back to system EAGL. Games stay on the system path unless
+  explicitly launched with `PEAR_GRAPHICS_BACKEND=angle` and a library directory.
 - A real arm64 Catalyst process loaded the existing legacy engine's macOS
   ANGLE libraries, initialized EGL 1.5/Metal, cleared a 16×16 pbuffer and read
   back the expected RGBA `(64,128,191,255)` on Apple M1.
@@ -78,13 +79,13 @@ failures were caught before enabling any game routing.
 
 ## Remaining routing work
 
-1. Route game class imports to the separately named, tested public-selector
-   adapter. Audit dynamic class lookups; system and ANGLE contexts cannot mix.
+1. Add and validate chained/threaded Mach-O fixup support. The current opt-in
+   import router supports classic bind streams and refuses unsupported images.
 2. Extend the RGBA8 renderbuffer adapter for RGB565/sRGB, multisampling,
    scheduled presentation and GLES1. Detached-layer tests are not onscreen game
-   presentation. Track deletion/reuse of GL names in the import wrappers.
-3. Import/re-export routing for linked GLES calls as well as dynamic
-   `EAGLGetProcAddress` lookups. Do not mix system GL objects with ANGLE ones.
+   presentation. Broaden object-lifecycle validation across additional engines.
+3. Broaden dynamic-loader/early-initializer coverage beyond the tested import
+   and proc/class lookup interfaces. Do not mix system GL objects with ANGLE ones.
 4. One geometry snapshot for logical game points, drawable pixels, visible
    rectangle, backing scale and generation. Resize updates rendering and
    input together. Preserve the logical aspect instead of guessing from a
@@ -126,10 +127,85 @@ failures were caught before enabling any game routing.
   sharegroup version guards, context ownership and eight implicit thread-exit
   wrapper-release cycles. The full Catalyst runtime builds successfully.
 
-The public adapter and renderbuffer bridge are development components. They
-do not yet route a game's imported GLES functions, dynamic proc/class lookups,
-or resize/touch dispatch. Do not infer a Minecraft or Cut the Rope fix from
-these tests. No installed application or default graphics profile was changed.
+The selector/renderbuffer tests above are synthetic. The opt-in game routing
+and manual game checks below are a separate, later milestone.
+
+## Opt-in imports and actual game tests
+
+`ANGLEGameRouting.mm` reads classic Mach-O bind/lazy/weak streams and replaces
+only import slots belonging to the main app and its embedded images. It does
+not edit executable instructions or system images. Page protections are restored
+after pointer updates; unsupported metadata/symbols/protection changes fail
+explicitly before continuing with a mixed graphics path. The decoder handles
+unsigned-wrap backwards offsets and signed 64-bit addends, both encountered
+in real linker output. arm64e and chained/threaded fixups are not supported.
+
+The router covers linked GL imports, EAGL class/metaclass imports,
+`EAGLGetProcAddress`, `eglGetProcAddress`, app-side `dlsym`,
+`CFBundleGetFunctionPointerForName`, `NSClassFromString`, `objc_getClass`,
+`objc_lookUpClass` and `objc_getMetaClass`. Unrelated lookups retain their
+original path; the dlsym tail call preserves `RTLD_NEXT` caller semantics.
+Routed renderbuffer deletion invalidates geometry metadata before names recycle.
+The `graphics-gl` module is required. Launcher environment cleanup prevents
+one game's backend selection/library path leaking into another launch.
+
+Actual games were opened as separately signed `.angleprobe` copies with
+separate fresh data homes, without desktop automation, screenshots or automatic
+input. The original Minecraft process and installed games were left unchanged.
+
+| Game | Evidence and final user validation |
+|---|---|
+| Cut the Rope Experiments | 57 routed imports; ANGLE GLES2 context; Metal draw stack and native-surface presentation. User confirmed small/fullscreen layout, clicking and rope-dragging: “İkisi de düzgün”. |
+| Minecraft | 92 routed imports; rendering sample shows the native Metal engine and no EAGL context was observed. User confirmed capture, image and input: “Yakalama, görüntü ve giriş düzgün”. This is not native Metal translated through ANGLE. |
+
+Two faults found during the game run were fixed:
+
+- A transient UIKit resize erased otherwise valid renderbuffer metadata,
+  freezing the visible loading screen. Geometry mismatch now rejects only that
+  frame; valid storage survives and resumes when the logical fit is restored.
+  The GPU test reproduces resize/restore without reallocation.
+- `PearLegacyTouch` overrides bypassed the base UITouch mapping hook. Synthetic
+  and native current/previous positions now share the renderer conversion.
+  View-local coordinates remain local. The in-memory test verifies the subclass
+  uses the mapping and keeps drag history consistent.
+
+The UIScreen cache also previously returned an old size indefinitely to render
+threads and could read UIKit on a worker before its first cache fill. It now
+has a coalesced main-thread producer, resize/backing notifications and locked GL
+overrides. The test verifies 100 worker reads cause a single main-thread refresh
+and then observe the new size. Minecraft's test profile permits native pointer
+lock and uses adaptive mouse fallback, without forcing legacy responder input.
+
+Reproduce automated checks:
+
+```sh
+bash scripts/build-angle-metal.sh
+bash scripts/test-angle-routing.sh
+bash scripts/test-graphics-geometry.sh
+swift test --filter AppLauncherEnvironmentTests
+```
+
+Create new isolated probes (the preparation script refuses existing output
+bundles; use a new `--output` directory for another set):
+
+```sh
+python3 scripts/prepare-angle-game-probes.py
+swift scripts/launch-angle-game-probe.swift 0
+swift scripts/launch-angle-game-probe.swift 1
+```
+
+The launcher does not activate windows and refuses an already-running probe.
+It enables pointer lock for Minecraft, leaves keymapping/virtual gamepad off,
+and uses the pinned source-built libraries. APFS copy-on-write preserves game
+resources; dependency paths/rpaths and signatures are changed only in copies.
+Manual confirmation and tested runtime hashes are recorded locally in
+`build/diagnostics/angle-game-validation.json`. The generated ANGLE provenance
+manifest certifies automated checks only; manual checks remain separate.
+
+These results apply to the tested versions and fresh test profiles. They do
+not establish that old Minecraft resource/settings caches, every saved world,
+all games, or native Metal-to-ANGLE translation are fixed. Installed originals
+were not switched automatically; release packaging/notices remain pending.
 
 `scripts/audit-angle-imports.py` inventories public ABI imports only. The main
 Cut the Rope executable imports 50 GL functions and EAGLContext; Minecraft's

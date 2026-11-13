@@ -32,7 +32,11 @@ rm -f "$angle_source/out/PearMetal/pearruntime-build.json"
 cp "$angle_workspace/scripts/angle-metal-args.gn" "$angle_source/out/PearMetal/args.gn"
 (cd "$angle_source" && PATH="$angle_tools:$PATH" DEPOT_TOOLS_UPDATE=0 ./buildtools/mac/gn gen out/PearMetal)
 "$angle_ninja" -C "$angle_source/out/PearMetal" -j "$angle_jobs" libEGL libGLESv2
-bash "$angle_workspace/scripts/test-angle-backend.sh" "$angle_source/out/PearMetal" | tee "$angle_source/out/PearMetal/pearruntime-tests.log"
+{
+  bash "$angle_workspace/scripts/test-angle-backend.sh" "$angle_source/out/PearMetal"
+  bash "$angle_workspace/scripts/test-angle-routing.sh" "$angle_source/out/PearMetal"
+  bash "$angle_workspace/scripts/test-graphics-geometry.sh"
+} | tee "$angle_source/out/PearMetal/pearruntime-tests.log"
 python3 - "$angle_source" <<'PY'
 import hashlib, json, pathlib, subprocess, sys
 source = pathlib.Path(sys.argv[1])
@@ -51,10 +55,19 @@ manifest = {
     'testSourcesSHA256': {str(path.relative_to(workspace)): hashlib.sha256(path.read_bytes()).hexdigest()
                          for path in [*sorted((workspace / 'scripts').glob('angle-*-smoke.mm')),
                                       workspace / 'scripts/test-angle-backend.sh',
+                                      workspace / 'scripts/test-angle-routing.sh',
+                                      workspace / 'scripts/test-graphics-geometry.sh',
+                                      workspace / 'scripts/screen-cache-smoke.mm',
+                                      workspace / 'scripts/legacy-direct-touch-smoke.mm',
+                                      workspace / 'scripts/touch-geometry-smoke.mm',
                                       *sorted((workspace / 'runtime/include').glob('PearANGLE*.h')),
                                       *sorted((workspace / 'runtime/include').glob('PearEAGL*.h')),
+                                      workspace / 'runtime/include/PearGLTouch.h',
                                       *sorted((workspace / 'runtime/modules/graphics-gl').glob('ANGLE*.mm')),
-                                      workspace / 'runtime/modules/graphics-gl/EAGLContextAdapter.mm']},
+                                      workspace / 'runtime/modules/graphics-gl/EAGLContextAdapter.mm',
+                                      workspace / 'runtime/modules/graphics-gl/GLShim.mm',
+                                      workspace / 'runtime/modules/graphics/ScreenShim.mm',
+                                      workspace / 'runtime/modules/input/LegacyDirectTouch.mm']},
     'artifacts': {name: hashlib.sha256((out / name).read_bytes()).hexdigest()
                   for name in ['libEGL.dylib', 'libGLESv2.dylib']},
     'validated': ['Catalyst Metal pbuffer readback', 'loader lifecycle',
@@ -63,7 +76,10 @@ manifest = {
                   'GLES2/3 GLSL compile/link and Metal triangle readback',
                   'detached native layers: readback/swap, scale rebind, host coordinates',
                   'GLES2/3 renderbuffer storage/presentation, input-thread geometry generations',
-                  'original EAGL selectors, sharegroups, drawable properties and TLS release'],
+                  'original EAGL selectors, sharegroups, drawable properties and TLS release',
+                  'real Mach-O import and dynamic GL/class routing, opt-out, module rejection',
+                  'synthetic current/previous touch mapping and render-thread screen refresh'],
+    'automatedImportRoutingValidated': True,
     'gameRoutingValidated': False,
 }
 (out / 'pearruntime-build.json').write_text(json.dumps(manifest, indent=2) + '\n')

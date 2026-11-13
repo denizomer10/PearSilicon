@@ -3,19 +3,22 @@ import XCTest
 @testable import PearSilicon
 
 final class AppLauncherEnvironmentTests: XCTestCase {
-    func testInputOverridesDoNotLeakBetweenGames() throws {
+    func testInputAndGraphicsOverridesDoNotLeakBetweenGames() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let mapping = "{\"buttons\":{\"space\":\"a\"}}"
         let inherited = [
             "PEAR_ALLOW_POINTER_LOCK": "1", "PEAR_MOUSE_TOUCH": "1",
             "PEAR_VIRTUAL_GAMEPAD": "1", "PEAR_VIRTUAL_GAMEPAD_MAP": mapping,
+            "PEAR_GRAPHICS_BACKEND": "angle", "PEAR_ANGLE_LIB_DIR": "/tmp/angle-test",
         ]
         let disabled = fixture.launcher.buildEnvironment(
             app: fixture.app, keymapURL: nil, extra: [:], nativeContainer: false, baseEnvironment: inherited
         )
         XCTAssertNil(disabled["PEAR_ALLOW_POINTER_LOCK"])
         XCTAssertNil(disabled["PEAR_MOUSE_TOUCH"])
+        XCTAssertNil(disabled["PEAR_GRAPHICS_BACKEND"])
+        XCTAssertNil(disabled["PEAR_ANGLE_LIB_DIR"])
         XCTAssertNil(disabled["PEAR_VIRTUAL_GAMEPAD"])
         XCTAssertNil(disabled["PEAR_VIRTUAL_GAMEPAD_MAP"])
         let enabled = fixture.launcher.buildEnvironment(
@@ -23,6 +26,8 @@ final class AppLauncherEnvironmentTests: XCTestCase {
         )
         XCTAssertEqual(enabled["PEAR_ALLOW_POINTER_LOCK"], "1")
         XCTAssertEqual(enabled["PEAR_MOUSE_TOUCH"], "1")
+        XCTAssertEqual(enabled["PEAR_GRAPHICS_BACKEND"], "angle")
+        XCTAssertEqual(enabled["PEAR_ANGLE_LIB_DIR"], "/tmp/angle-test")
         XCTAssertEqual(enabled["PEAR_VIRTUAL_GAMEPAD"], "1")
         XCTAssertEqual(enabled["PEAR_VIRTUAL_GAMEPAD_MAP"], mapping)
     }

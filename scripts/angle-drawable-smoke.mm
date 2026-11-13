@@ -96,9 +96,15 @@ int main(int argc, char **argv) {
             assert([context presentBoundRenderbuffer:GL_RENDERBUFFER error:&error]);
             assert(glError() == GL_INVALID_ENUM && glError() == GL_NO_ERROR);
             uint64_t oldGeneration = geometry.generation;
+            CGRect originalBounds = host.bounds;
             host.bounds = CGRectMake(3, 5, 40, 24);
             assert(![context presentBoundRenderbuffer:GL_RENDERBUFFER error:&error]);
             assert(![context copyDrawableGeometry:&geometry forRenderbuffer:rb]);
+            // A transient UIKit resize must not permanently erase valid storage.
+            host.bounds = originalBounds;
+            assert([context presentBoundRenderbuffer:GL_RENDERBUFFER error:&error]);
+            assert([context copyDrawableGeometry:&geometry forRenderbuffer:rb] && geometry.generation == oldGeneration);
+            host.bounds = CGRectMake(3, 5, 40, 24);
             assert([context allocateBoundRenderbuffer:GL_RENDERBUFFER fromLayer:host colorFormat:PearANGLEColorRGBA8 retainedBacking:NO error:&error]);
             assert([context copyDrawableGeometry:&geometry forRenderbuffer:rb]);
             assert(geometry.generation > oldGeneration && geometry.pixelSize.width == 80 && geometry.pixelSize.height == 48);
