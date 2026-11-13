@@ -67,7 +67,7 @@ final class AppLauncher: @unchecked Sendable {
 
         try await Self.requireStopped(app)
         if Self.isLegacy32BitApp(app) {
-            return try launchLegacy32Bit(
+            return try await launchLegacy32Bit(
                 app,
                 keymapURL: keymapURL,
                 extraEnvironment: extraEnvironment,
@@ -579,7 +579,7 @@ final class AppLauncher: @unchecked Sendable {
         keymapURL: URL?,
         extraEnvironment: [String: String],
         activate: Bool
-    ) throws -> NSRunningApplication? {
+    ) async throws -> NSRunningApplication? {
         guard let engineURL = Self.legacyEngineExecutableURL() else {
             throw PearError.missingRuntimeComponent("PearLegacyEngine")
         }
@@ -633,35 +633,52 @@ final class AppLauncher: @unchecked Sendable {
             env.removeValue(forKey: "MTL_HUD_ENABLED")
         }
 
-        let process = Process()
-        process.executableURL = hostExecutableURL
-        process.arguments = args
-        process.currentDirectoryURL = resourceDir
-        process.environment = env
-
-        if let handle = openLogSession(for: app, source: .legacyEngine) {
-            process.standardOutput = handle
-            process.standardError = handle
-        } else {
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
+        let angle = resourceDir.appendingPathComponent("touchHLE_dylibs/angle", isDirectory: true)
+        if fileManager.fileExists(atPath: angle.appendingPathComponent("libEGL.dylib").path) {
+            env["PEAR_ANGLE_LIB_DIR"] = angle.path
+        }
+        // LaunchServices gives the child no pipe; the engine appends its own
+        // output to this PearDebug session file.
+        if let (logURL, handle) = try? LogStore(directory: logDirectory)
+            .beginSessionHandle(appID: app.id, source: .legacyEngine) {
+            try? handle.close()
+            env["PEAR_LEGACY_LOG_FILE"] = logURL.path
         }
 
-        let appID = app.id
-        process.terminationHandler = { proc in
-            Self.clearLegacyRunning(appID: appID, matchingPID: proc.processIdentifier)
-        }
+        // Launched through LaunchServices rather than as a child process: a
+        // spawned binary is an anonymous process to RunningBoard even inside an
+        // app bundle, and macOS Game Mode only engages for a real app that it
+        // can identify as a game.
+        let hostBundleURL = hostExecutableURL
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let running = try await Self.openLegacyHost(
+            at: hostBundleURL, arguments: args, environment: env, activate: activate
+        )
+        let pid = running.processIdentifier
+        Self.recordLegacyRunning(appID: app.id, pid: pid)
+        return running
+    }
 
-        try process.run()
-        let pid = process.processIdentifier
-        Self.recordLegacyRunning(appID: appID, pid: pid)
-
-        if activate {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows])
+    @MainActor
+    private static func openLegacyHost(
+        at bundleURL: URL, arguments: [String], environment: [String: String], activate: Bool
+    ) async throws -> NSRunningApplication {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        configuration.activates = activate
+        configuration.environment = environment
+        configuration.arguments = arguments
+        configuration.addsToRecentItems = false
+        return try await withCheckedThrowingContinuation { continuation in
+            NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { running, error in
+                if let running {
+                    continuation.resume(returning: running)
+                } else {
+                    continuation.resume(throwing: PearError.launchFailed(
+                        error?.localizedDescription ?? "PearLegacyEngine did not start"))
+                }
             }
         }
-        return NSRunningApplication(processIdentifier: pid)
     }
 
     /// Creates a lightweight macOS `.app` host bundle for a 32-bit iOS game so
@@ -679,9 +696,16 @@ final class AppLauncher: @unchecked Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let executableName = safeName.isEmpty ? app.executableName : safeName
 
-        let hostBundleURL = AppPaths.legacyRoot
+        let hostBundleURL = AppPaths.legacyHostBundle(for: app.id)
+        // Earlier builds kept the host under Application Support, where macOS
+        // never enables Game Mode for it. Remove that copy.
+        let oldHost = AppPaths.legacyRoot
             .appendingPathComponent("Hosts", isDirectory: true)
             .appendingPathComponent("\(app.id).app", isDirectory: true)
+        if fm.fileExists(atPath: oldHost.path) {
+            _ = try? Shell.run(Self.lsregisterPath, ["-u", oldHost.path])
+            try? fm.removeItem(at: oldHost)
+        }
         let contentsURL = hostBundleURL.appendingPathComponent("Contents", isDirectory: true)
         let macOSURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
         let resourcesURL = contentsURL.appendingPathComponent("Resources", isDirectory: true)
@@ -689,19 +713,17 @@ final class AppLauncher: @unchecked Sendable {
         try fm.createDirectory(at: macOSURL, withIntermediateDirectories: true)
         try fm.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
 
+        // The engine finds its resources through PEAR_LEGACY_RESOURCES_DIR and
+        // PEAR_ANGLE_LIB_DIR. Links to them inside the bundle (older builds)
+        // point outside it and invalidate the bundle signature, and macOS does
+        // not treat an app with a broken signature as a game.
+        var removedLinks = false
         for resName in ["touchHLE_default_options.txt", "touchHLE_dylibs", "touchHLE_fonts"] {
-            let src = resourceDir.appendingPathComponent(resName)
             let dst = resourcesURL.appendingPathComponent(resName)
-            guard fm.fileExists(atPath: src.path) else { continue }
-            // Re-point links left behind by another PearSilicon copy (moved,
-            // translocated or deleted), so the host always uses this one.
-            if let target = try? fm.destinationOfSymbolicLink(atPath: dst.path) {
-                if target == src.path { continue }
+            if (try? fm.destinationOfSymbolicLink(atPath: dst.path)) != nil {
                 try? fm.removeItem(at: dst)
-            } else if fm.fileExists(atPath: dst.path) {
-                continue
+                removedLinks = true
             }
-            try? fm.createSymbolicLink(at: dst, withDestinationURL: src)
         }
 
         var iconFileName: String?
@@ -732,13 +754,16 @@ final class AppLauncher: @unchecked Sendable {
             try? fm.removeItem(at: hostExeURL)
             try fm.copyItem(at: engineURL, to: hostExeURL)
             try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hostExeURL.path)
-            _ = try? Shell.run("/usr/bin/codesign", ["--force", "--sign", "-", hostExeURL.path])
         }
 
         var plist: [String: Any] = [
             "CFBundleDevelopmentRegion": "en",
             "CFBundleExecutable": executableName,
-            "CFBundleIdentifier": app.id,
+            // Not the game's own ID: the iOS bundle in the library is
+            // registered with LaunchServices under that ID (platform iOS, no
+            // category), and macOS resolved the host to it, so Game Mode and
+            // the games category never applied to the running host.
+            "CFBundleIdentifier": legacyHostBundleIdentifier(for: app.id),
             "CFBundleInfoDictionaryVersion": "6.0",
             "CFBundleName": app.displayName,
             "CFBundleDisplayName": app.displayName,
@@ -748,17 +773,37 @@ final class AppLauncher: @unchecked Sendable {
             "LSMinimumSystemVersion": "14.0",
             "NSHighResolutionCapable": true
         ]
+        GameModeInfo.apply(to: &plist)
         if let iconFileName {
             plist["CFBundleIconFile"] = iconFileName
         }
 
         let infoPlistURL = contentsURL.appendingPathComponent("Info.plist")
-        if let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) {
+        var plistChanged = false
+        if let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0),
+           (try? Data(contentsOf: infoPlistURL)) != data {
             try? data.write(to: infoPlistURL, options: .atomic)
+            plistChanged = true
+        }
+
+        // Sign the whole bundle so the Info.plist (games category, Game Mode
+        // keys) is sealed into the signature, then tell LaunchServices about
+        // it. An unsealed host was never evaluated as a game by macOS.
+        if copyNeedsUpdate || plistChanged || removedLinks {
+            _ = try? Shell.run("/usr/bin/codesign", ["--force", "--sign", "-", hostBundleURL.path])
+            _ = try? Shell.run(Self.lsregisterPath, ["-f", hostBundleURL.path])
         }
 
         return hostExeURL
     }
+
+    /// Bundle identifier of the macOS host bundle that runs a 32-bit game.
+    static func legacyHostBundleIdentifier(for appID: String) -> String {
+        "com.pearsilicon.legacy." + appID
+    }
+
+    static let lsregisterPath =
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
     /// Locates the PearLegacyEngine (`touchHLE`) 32-bit iOS compatibility binary.
     static func legacyEngineExecutableURL() -> URL? {

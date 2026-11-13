@@ -525,6 +525,8 @@ private final class PreparationFixture {
         ) as? [String: Any]
         XCTAssertEqual(info?["UserCustomKey"] as? String, "preserved", file: file, line: line)
         XCTAssertEqual(info?["GCSupportsControllerUserInteraction"] as? Bool, true, file: file, line: line)
+        XCTAssertEqual(info?["LSApplicationCategoryType"] as? String, "public.app-category.games", file: file, line: line)
+        XCTAssertEqual(info?["LSSupportsGameMode"] as? Bool, true, file: file, line: line)
         let profiles = info?["GCSupportedGameControllers"] as? [[String: Any]]
         XCTAssertEqual(
             profiles?.compactMap { $0["ProfileName"] as? String },

@@ -15,7 +15,7 @@ final class InputProfileTests: XCTestCase {
         let modernEnvironment = AppSettings.compatibilityEnvironment(
             for: id, compatibility: .modern, virtualGamepad: false
         )
-        XCTAssertEqual(modernEnvironment, ["PEAR_MOUSE_TOUCH": "1"])
+        XCTAssertEqual(modernEnvironment, ["PEAR_MOUSE_TOUCH": "1", "PEAR_GAME_MODE": "1"])
         XCTAssertNil(modernEnvironment["PEAR_LEGACY_WINDOW_LAYER_ONLY"])
 
         let environment = AppSettings.compatibilityEnvironment(
@@ -66,9 +66,9 @@ final class InputProfileTests: XCTestCase {
         XCTAssertFalse(AppSettings.isMouseTouchFallbackEnabled(for: id, compatibility: legacyProfile))
         XCTAssertTrue(AppSettings.hasCompatibilityOverride(for: id, compatibility: legacyProfile))
         XCTAssertTrue(AppSettings.hasCompatibilityOverride(for: id, compatibility: .modern))
-        XCTAssertTrue(AppSettings.compatibilityEnvironment(
+        XCTAssertEqual(AppSettings.compatibilityEnvironment(
             for: id, compatibility: legacyProfile, virtualGamepad: false
-        ).isEmpty)
+        ), ["PEAR_GAME_MODE": "1"])
 
         AppSettings.clearCompatibilityOverrides(for: id)
         XCTAssertFalse(AppSettings.hasCompatibilityOverride(for: id, compatibility: legacyProfile))
@@ -77,8 +77,47 @@ final class InputProfileTests: XCTestCase {
         XCTAssertTrue(AppSettings.isMouseTouchFallbackEnabled(for: id, compatibility: .modern))
     }
 
+    func testGameModeIsOnByDefaultAndRenderScaleIsNative() {
+        let id = "test.input." + UUID().uuidString
+        defer { clear(id) }
+
+        XCTAssertTrue(AppSettings.gameModeEnabled(for: id))
+        XCTAssertEqual(AppSettings.renderScale(for: id), "native")
+        XCTAssertEqual(AppSettings.performanceEnvironment(for: id), ["PEAR_GAME_MODE": "1"])
+
+        AppSettings.setGameModeEnabled(false, for: id)
+        AppSettings.setRenderScale("0.5", for: id)
+        XCTAssertEqual(AppSettings.performanceEnvironment(for: id),
+                       ["PEAR_GAME_MODE": "0", "PEAR_RENDER_SCALE": "0.5"])
+
+        AppSettings.setRenderScale("3", for: id) // not a choice: ignored
+        XCTAssertEqual(AppSettings.renderScale(for: id), "0.5")
+        AppSettings.defaults.set("garbage", forKey: "renderScale." + id)
+        XCTAssertEqual(AppSettings.renderScale(for: id), "native")
+    }
+
+    func testGameModeInfoDeclaresGamesCategoryWithoutOverridingTheApp() {
+        var info: [String: Any] = [:]
+        GameModeInfo.apply(to: &info)
+        XCTAssertEqual(info["LSApplicationCategoryType"] as? String, "public.app-category.games")
+        XCTAssertEqual(info["LSSupportsGameMode"] as? Bool, true)
+        XCTAssertEqual(info["GCSupportsGameMode"] as? Bool, true)
+        XCTAssertEqual(info["CADisableMinimumFrameDurationOnPhone"] as? Bool, true)
+        XCTAssertEqual(info["LSAppNapIsDisabled"] as? Bool, true)
+
+        var optedOut: [String: Any] = [
+            "LSApplicationCategoryType": "public.app-category.music",
+            "LSSupportsGameMode": false,
+        ]
+        GameModeInfo.apply(to: &optedOut)
+        XCTAssertEqual(optedOut["LSApplicationCategoryType"] as? String, "public.app-category.music")
+        XCTAssertEqual(optedOut["LSSupportsGameMode"] as? Bool, false)
+    }
+
     private func clear(_ id: String) {
         AppSettings.clearCompatibilityOverrides(for: id)
         AppSettings.defaults.removeObject(forKey: "legacyBridge.resolution." + id)
+        AppSettings.defaults.removeObject(forKey: "gameMode.enabled." + id)
+        AppSettings.defaults.removeObject(forKey: "renderScale." + id)
     }
 }

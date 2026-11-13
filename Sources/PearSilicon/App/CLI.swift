@@ -750,6 +750,7 @@ enum CLI {
         }
 
         try PackageInstaller(libraryURL: CLIPaths.shared.library).uninstall(app)
+        try? AppDataLifecycle.removeLegacyHost(id: app.id)
         if !arguments.flags.contains("keep-saves") {
             try AppDataLifecycle.removeNativeContainer(id: app.id)
             try AppDataLifecycle(root: CLIPaths.shared.support).removeIOSData(id: app.id)
@@ -1111,7 +1112,7 @@ enum CLI {
 
         if arguments.flags.contains("follow") {
             let pid = NSRunningApplication.runningApplications(withBundleIdentifier: app.id)
-                .first?.processIdentifier
+                .first?.processIdentifier ?? AppLauncher.legacyRunningPID(for: app.id)
             followLog(path: path, pid: pid, name: app.displayName)
         } else {
             print(try String(contentsOfFile: path, encoding: .utf8), terminator: "")

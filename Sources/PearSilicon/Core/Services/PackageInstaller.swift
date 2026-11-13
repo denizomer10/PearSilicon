@@ -985,6 +985,7 @@ final class PackageInstaller: @unchecked Sendable {
                 ["ProfileName": "MicroGamepad"],
             ]
         }
+        GameModeInfo.apply(to: &updated)
 
         let data = try PropertyListSerialization.data(
             fromPropertyList: updated, format: .binary, options: 0

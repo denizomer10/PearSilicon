@@ -449,6 +449,26 @@ final class AppState: ObservableObject {
         AppSettings.setLegacyFullscreen(fullscreen, for: app.id)
     }
 
+    // MARK: - Game Mode and render resolution
+
+    func isGameModeEnabled(for app: InstalledApp) -> Bool {
+        AppSettings.gameModeEnabled(for: app.id)
+    }
+
+    func setGameModeEnabled(_ enabled: Bool, for app: InstalledApp) {
+        objectWillChange.send()
+        AppSettings.setGameModeEnabled(enabled, for: app.id)
+    }
+
+    func renderScale(for app: InstalledApp) -> String {
+        AppSettings.renderScale(for: app.id)
+    }
+
+    func setRenderScale(_ value: String, for app: InstalledApp) {
+        objectWillChange.send()
+        AppSettings.setRenderScale(value, for: app.id)
+    }
+
     // MARK: - Automatic compatibility
 
     /// Detection is cached by `AppCompatibility`; this stays cheap enough to
@@ -1120,8 +1140,7 @@ final class AppState: ObservableObject {
             let identifier = app.id
             let service = LibraryBackupService(requireStopped: { _ in
                 let running = await MainActor.run {
-                    NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
-                        .contains { !$0.isTerminated }
+                    AppLauncher.isRunning(appID: identifier)
                 }
                 if running { throw PearError.commandFailed(tool: "backup", status: 1, output: "\(identifier) is still running") }
             })
@@ -1605,6 +1624,7 @@ final class AppState: ObservableObject {
             overlays[app.id]?.detach()
             overlays[app.id] = nil
             try iosApps.uninstall(app)
+            try? AppDataLifecycle.removeLegacyHost(id: app.id)
             if !keepData {
                 try AppDataLifecycle.removeNativeContainer(id: app.id)
                 try AppDataLifecycle(root: storageRootURL).removeIOSData(id: app.id)

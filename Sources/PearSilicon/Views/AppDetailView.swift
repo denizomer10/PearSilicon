@@ -301,6 +301,33 @@ struct AppDetailView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Game Mode", isOn: Binding(
+                        get: { state.isGameModeEnabled(for: app) },
+                        set: { state.setGameModeEnabled($0, for: app) }
+                    ))
+                    .toggleStyle(.switch)
+                    Text("Keeps the game on Apple silicon's performance cores and turns off App Nap and timer coalescing. macOS Game Mode engages in full screen. Relaunch to apply.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Picker("Render Resolution", selection: Binding(
+                        get: { state.renderScale(for: app) },
+                        set: { state.setRenderScale($0, for: app) }
+                    )) {
+                        ForEach(AppSettings.renderScaleChoices, id: \.value) { choice in
+                            Text(choice.title).tag(choice.value)
+                        }
+                    }
+                    Text("Internal resolution follows the window size. Native renders every Retina pixel; lower settings save GPU time. Relaunch to apply.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
                     Toggle("Performance HUD (FPS)", isOn: Binding(
                         get: { state.isMetalHUDEnabled(for: app) },
                         set: { state.setMetalHUDEnabled($0, for: app) }

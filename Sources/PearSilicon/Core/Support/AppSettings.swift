@@ -64,6 +64,49 @@ enum AppSettings {
         defaults.set(fullscreen, forKey: "legacy32.fullscreen." + bundleID)
     }
 
+    // MARK: - Game Mode and render resolution (iOS and 32-bit iOS games)
+
+    /// Game Mode is on for every game unless the user turned it off for that
+    /// app. It selects the runtime's latency tuning (`PEAR_GAME_MODE`): no App
+    /// Nap or timer coalescing, game threads promoted to user-interactive so
+    /// Apple silicon keeps them on the performance cores. The bundle always
+    /// declares the games category, so macOS Game Mode engages in full screen.
+    static func gameModeEnabled(for bundleID: String) -> Bool {
+        defaults.object(forKey: "gameMode.enabled." + bundleID) as? Bool ?? true
+    }
+
+    static func setGameModeEnabled(_ enabled: Bool, for bundleID: String) {
+        defaults.set(enabled, forKey: "gameMode.enabled." + bundleID)
+    }
+
+    /// Internal render resolution relative to the window's real pixels.
+    /// `native` renders at the display's backing scale (sharp on Retina);
+    /// the fractions trade sharpness for GPU time.
+    static let renderScaleChoices: [(value: String, title: String)] = [
+        ("native", "Native (Retina)"),
+        ("0.75", "Balanced (75%)"),
+        ("0.5", "Performance (50%)"),
+    ]
+
+    static func renderScale(for bundleID: String) -> String {
+        let stored = defaults.string(forKey: "renderScale." + bundleID) ?? "native"
+        return renderScaleChoices.contains { $0.value == stored } ? stored : "native"
+    }
+
+    static func setRenderScale(_ value: String, for bundleID: String) {
+        guard renderScaleChoices.contains(where: { $0.value == value }) else { return }
+        defaults.set(value, forKey: "renderScale." + bundleID)
+    }
+
+    /// Runtime environment for Game Mode and render resolution. Read by
+    /// PearRuntime (64-bit) and PearLegacyEngine (32-bit) alike.
+    static func performanceEnvironment(for bundleID: String) -> [String: String] {
+        var result = ["PEAR_GAME_MODE": gameModeEnabled(for: bundleID) ? "1" : "0"]
+        let scale = renderScale(for: bundleID)
+        if scale != "native" { result["PEAR_RENDER_SCALE"] = scale }
+        return result
+    }
+
     // MARK: - Virtual gamepad mapping
 
     private static let virtualGamepadMappingKey = "virtualGamepad.map."
@@ -146,7 +189,7 @@ enum AppSettings {
         compatibility: AppCompatibility,
         virtualGamepad: Bool
     ) -> [String: String] {
-        var result: [String: String] = [:]
+        var result = performanceEnvironment(for: bundleID)
         let mouseTouch = !virtualGamepad
             && isMouseTouchFallbackEnabled(for: bundleID, compatibility: compatibility)
 

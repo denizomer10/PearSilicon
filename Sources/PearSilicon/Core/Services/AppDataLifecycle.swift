@@ -22,6 +22,16 @@ struct AppDataLifecycle {
         }
     }
 
+    /// Removes the macOS host bundle PearSilicon created for a 32-bit game
+    /// (owned path, named by bundle ID) and unregisters it from LaunchServices.
+    static func removeLegacyHost(id: String) throws {
+        try LibraryPath.validateComponent(id)
+        let bundle = AppPaths.legacyHostBundle(for: id)
+        guard ManagedAppFiles.exists(bundle) else { return }
+        _ = try? Shell.run(AppLauncher.lsregisterPath, ["-u", bundle.path])
+        try FileManager.default.removeItem(at: bundle)
+    }
+
     static func removeNativeContainer(id: String) throws {
         try LibraryPath.validateComponent(id)
         let container = AppPaths.nativeContainerData(for: id).deletingLastPathComponent()

@@ -24,6 +24,30 @@ enum AppPaths {
         supportRoot.appendingPathComponent("Legacy32", isDirectory: true)
     }
 
+    /// Where the macOS host bundles of 32-bit games live.
+    ///
+    /// macOS only enables Game Mode for a native app that lives in an
+    /// Applications folder: the same host bundle under Application Support is
+    /// never labelled a game (verified with gamepolicyd), while a copy in
+    /// ~/Applications turns Game Mode on in full screen. The games also show up
+    /// in Launchpad and the Games app. `PEARSILICON_LEGACY_HOSTS_DIR` overrides
+    /// the location (tests).
+    static var legacyHostsRoot: URL {
+        if let override = ProcessInfo.processInfo.environment["PEARSILICON_LEGACY_HOSTS_DIR"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications", isDirectory: true)
+            .appendingPathComponent("PearSilicon Games", isDirectory: true)
+    }
+
+    /// Host bundle for one 32-bit game. Named by bundle ID so it is owned
+    /// deterministically; Launchpad and the menu bar show the game's name.
+    static func legacyHostBundle(for bundleID: String) -> URL {
+        legacyHostsRoot.appendingPathComponent("\(bundleID).app", isDirectory: true)
+    }
+
     /// Per-app sandbox directory (`Documents`, `Library`, `tmp`) for a 32-bit iOS app.
     static func legacySandboxDirectory(for bundleID: String) -> URL {
         legacyRoot
