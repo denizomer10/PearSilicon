@@ -983,3 +983,11 @@ Bu oturumda devir listesindeki 1–6. adımlar tamamlandı; 7. adımda açık ha
 2. Sistem OpenGLES imajını kimin yüklediğini belirle.
 3. Ayrı kopyada ikinci bir GL oyunu (Cut the Rope vb.) ve bir Metal oyunu (ZZZ) — Metal oyunda ANGLE'ın tembel kalıp yüklenmediğini doğrula.
 4. Sonra fork→runtime→root push; release yok. arm64e/chained fixups, GLES1 sunumu, RGB565/sRGB/MSAA hâlâ desteklenmiyor.
+
+### AÇIK — GTA LCS ANGLE kopyasında dokular yok (kullanıcı: "yok düzelmedi")
+
+- GLKit adaptöründen sonra oyun ANGLE ile ~60 FPS çiziyor, geometri/ışık doğru ama **tüm yüzeyler dokusuz** (düz gölgeli).
+- Bulunan ve düzeltilen bir eksik (yetmedi): ANGLE fork `codex/pearruntime-metal` — Catalyst derlemesi macOS format dalını kullanıyordu (PVRTC girdisi yok) ve Apple GPU yetenek bloğu `TARGET_OS_MACCATALYST`'i dışlıyordu → Catalyst'te PVRTC/Apple formatları hiç yoktu. Üretici + tablo yamalandı, `out/PearCatalyst` yeniden derlendi, test kopyasına kondu; görüntü değişmedi. Yama doğru/gerekli olarak kalıyor; PVRTC eklentisinin artık açıldığı ayrıca doğrulanmadı.
+- Sonraki şüpheliler (öncelik sırasıyla): (1) dokuların ayrı thread'de **paylaşılan ikinci EAGLContext** (sharegroup) ile yüklenmesi — `initWithAPI:sharegroup:` yolu ve ANGLE share context'i; (2) `glTexImage2D` ile `GL_BGRA_EXT`/APPLE formatları veya `GL_APPLE_texture_max_level` vb. — ANGLE GL hatası üretip yüklemeyi reddediyor olabilir; (3) `glGetString(GL_EXTENSIONS)` farkı yüzünden motorun doku yolunu değiştirmesi. Yöntem: test kopyasını `PEAR_DEBUG_GL=1` ile aç, lldb ile `glTexImage2D`/`glCompressedTexImage2D`/`glGetError`'a kesme noktası koyup format/iç format ve dönen hatayı oku; GL_EXTENSIONS'ı ANGLE bağlamında yazdır.
+- Test kopyası: `build/angle-exclusive-tests/library/com.rockstargames.gtalcs.angleexclusive.app` (ayrı home `lcs.home`, log `lcs-runtime.log`); yeniden açma komutu bu oturumdaki `open -n … --env HOME=… --env PEAR_LOG_FILE=…` biçiminde. Runtime/ANGLE değişikliklerinden sonra kopyadaki `Frameworks/libPearRuntime.dylib` ve `Frameworks/PearANGLE/*` elle güncellenip `codesign --force --sign -` ile yeniden imzalanmalı (veya `LiveANGLEExclusiveTests` ile yeni kopya).
+- Tüm değişiklikler `codex/angle-metal-bridge` (root, runtime) ve `codex/pearruntime-metal` (ANGLE) dallarında push edildi; main'e alınmadı, release yok.
