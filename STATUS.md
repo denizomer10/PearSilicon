@@ -993,3 +993,7 @@ Bu oturumda devir listesindeki 1–6. adımlar tamamlandı; 7. adımda açık ha
 - Test: `scripts/angle-catalyst-smoke.mm` (`test-angle-backend.sh`) uzantıyı ve 8×8 PVRTC 4bpp `glCompressedTexImage2D`'nin `GL_NO_ERROR` döndüğünü doğruluyor. `test-angle-exclusive.sh` GLKit takma adları için `GLKitAdapter.mm`'yi de derliyor (önceden link hatası veriyordu).
 - Hâlâ ilanda olmayanlar (oyun strings'inde geçen): `GL_EXT_texture_compression_s3tc` (ANGLE dxt1/3/5'i ayrı ilan ediyor), `GL_APPLE_texture_format_BGRA8888` (ANGLE `GL_EXT_texture_format_BGRA8888` ilan ediyor). GTA LCS için gerekmedi; başka oyunda doku eksiği olursa ilk bakılacak yer.
 - Swift: 362 test, 23 atlama, 0 hata (`RuntimeHostServiceTests.testPartialFramesPersistentConnectionsAndClosedClients` oyun açıkken bir kez `timedOut` verdi, tekrar koşularda geçti — yük altında zamanlama hassas).
+
+### Sürüm 0.9.0 (37) / PearRuntime 0.10.0 — yerel test aşaması
+
+- Exclusive ANGLE (sistem OpenGL ES yok), GLKit adaptörü ve Catalyst PVRTC düzeltmesi bu sürümde. Önce yerel derleme kullanıcıda test ediliyor; sorunsuzsa `codex/angle-metal-bridge` (root + runtime) main'e fast-forward edilip `scripts/publish-release.sh` ile yayınlanacak.
