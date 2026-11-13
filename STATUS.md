@@ -949,3 +949,30 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - Asıl oyun verileri korunacak. Test kopyalarının home'ları `build/angle-game-tests/*.home`, normal kayıtlar ayrı. Doğrulanan açık testleri bu exclusive devirde overwrite etme.
 - `gh` ve `ninja`: `/opt/homebrew/bin/`; depot_tools `build/angle-tools/depot_tools`; Clang 24 ANGLE DEPS içinde. Full disk erişimi var; approval policy never, `sandbox_permissions` verme.
 - Yeni task/agent spawn edilmedi. Kullanıcı başka ajanla devam edeceğini söyledi; bu dosyadaki devirden sonra geliştirmeye devam etme.
+
+### Devam — Catalyst ANGLE paketleme, tembel routing, ilk gerçek installer testi (2026-11-13)
+
+Bu oturumda devir listesindeki 1–6. adımlar tamamlandı; 7. adımda açık hata bulundu.
+
+- **Installer tekrar-yenileme hatası çözüldü (1):** `RuntimeRevision.contentManifest` dizin bileşenlerinde (PearANGLE, MarketplaceKit.framework) sabit ön ek uzunluğu kesiyordu; numaralandırıcı `/private/var` döndürünce yollar `meworks/PearANGLE/…` gibi bozuluyor, güncel uygulama her kontrolde yeniden işleniyordu. Göreli yollar artık `enumerator(atPath:)`'ten. Regresyon testi `RuntimeRevisionTests.testDirectoryComponentsMatchUnderSymlinkedTemporaryPath` (düzeltmesiz başarısız, düzeltmeyle geçiyor). Not: XCTest'in "caught error … .pear-injection" mesajı yanıltıcıydı (son yakalanan atışı gösteriyor); gerçek sızıntı lldb `swift_willThrow` ile bulundu.
+- **Catalyst varsayılan (2):** `build-angle-metal.sh` varsayılanı `PEAR_ANGLE_TARGET=catalyst` → `out/PearCatalyst` (`angle-catalyst-args.gn`); `macos` → `out/PearMetal`. Test betikleri Catalyst'e döndü; exclusive test derleme doğrulamasına eklendi; manifest platformu yazıyor.
+- **Staging (3):** `runtime/build.sh` Catalyst `libEGL/libGLESv2`'yi platform kontrolüyle (`vtool` MACCATALYST, yamalama yok) ve `LICENSE.ANGLE` ile `build/PearANGLE`'a koyuyor, id `@rpath/PearANGLE/…`; eksikse duruyor.
+- **Paketleme (4):** `build-app.sh` `libPearOpenGLES.dylib` + `PearANGLE/`'ı Resources'a koyuyor, eksikse duruyor; `publish-release.sh` eksik/Catalyst olmayan bileşenle yayını reddediyor.
+- **Bootstrap eksiği kapandı (5):** köprü yüklü değilse runtime yanındaki `libPearOpenGLES.dylib`'i bulup routing'i **tembel** kuruyor: `dlopen("OpenGLES")` köprüye gidiyor, ANGLE ilk GL kullanımında başlıyor (Metal oyunlar yük taşımıyor), bu kipte `graphics-gl` kapalıysa süreç öldürülmüyor; başlatma hatasında sistem GL'ye düşmeden `_exit(78)`. ANGLE önce runtime'ın yanındaki `PearANGLE`'dan aranıyor. Yeni senaryo `scripts/angle-dynamic-smoke.mm` (GL'ye bağlanmayan, sistem yolunu dlopen eden istemci) `test-angle-exclusive.sh`'de: köprüye yönlendi, ANGLE tembel başladı, sistem OpenGLES imajı yüklenmedi.
+- **Taşıma (relocation):** ANGLE öncesi kurulmuş uygulama taşınabiliyor (ANGLE bir sonraki runtime yenilemesinde gelir, parmak izi değiştiği için yenileme kesin); köprülü uygulamada köprü eksiksiz olmalı. `BundleRelocationTests` 3 hatası buydu.
+- **Doğrulama (5/6):** dört ikili MACCATALYST; köprünün sistem OpenGLES bağımlılığı yok; 728 GLES export; EAGL alias + sabitler var. `EAGLGetProcAddress` hem köprüde hem GLShim'de tanımlı (ikisi de yalnız ANGLE; istemci köprüdekine bağlanıyor). `test-angle-backend/routing/geometry/exclusive` hepsi PASS. Swift: 361 test, 22 atlama, 0 hata.
+- **Canlı installer testi (7) — opt-in `LiveANGLEExclusiveTests`:** `PEAR_LIVE_ANGLE_APP=<kurulu .app> PEAR_LIVE_ANGLE_LIBRARY=<test kütüphanesi>`; klon ayrı bundle ID (`.angleexclusive`), asıl oyun/kayıt değişmez. GTA LCS klonu: 10 Mach-O, 3'ü köprüye bağlı, hiçbirinde sistem OpenGLES yok, imza geçerli. Kopya `build/angle-exclusive-tests/library/com.rockstargames.gtalcs.angleexclusive.app`, ayrı home `build/angle-exclusive-tests/lcs.home`, log `build/angle-exclusive-tests/lcs-runtime.log`.
+
+### AÇIK HATA — GTA LCS ANGLE kopyasında siyah ekran (kullanıcı doğruladı)
+
+- Backend env olmadan açıldı: "ANGLE is the only GL backend", süreçte `libPearOpenGLES` + Catalyst `PearANGLE/libEGL,libGLESv2` yüklü. Pencere siyah, Metal HUD yok.
+- Günlük: `renderbufferStorage fromDrawable` döngüsü — 1024×768,38 boyutunda ~894 tahsis, sonra sınırlar adım adım büyüyor (1029×772 → 1063×791 → 1083×800 → 1113×816 → 1194×855 …). ANGLE drawable, geometri değiştiği için kareyi reddediyor → hiçbir kare sunulmuyor. Önceki legacy pencere hatasına benziyor (dönüşüm sonrası bounds geri okunuyor / GL fit ↔ ANGLE geometrisi geri beslemesi). İncelenecek: `GLShim.mm` PearFitDrawable + ANGLE drawable "stale geometry" kuralı, `ScreenShim` UIScreen bounds, `LegacyWindowShim`'in GTA LCS'de devrede olup olmadığı (GTA LCS modern profil).
+- `vmmap`'te sistem `OpenGLES.framework` bölgeleri de var (21 satır). Uygulama imajlarının hiçbiri ona bağlı değil; büyük olasılıkla bir sistem framework'ü (GLKit/CoreImage/AVFoundation vb.) yüklüyor. Hangi imajın yüklediği ve GL çağrısının oraya gitmediği doğrulanmalı (ör. `DYLD_PRINT_LIBRARIES=1` ile açılış).
+- Test kopyası kapatıldı. Kurulu oyunlar, `/Applications` uygulaması ve kullanıcı kayıtları değiştirilmedi. Önceki Minecraft probe süreci artık çalışmıyor.
+
+### Kalan adımlar
+
+1. GTA LCS siyah ekran döngüsünü çöz, aynı canlı testle doğrula (görüntü + dokunma + küçük/tam ekran).
+2. Sistem OpenGLES imajını kimin yüklediğini belirle.
+3. Ayrı kopyada ikinci bir GL oyunu (Cut the Rope vb.) ve bir Metal oyunu (ZZZ) — Metal oyunda ANGLE'ın tembel kalıp yüklenmediğini doğrula.
+4. Sonra fork→runtime→root push; release yok. arm64e/chained fixups, GLES1 sunumu, RGB565/sRGB/MSAA hâlâ desteklenmiyor.
