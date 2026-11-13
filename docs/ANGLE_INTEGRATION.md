@@ -6,7 +6,8 @@
   `codex/pearruntime-metal` in the existing `denizomer10/angle` fork checkout.
 - PearRuntime pins the fork as `third_party/angle`. The initial upstream base
   was `686adbb2a39854ab687da009e534f6842a85f453`; the tested Apple thread-exit
-  fix is `9e214cf` on `codex/pearruntime-metal`. Its original LICENSE is retained.
+  fixes are `9e214cf` (thread cleanup) and `f405241` (host-layer positioning)
+  on `codex/pearruntime-metal`. Its original LICENSE is retained.
 - The original `PearANGLEBackend` loader is compiled into `graphics-gl`.
   It initializes an explicit ANGLE Metal display, resolves EGL/GLES entry
   points and refuses backend replacement in a running process. It never
@@ -23,7 +24,8 @@ Run `bash scripts/build-angle-metal.sh --sync` to provision/build/test it,
 or omit `--sync` once dependencies are present. It uses DEPS-pinned Chromium
 Clang, the local Xcode SDK, Metal only and four compile jobs by default.
 `pearruntime-build.json` records the revision, tracked source diff, GN args
-and dylib hashes after tests pass. These binaries are not yet bundled for
+and dylib/test-source hashes after tests pass. A new build invalidates any old
+success manifest before compilation. These binaries are not yet bundled for
 64-bit games. Final redistribution requires dependency license notices.
 
 ## Context and presentation milestone
@@ -50,11 +52,35 @@ the original ANGLE thread TLS pointer during cleanup. Without that restoration
 the scoped current-context synchronizer dereferenced a cleared TLS slot. Both
 failures were caught before enabling any game routing.
 
+## Native-layer surface milestone
+
+- Contexts can bind an explicit `CAMetalLayer` or a `CALayer` host through
+  `eglCreateWindowSurface`. EGL-reported dimensions are the committed pixel
+  dimensions; layer points and backing scale remain separate.
+- A change to bounds or contentsScale rejects presentation until an explicit
+  detach/rebind at the frame boundary. The future EAGL adapter must update its
+  renderbuffer and input geometry in the same transaction. This core does not
+  yet provide that game-level geometry transaction.
+- Replacement binding creates/makes-current the new surface before releasing
+  the previous one. Invalid geometry and duplicate native hosts preserve the
+  previous drawable. Detaching restores a pbuffer without replacing the context.
+- A regression test first failed for a host whose frame origin was nonzero:
+  ANGLE positioned its child using the host's **frame** in the ancestor's
+  coordinate space. The fork now uses the host's **bounds**. The test also uses
+  a nonzero bounds origin, verifies child removal on detach, and reads back
+  actual cyan pixels before swapping.
+- Tests passed native Metal clear/readback/swap at 1x, 2x and 1.5x scales,
+  changed-geometry rejection, duplicate-host rollback and pbuffer recovery.
+  All layers belong to the headless test process. This validates EGL/Metal
+  surfaces, not visible game composition, mouse input or fullscreen behavior.
+- The complete PearRuntime Catalyst dylib builds with the new surface core.
+  Installed games and their default renderer remain unchanged.
+
 ## Remaining routing work
 
 1. Bind EAGL's public context/sharegroup interface to the tested context core.
-2. Native window-layer surface and EAGL renderbuffer/FBO adapter. The current
-   pbuffer presentation test is not onscreen game presentation. Track attachment
+2. Connect the tested native-layer surface to an EAGL renderbuffer/FBO adapter.
+   Detached-layer tests are not onscreen game presentation. Track attachment
    formats, multisampling and retained backing explicitly; add GLES1 presentation.
 3. Import/re-export routing for linked GLES calls as well as dynamic
    `EAGLGetProcAddress` lookups. Do not mix system GL objects with ANGLE ones.

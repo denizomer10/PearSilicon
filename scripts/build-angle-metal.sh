@@ -28,6 +28,7 @@ fi
 angle_ninja="${PEAR_ANGLE_NINJA:-$(command -v ninja || true)}"
 if [[ -z "$angle_ninja" ]]; then echo 'ninja is required.' >&2; exit 2; fi
 mkdir -p "$angle_source/out/PearMetal"
+rm -f "$angle_source/out/PearMetal/pearruntime-build.json"
 cp "$angle_workspace/scripts/angle-metal-args.gn" "$angle_source/out/PearMetal/args.gn"
 (cd "$angle_source" && PATH="$angle_tools:$PATH" DEPOT_TOOLS_UPDATE=0 ./buildtools/mac/gn gen out/PearMetal)
 "$angle_ninja" -C "$angle_source/out/PearMetal" -j "$angle_jobs" libEGL libGLESv2
@@ -35,6 +36,7 @@ bash "$angle_workspace/scripts/test-angle-backend.sh" "$angle_source/out/PearMet
 python3 - "$angle_source" <<'PY'
 import hashlib, json, pathlib, subprocess, sys
 source = pathlib.Path(sys.argv[1])
+workspace = source.parents[2]
 out = source / 'out/PearMetal'
 revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
 patch = subprocess.check_output(['git', '-C', str(source), 'diff', '--binary', 'HEAD'])
@@ -46,12 +48,18 @@ manifest = {
     'trackedWorkingTreeDiffSHA256': hashlib.sha256(patch).hexdigest() if patch else None,
     'gnArgsSHA256': hashlib.sha256((out / 'args.gn').read_bytes()).hexdigest(),
     'testLogSHA256': hashlib.sha256((out / 'pearruntime-tests.log').read_bytes()).hexdigest(),
+    'testSourcesSHA256': {str(path.relative_to(workspace)): hashlib.sha256(path.read_bytes()).hexdigest()
+                         for path in [*sorted((workspace / 'scripts').glob('angle-*-smoke.mm')),
+                                      workspace / 'scripts/test-angle-backend.sh',
+                                      *sorted((workspace / 'runtime/include').glob('PearANGLE*.h')),
+                                      *sorted((workspace / 'runtime/modules/graphics-gl').glob('ANGLE*.mm'))]},
     'artifacts': {name: hashlib.sha256((out / name).read_bytes()).hexdigest()
                   for name in ['libEGL.dylib', 'libGLESv2.dylib']},
     'validated': ['Catalyst Metal pbuffer readback', 'loader lifecycle',
                   'context sharing, resize, ownership, thread-exit cleanup',
                   'GLES2/3 framebuffer copy and GL state preservation',
-                  'GLES2/3 GLSL compile/link and Metal triangle readback'],
+                  'GLES2/3 GLSL compile/link and Metal triangle readback',
+                  'detached native layers: readback/swap, scale rebind, host coordinates'],
     'gameRoutingValidated': False,
 }
 (out / 'pearruntime-build.json').write_text(json.dumps(manifest, indent=2) + '\n')

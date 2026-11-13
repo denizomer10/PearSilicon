@@ -1,6 +1,6 @@
 # PearSilicon — Çalışma Durumu
 
-> Güncel çalışma — 2026-11-13: `codex/angle-metal-bridge`. ANGLE kaynak derlemesi ve context/pbuffer sunum testleri geçti; oyun EAGL yönlendirmesi henüz etkin değil. Güncel ayrıntılar belgenin sonundaki ANGLE kayıtlarında ve `docs/ANGLE_INTEGRATION.md` içinde. Önceki sürüm bölümleri tarihsel kayıttır.
+> Güncel çalışma — 2026-11-13: `codex/angle-metal-bridge`. ANGLE kaynak derlemesi, context/pbuffer ve native katman sunum testleri geçti; oyun EAGL yönlendirmesi henüz etkin değil. Güncel ayrıntılar belgenin sonundaki ANGLE kayıtlarında ve `docs/ANGLE_INTEGRATION.md` içinde. Önceki sürüm bölümleri tarihsel kayıttır.
 
 ## 0.8.3 (28) — 2026-11-11
 
@@ -842,3 +842,11 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - Kaynak binary ile gerçek Catalyst testleri geçti: Metal EGL pbuffer RGBA readback, yükleyici, paylaşımın ilk context silindikten sonra sürmesi, resize/readback, incomplete-FBO rollback, thread sahipliği ve **16 thread-exit/rebind döngüsü**. GLES2/3 GLSL shader compile/link + Metal üçgen çizimi readback **255,255,0,255** geçti.
 - Tekrarlanabilir komut: `bash scripts/build-angle-metal.sh [--sync]`; test: `bash scripts/test-angle-backend.sh`. `runtime/third_party/angle/out/PearMetal/pearruntime-build.json` kaynak commit, temiz/diff durumu, compiler/SDK, GN args, test log ve dylib hash'lerini kaydeder. `gameRoutingValidated=false`.
 - PearRuntime context çekirdeği + önceki graphics split/fixler **1386314**, `denizomer10/PearRuntime` `codex/angle-metal-bridge` dalına push edildi. Henüz yeni release/tag, 64-bit oyunlara ANGLE paketleme veya varsayılan backend değişimi yok. GLES1 sunumu, native-window EGL yüzeyi, EAGL renderbuffer/import yönlendirmesi ve MSAA/renk formatları sonraki işler.
+
+### ANGLE native katman yüzeyi — 2026-11-13
+
+- `PearANGLEContext` artık EGL window surface ile CALayer/CAMetalLayer bağlayabiliyor. Piksel boyutu EGL'den doğrulanıyor; bounds/backing scale değişince eski geometriyle sunum reddediliyor. Renderbuffer ve input geometrisinin birlikte yenilenmesi sonraki EAGL adaptörünün sorumluluğu; oyunlarda henüz etkin değil.
+- Kaynak ANGLE testinde konumu sıfır olmayan host katmanı için alt Metal katmanı yanlış yerdeydi: `frame = host.frame`. Önce başarısız testle doğrulandı; fork'ta `frame = host.bounds` düzeltmesi `f405241` olarak kaydedildi. Apple sistem uygulama kodu kopyalanmadı.
+- Kendi test sürecinde, görünür pencere/odak/otomatik giriş olmadan gerçek GPU clear/readback/swap; 1×/2×/1,5× yeniden bağlama; eski geometriyi reddetme; aynı host'u ikinci context'e bağlamayı reddedip eski pbuffer'ı koruma ve detach temizliği geçti. GLES2/3 shader, GL durumunu koruma, paylaşım ve 16 thread-exit testi de geçti. Tam PearRuntime Catalyst derlemesi başarılı.
+- Kaynak/ikili manifestine test ve köprü kaynaklarının hash'leri eklendi; yeni derleme eski başarı manifestini geçersiz kılıyor.
+- Test kaydı: `/tmp/pear-angle-native-final-validation.log`; runtime derlemesi: `/tmp/pear-angle-native-runtime-build.log`. Minecraft/oyun EAGL yönlendirmesi, tam ekran/input transaction, GLES1 sunumu ve dağıtım/lisans paketlemesi tamamlanmış sayılmaz. Kurulu oyunlar yeni ANGLE çekirdeğine geçirilmedi; release/tag yok.

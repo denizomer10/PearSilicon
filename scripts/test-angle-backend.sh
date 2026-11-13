@@ -20,9 +20,13 @@ xcrun clang++ "${common[@]}" "$root/scripts/angle-loader-smoke.mm" \
 "$angle_smoke_root/loader" "$angle_dir"
 xcrun clang++ "${common[@]}" "$root/scripts/angle-context-smoke.mm" \
   "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" -framework Foundation -o "$angle_smoke_root/context"
+  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/context"
 "$angle_smoke_root/context" "$angle_dir"
 xcrun clang++ "${common[@]}" "$root/scripts/angle-shader-smoke.mm" \
   "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" -framework Foundation -o "$angle_smoke_root/shaders"
+  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/shaders"
 "$angle_smoke_root/shaders" "$angle_dir"
+xcrun clang++ "${common[@]}" "$root/scripts/angle-surface-smoke.mm" \
+  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
+  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/surfaces"
+"$angle_smoke_root/surfaces" "$angle_dir"
