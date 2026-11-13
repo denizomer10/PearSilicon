@@ -24,11 +24,10 @@ struct IOSAppService {
         let compatibility = AppCompatibility.detect(bundleURL: app.bundleURL)
         var extra: [String: String] = ["PEAR_IOS_SANDBOX": "1"]
         if metalHUDEnabled {
+            // Metal HUD is the only FPS meter. For OpenGL ES titles the
+            // runtime presents a transparent carrier layer with every game
+            // frame, so the HUD stays visible and measures the game.
             extra["MTL_HUD_ENABLED"] = "1"
-            // Metal HUD covers native Metal renderers; the runtime overlay
-            // activates only when an OpenGL ES frame is actually presented,
-            // which includes titles detected as modern (for example GTA LCS).
-            extra["PEAR_FPS_HUD"] = "1"
         }
         // The virtual pad captures the cursor itself, so native pointer lock is
         // not requested in that mode. Leaving it off also prevents the game

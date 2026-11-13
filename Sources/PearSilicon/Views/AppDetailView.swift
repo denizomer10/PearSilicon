@@ -333,7 +333,7 @@ struct AppDetailView: View {
                         set: { state.setMetalHUDEnabled($0, for: app) }
                     ))
                     .toggleStyle(.switch)
-                    Text("Shows an FPS overlay. Native Metal apps use Metal HUD; legacy OpenGL games get a runtime overlay. Relaunch to apply.")
+                    Text("Shows Apple's Metal HUD (FPS, GPU time, frame intervals) for every game, including OpenGL ES titles. Relaunch to apply.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

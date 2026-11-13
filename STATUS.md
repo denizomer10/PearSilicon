@@ -772,3 +772,4 @@ kullanılmamalı; yeni app paketi kullanılmalı.
 - **PearLegacyEngine:** HiDPI window; render scale chosen from the display (Miku Flick: 5x on a 2560x1440 1x display, was fixed 2x); Game Mode thread QoS and precise frame pacing (steady 33.3 ms in Metal HUD).
 - Verified: 360 XCTest (22 skips) + 24 Swift Testing, 0 failures; GTA LCS windowed/maximised/full-screen fit confirmed by the user; Miku Flick full screen sharp.
 - Not verified: Retina (2x) display, other 64-bit/32-bit titles, ProMotion pacing.
+- 0.8.8 (34): Metal HUD is the only FPS meter. OpenGL ES games get a transparent Metal carrier layer presented once per game frame, so the HUD no longer disappears after a Metal UI screen (GTA LCS sign-in) and the runtime's separate FPS label is gone. Verified with GTA LCS: one HUD, 59.99 FPS, Game Mode On.

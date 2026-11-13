@@ -510,11 +510,8 @@ enum CLI {
             hudEnabled = (AppSettings.defaults.object(forKey: "metalHUD.enabled." + app.id) as? Bool) ?? false
         }
         if hudEnabled {
+            // Metal HUD only; OpenGL ES titles get a runtime carrier layer.
             environment["MTL_HUD_ENABLED"] = "1"
-            // Metal HUD covers native Metal renderers; the runtime overlay
-            // activates only when an OpenGL ES frame is actually presented,
-            // which includes titles detected as modern (for example GTA LCS).
-            environment["PEAR_FPS_HUD"] = "1"
         }
 
         let pointerLock: Bool
