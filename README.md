@@ -26,15 +26,16 @@
 
 ---
 
-PearSilicon is a native macOS app that keeps iOS apps, Mac apps and Windows
+PearSilicon is a native macOS Swift app that keeps iOS apps, Mac apps and Windows
 games in one library and runs each of them the right way:
 
-- **64-bit iOS apps** are prepared for Mac Catalyst and run on Apple's
-  `/System/iOSSupport` frameworks, with [PearRuntime](https://github.com/denizomer10/PearRuntime)
-  loaded inside the app for input, graphics and system-service compatibility.
-  OpenGL ES games render through [PearANGLE](https://github.com/denizomer10/PearANGLE) on Metal.
+- **64-bit iOS apps** can run in **PearHost mode (no iOSSupport)** directly on
+  native macOS using [PearRuntime](https://github.com/denizomer10/PearRuntime)'s
+  Swift/Rust `UIKit`, `MetalKit`, and Metal-only `OpenGLES` ([PearANGLE](https://github.com/denizomer10/PearANGLE))
+  frameworks, or via the classic Mac Catalyst (`/System/iOSSupport`) path.
 - **32-bit iOS games** (`armv6`/`armv7`), which macOS cannot load, run on
-  [PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine).
+  [PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine) +
+  [PearLegacyJIT](https://github.com/denizomer10/PearLegacyJIT) (unified under `PearRuntime`).
 - **Mac apps** are imported as copies with their data redirected into the library.
 - **Windows games** run in a private Wine prefix per game.
 

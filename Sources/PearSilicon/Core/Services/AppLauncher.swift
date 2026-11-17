@@ -74,6 +74,14 @@ final class AppLauncher: @unchecked Sendable {
                 activate: activate
             )
         }
+        if AppSettings.usePearHost(for: app.id) || PearHostPreparer.isPrepared(app.bundleURL) {
+            return try await launchPearHost(
+                app,
+                extraEnvironment: extraEnvironment,
+                nativeContainer: nativeContainer,
+                activate: activate
+            )
+        }
         let environmentMode = fileManager.fileExists(
             atPath: PackageInstaller.injectionMarkerURL(in: app.bundleURL).path
         )
@@ -575,6 +583,47 @@ final class AppLauncher: @unchecked Sendable {
     }
 
     // MARK: - PearLegacyEngine (32-bit iOS compatibility layer)
+
+    private func launchPearHost(
+        _ app: InstalledApp,
+        extraEnvironment: [String: String],
+        nativeContainer: Bool,
+        activate: Bool
+    ) async throws -> NSRunningApplication? {
+        if !PearHostPreparer.isPrepared(app.bundleURL) {
+            guard let hostDir = PearHostPreparer.locateHostFrameworks() else {
+                throw PearError.missingRuntimeComponent("PearHost frameworks (run runtime/host/build-host.sh)")
+            }
+            try PearHostPreparer.prepare(
+                bundleURL: app.bundleURL,
+                executableName: app.executableName,
+                hostDir: hostDir
+            )
+        }
+
+        var env = buildEnvironment(app: app, keymapURL: nil, extra: extraEnvironment, nativeContainer: nativeContainer)
+        if let home = env["PEAR_HOME_DIR"] {
+            let homeURL = URL(fileURLWithPath: home, isDirectory: true)
+            try? fileManager.createDirectory(at: homeURL, withIntermediateDirectories: true)
+            env["PEAR_LOG_FILE"] = env["PEAR_LOG_FILE"] ?? homeURL.appendingPathComponent("pearhost.log").path
+            env["PEAR_MISSING_REPORT"] = env["PEAR_MISSING_REPORT"] ?? homeURL.appendingPathComponent("pearhost-missing.jsonl").path
+        }
+
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = activate
+        config.createsNewApplicationInstance = true
+        config.environment = env
+
+        return try await withCheckedThrowingContinuation { continuation in
+            NSWorkspace.shared.openApplication(at: app.bundleURL, configuration: config) { runningApp, error in
+                if let error {
+                    continuation.resume(throwing: PearError.launchFailed(error.localizedDescription))
+                } else {
+                    continuation.resume(returning: runningApp)
+                }
+            }
+        }
+    }
 
     private func launchLegacy32Bit(
         _ app: InstalledApp,

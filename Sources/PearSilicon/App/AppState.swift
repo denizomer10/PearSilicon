@@ -561,6 +561,17 @@ final class AppState: ObservableObject {
         if allowed { pointerLockAllowedApps.insert(app.id) } else { pointerLockAllowedApps.remove(app.id) }
     }
 
+    // MARK: - PearHost (no-iOSSupport macOS-platform runtime)
+
+    func isPearHostEnabled(for app: InstalledApp) -> Bool {
+        AppSettings.usePearHost(for: app.id)
+    }
+
+    func setPearHostEnabled(_ enabled: Bool, for app: InstalledApp) {
+        AppSettings.setUsePearHost(enabled, for: app.id)
+        objectWillChange.send()
+    }
+
     // MARK: - PearLegacyEngine (32-bit iOS runtime) options
 
     func isLegacy32Bit(_ app: InstalledApp) -> Bool {

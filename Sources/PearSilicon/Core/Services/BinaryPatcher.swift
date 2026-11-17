@@ -486,18 +486,22 @@ enum BinaryPatcher {
         var candidate = original
         let changed = try patchPlatform(&candidate, image: parsed, platform: platform)
         if changed {
-            _ = try preparationImage(candidate, name: parsed.name)
+            if platform == Platform.macOS {
+                _ = try image(candidate, slice: parsed.slice, name: parsed.name)
+            } else {
+                _ = try preparationImage(candidate, name: parsed.name)
+            }
             data = candidate
         }
         return changed
     }
 
     private static func patchPlatform(_ data: inout Data, image: Image, platform: UInt32) throws -> Bool {
-        guard platform == Platform.iOS || platform == Platform.macCatalyst else {
+        guard platform == Platform.iOS || platform == Platform.macCatalyst || platform == Platform.macOS else {
             throw invalid(image.name, "unsupported target platform \(platform)")
         }
         if isZipperedCatalystDylib(data, image: image) {
-            guard platform == Platform.macCatalyst else {
+            guard platform == Platform.macCatalyst || platform == Platform.macOS else {
                 throw invalid(image.name, "zippered macOS/Catalyst dylibs cannot be retargeted to iOS")
             }
             return false
@@ -505,8 +509,15 @@ enum BinaryPatcher {
         let build = image.commands.first { $0.kind == LoadCommand.buildVersion }
         let legacy = image.commands.first { $0.kind == LoadCommand.versionMinIPhoneOS }
         if let build {
-            let changed = readU32(data, build.offset + 8) != platform
+            var changed = readU32(data, build.offset + 8) != platform
             writeU32(&data, build.offset + 8, platform)
+            if platform == Platform.macOS {
+                let minos14: UInt32 = 14 << 16
+                if readU32(data, build.offset + 12) != minos14 {
+                    writeU32(&data, build.offset + 12, minos14)
+                    changed = true
+                }
+            }
             if let legacy { removeLoadCommand(&data, image: image, command: legacy) }
             return changed || legacy != nil
         }
@@ -538,9 +549,9 @@ enum BinaryPatcher {
 
     /// Thinning, platform edits and linkedit edits are committed together.
     @discardableResult
-    static func patchFile(at url: URL) throws -> Bool {
+    static func patchFile(at url: URL, targetPlatform: UInt32 = Platform.macCatalyst) throws -> Bool {
         try mutateFile(at: url, thin: true) { data, parsed in
-            var changed = try patchPlatform(&data, image: parsed, platform: Platform.macCatalyst)
+            var changed = try patchPlatform(&data, image: parsed, platform: targetPlatform)
             let updated = try image(data, slice: parsed.slice, name: parsed.name)
             if try repairChainedFixups(&data, image: updated) { changed = true }
             if try weakenUnavailableImports(&data, image: updated) { changed = true }

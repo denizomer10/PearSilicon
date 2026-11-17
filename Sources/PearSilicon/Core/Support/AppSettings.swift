@@ -79,6 +79,19 @@ enum AppSettings {
         defaults.set(enabled, forKey: "gameMode.enabled." + bundleID)
     }
 
+    // MARK: - PearHost (no-iOSSupport macOS-platform runtime)
+
+    /// When enabled for an app, PearSilicon prepares and launches it with
+    /// PearHost's Swift/Rust UIKit/MetalKit/OpenGLES frameworks on native macOS
+    /// instead of Mac Catalyst / /System/iOSSupport.
+    static func usePearHost(for bundleID: String) -> Bool {
+        defaults.bool(forKey: "pearHost.enabled." + bundleID)
+    }
+
+    static func setUsePearHost(_ enabled: Bool, for bundleID: String) {
+        defaults.set(enabled, forKey: "pearHost.enabled." + bundleID)
+    }
+
     /// Internal render resolution relative to the window's real pixels.
     /// `native` renders at the display's backing scale (sharp on Retina);
     /// the fractions trade sharpness for GPU time.

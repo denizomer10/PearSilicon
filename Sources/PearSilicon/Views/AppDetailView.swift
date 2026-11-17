@@ -350,6 +350,18 @@ struct AppDetailView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("PearHost mode (no iOSSupport)", isOn: Binding(
+                        get: { state.isPearHostEnabled(for: app) },
+                        set: { state.setPearHostEnabled($0, for: app) }
+                    ))
+                    .toggleStyle(.switch)
+                    Text("Runs the app on native macOS with PearHost's Swift/Rust UIKit, MetalKit and Metal-only frameworks instead of Mac Catalyst.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 Divider().opacity(0.45)
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
