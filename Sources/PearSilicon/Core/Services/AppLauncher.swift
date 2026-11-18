@@ -599,6 +599,9 @@ final class AppLauncher: @unchecked Sendable {
                 executableName: app.executableName,
                 hostDir: hostDir
             )
+        } else if let hostDir = PearHostPreparer.locateHostFrameworks() {
+            // A rebuilt PearHost replaces the copies inside the bundle.
+            try PearHostPreparer.refreshHostFrameworksIfStale(bundleURL: app.bundleURL, hostDir: hostDir)
         }
 
         var env = buildEnvironment(app: app, keymapURL: nil, extra: extraEnvironment, nativeContainer: nativeContainer)

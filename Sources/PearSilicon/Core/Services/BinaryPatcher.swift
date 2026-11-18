@@ -18,6 +18,10 @@ enum BinaryPatcher {
         static let cpuTypeARM64: UInt32 = 0x0100_000C
     }
 
+    /// Minimum macOS (packed 26.0.0) of images retargeted for PearHost; matches
+    /// the deployment target runtime/host/build-host.sh builds the frameworks for.
+    static let pearHostMinimumMacOS: UInt32 = 26 << 16
+
     enum Platform {
         static let macOS: UInt32 = 1
         static let iOS: UInt32 = 2
@@ -512,9 +516,8 @@ enum BinaryPatcher {
             var changed = readU32(data, build.offset + 8) != platform
             writeU32(&data, build.offset + 8, platform)
             if platform == Platform.macOS {
-                let minos14: UInt32 = 14 << 16
-                if readU32(data, build.offset + 12) != minos14 {
-                    writeU32(&data, build.offset + 12, minos14)
+                if readU32(data, build.offset + 12) != pearHostMinimumMacOS {
+                    writeU32(&data, build.offset + 12, pearHostMinimumMacOS)
                     changed = true
                 }
             }
@@ -541,7 +544,7 @@ enum BinaryPatcher {
         writeU32(&data, at, LoadCommand.buildVersion)
         writeU32(&data, at + 4, 24)
         writeU32(&data, at + 8, platform)
-        writeU32(&data, at + 12, minos)
+        writeU32(&data, at + 12, platform == Platform.macOS ? pearHostMinimumMacOS : minos)
         writeU32(&data, at + 16, sdk)
         writeU32(&data, at + 20, 0)
         return true
@@ -550,7 +553,12 @@ enum BinaryPatcher {
     /// Thinning, platform edits and linkedit edits are committed together.
     @discardableResult
     static func patchFile(at url: URL, targetPlatform: UInt32 = Platform.macCatalyst) throws -> Bool {
-        try mutateFile(at: url, thin: true) { data, parsed in
+        // PearHost retargets to macOS; an image already retargeted is done
+        // (preparing the same bundle again must not fail).
+        if targetPlatform == Platform.macOS, try buildPlatform(at: url) == Platform.macOS {
+            return false
+        }
+        return try mutateFile(at: url, thin: true, resultPlatform: targetPlatform) { data, parsed in
             var changed = try patchPlatform(&data, image: parsed, platform: targetPlatform)
             let updated = try image(data, slice: parsed.slice, name: parsed.name)
             if try repairChainedFixups(&data, image: updated) { changed = true }
@@ -564,8 +572,20 @@ enum BinaryPatcher {
         try mutateFile(at: url, thin: true) { _, _ in false }
     }
 
+    /// LC_BUILD_VERSION platform of the selected slice (nil without one).
+    static func buildPlatform(at url: URL) throws -> UInt32? {
+        let data = try Data(contentsOf: url)
+        guard looksLikeMachO(data) else { return nil }
+        let parsed = try selectedImage(data, name: url.lastPathComponent)
+        guard let build = parsed.commands.first(where: { $0.kind == LoadCommand.buildVersion }) else { return nil }
+        return readU32(data, build.offset + 8)
+    }
+
+    /// `resultPlatform` is the platform the mutation leaves behind: a macOS
+    /// (PearHost) result is checked structurally, since preparation metadata
+    /// rules only describe iOS and Mac Catalyst images.
     private static func mutateFile(
-        at url: URL, thin: Bool, mutation: (inout Data, Image) throws -> Bool
+        at url: URL, thin: Bool, resultPlatform: UInt32? = nil, mutation: (inout Data, Image) throws -> Bool
     ) throws -> Bool {
         let original = try Data(contentsOf: url)
         guard looksLikeMachO(original) else { return false }
@@ -580,7 +600,11 @@ enum BinaryPatcher {
         }
         let changed = try mutation(&candidate, workingImage)
         guard thinned || changed else { return false }
-        _ = try preparationImage(candidate, name: parsed.name)
+        if resultPlatform == Platform.macOS {
+            _ = try selectedImage(candidate, name: parsed.name)
+        } else {
+            _ = try preparationImage(candidate, name: parsed.name)
+        }
         let permissions = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]) as? NSNumber
         try candidate.write(to: url, options: .atomic)
         if let permissions {
