@@ -3,6 +3,8 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 angle_dir="${1:-$root/runtime/third_party/angle/out/PearCatalyst}"
 angle_dir="$(cd "$angle_dir" && pwd)"
+runtime_build="${PEAR_RUNTIME_BUILD:-$root/runtime/build}"
+[[ -f "$runtime_build/libPearRuntime.dylib" ]] || { echo "Build the runtime first (runtime/build.sh) or set PEAR_RUNTIME_BUILD." >&2; exit 2; }
 probe="$(mktemp -d "${TMPDIR:-/tmp}/pear-angle-routing.XXXXXX")"
 if [[ "${PEAR_KEEP_ROUTING_PROBE:-0}" == 1 ]]; then
   echo "Routing probe: $probe"
@@ -37,15 +39,7 @@ extern "C" void *EAGLGetProcAddress(const char *) { return nullptr; }
 CPP
 xcrun clang++ "${common[@]}" -dynamiclib "$probe/ProcFixture.mm" \
   -Wl,-install_name,@rpath/libProcFixture.dylib -o "$app/Contents/Frameworks/libProcFixture.dylib"
-xcrun clang++ "${common[@]}" -dynamiclib \
-  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEDrawable.mm" \
-  "$root/runtime/modules/graphics-gl/EAGLContextAdapter.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEGameRouting.mm" \
-  "$root/runtime/modules/core/ModuleRegistry.mm" \
-  -framework Foundation -framework QuartzCore -framework CoreGraphics \
-  -Wl,-install_name,@rpath/libPearRuntime.dylib -o "$app/Contents/Frameworks/libPearRuntime.dylib"
+cp "$runtime_build/libPearRuntime.dylib" "$app/Contents/Frameworks/libPearRuntime.dylib"
 xcrun clang++ "${common[@]}" "$root/scripts/angle-routing-smoke.mm" "$probe/OpenGLES.tbd" \
   -L"$app/Contents/Frameworks" -lProcFixture -framework Foundation -framework QuartzCore \
   -Wl,-rpath,@executable_path/../Frameworks -o "$app/Contents/MacOS/RoutingProbe"

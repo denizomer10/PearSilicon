@@ -136,7 +136,8 @@ and manual game checks below are a separate, later milestone.
 
 ## Opt-in imports and actual game tests
 
-`ANGLEGameRouting.mm` reads classic Mach-O bind/lazy/weak streams and replaces
+The import router (`graphics_gl/routing.rs`, formerly `ANGLEGameRouting.mm`) reads
+classic Mach-O bind/lazy/weak streams and chained fixups, and replaces
 only import slots belonging to the main app and its embedded images. It does
 not edit executable instructions or system images. Page protections are restored
 after pointer updates; unsupported metadata/symbols/protection changes fail

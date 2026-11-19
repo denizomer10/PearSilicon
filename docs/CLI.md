@@ -299,8 +299,8 @@ raw settings are forwarded to the host; inherited profile metadata is stripped.
 Missing, invalid, or mismatched profiles fail before the game is started.
 
 The canonical snapshot is handed to the game through its startup environment.
-`runtime/DeviceProfile.mm` captures it once into bounded C storage, shared by
-`DeviceShim` and `NetworkShim`. Early `sysctl`/`uname` paths do not touch
+The runtime's `device/profile.rs` captures it once into bounded storage, shared by
+the device identity and network modules. Early `sysctl`/`uname` paths do not touch
 Foundation, files, host IPC, or device-profile generation. Repeated API/header
 lookups stay local, and a later host outage does not change the device profile.
 KV outage/write behavior remains as described above.

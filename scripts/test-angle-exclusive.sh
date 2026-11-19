@@ -4,26 +4,17 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 angle_dir="${1:-$root/runtime/third_party/angle/out/PearCatalyst}"
 angle_dir="$(cd "$angle_dir" && pwd)"
+runtime_build="${PEAR_RUNTIME_BUILD:-$root/runtime/build}"
+[[ -f "$runtime_build/libPearOpenGLES.dylib" ]] || { echo "Build the runtime first (runtime/build.sh) or set PEAR_RUNTIME_BUILD." >&2; exit 2; }
 probe="$(mktemp -d "${TMPDIR:-/tmp}/pear-angle-exclusive.XXXXXX")"
 trap 'rm -rf "$probe"' EXIT
 sdk="$(xcrun --sdk macosx --show-sdk-path)"
 common=(-std=c++17 -target arm64-apple-ios15.0-macabi -isysroot "$sdk"
         -iframework "$sdk/System/iOSSupport/System/Library/Frameworks"
         -fobjc-arc -I"$root/runtime/include" -I"$root/runtime/third_party/angle/include" -Wl,-no_fixup_chains)
-source "$root/runtime/bridge/context-aliases.sh"
 app="$probe/ExclusiveProbe.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks"
-xcrun clang++ "${common[@]}" -dynamiclib \
-  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEDrawable.mm" \
-  "$root/runtime/modules/graphics-gl/EAGLContextAdapter.mm" \
-  "$root/runtime/modules/graphics-gl/GLKitAdapter.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEGameRouting.mm" \
-  "$root/runtime/modules/core/ModuleRegistry.mm" \
-  -framework Foundation -framework QuartzCore -framework CoreGraphics -framework UIKit "${PEAR_EAGL_ALIAS_FLAGS[@]}" \
-  -Wl,-install_name,@rpath/libPearRuntime.dylib -o "$app/Contents/Frameworks/libPearRuntime.dylib"
-bash "$root/runtime/build-angle-bridge.sh" "$app/Contents/Frameworks/libPearRuntime.dylib"
+cp "$runtime_build/libPearRuntime.dylib" "$runtime_build/libPearOpenGLES.dylib" "$app/Contents/Frameworks/"
 xcrun clang++ "${common[@]}" -DPEAR_EXCLUSIVE_PROBE "$root/scripts/angle-routing-smoke.mm" \
   -L"$app/Contents/Frameworks" -lPearOpenGLES -framework Foundation -framework QuartzCore \
   -Wl,-rpath,@executable_path/../Frameworks -o "$app/Contents/MacOS/ExclusiveProbe"

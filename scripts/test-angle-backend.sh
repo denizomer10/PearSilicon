@@ -7,37 +7,32 @@ if [[ ! -f "$angle_dir/libEGL.dylib" ]]; then
   exit 2
 fi
 angle_dir="$(cd "$angle_dir" && pwd)"
+# The runtime under test (runtime/build.sh): every module is Rust, linked here
+# as the built dylib rather than compiled from sources.
+runtime_build="${PEAR_RUNTIME_BUILD:-$root/runtime/build}"
+if [[ ! -f "$runtime_build/libPearRuntime.dylib" ]]; then
+  echo "Build the runtime first (runtime/build.sh) or set PEAR_RUNTIME_BUILD." >&2
+  exit 2
+fi
 sdk="$(xcrun --sdk macosx --show-sdk-path)"
 angle_smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/pear-angle-smoke.XXXXXX")"
 trap 'rm -rf "$angle_smoke_root"' EXIT
+cp "$runtime_build/libPearRuntime.dylib" "$angle_smoke_root/"
+runtime=(-L"$angle_smoke_root" -lPearRuntime -Wl,-rpath,"$angle_smoke_root")
 common=(-std=c++17 -target arm64-apple-ios15.0-macabi -isysroot "$sdk"
         -iframework "$sdk/System/iOSSupport/System/Library/Frameworks"
         -fobjc-arc -I"$root/runtime/include" -I"$root/runtime/third_party/angle/include")
 xcrun clang++ "${common[@]}" "$root/scripts/angle-catalyst-smoke.mm" -o "$angle_smoke_root/render"
 "$angle_smoke_root/render" "$angle_dir/libEGL.dylib"
-xcrun clang++ "${common[@]}" "$root/scripts/angle-loader-smoke.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" -framework Foundation -o "$angle_smoke_root/loader"
+xcrun clang++ "${common[@]}" "$root/scripts/angle-loader-smoke.mm" "${runtime[@]}" -framework Foundation -o "$angle_smoke_root/loader"
 "$angle_smoke_root/loader" "$angle_dir"
-xcrun clang++ "${common[@]}" "$root/scripts/angle-context-smoke.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/context"
+xcrun clang++ "${common[@]}" "$root/scripts/angle-context-smoke.mm" "${runtime[@]}" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/context"
 "$angle_smoke_root/context" "$angle_dir"
-xcrun clang++ "${common[@]}" "$root/scripts/angle-shader-smoke.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/shaders"
+xcrun clang++ "${common[@]}" "$root/scripts/angle-shader-smoke.mm" "${runtime[@]}" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/shaders"
 "$angle_smoke_root/shaders" "$angle_dir"
-xcrun clang++ "${common[@]}" "$root/scripts/angle-surface-smoke.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/surfaces"
+xcrun clang++ "${common[@]}" "$root/scripts/angle-surface-smoke.mm" "${runtime[@]}" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/surfaces"
 "$angle_smoke_root/surfaces" "$angle_dir"
-xcrun clang++ "${common[@]}" "$root/scripts/angle-drawable-smoke.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEDrawable.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/drawables"
+xcrun clang++ "${common[@]}" "$root/scripts/angle-drawable-smoke.mm" "${runtime[@]}" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/drawables"
 "$angle_smoke_root/drawables" "$angle_dir"
-xcrun clang++ "${common[@]}" "$root/scripts/angle-eagl-smoke.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEBackend.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEContext.mm" \
-  "$root/runtime/modules/graphics-gl/ANGLEDrawable.mm" \
-  "$root/runtime/modules/graphics-gl/EAGLContextAdapter.mm" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/eagl"
+xcrun clang++ "${common[@]}" "$root/scripts/angle-eagl-smoke.mm" "${runtime[@]}" -framework Foundation -framework QuartzCore -framework CoreGraphics -o "$angle_smoke_root/eagl"
 "$angle_smoke_root/eagl" "$angle_dir"

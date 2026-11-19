@@ -198,7 +198,7 @@ struct VirtualGamepadMapping: Codable, Hashable, Sendable {
 
     // MARK: - Runtime encoding
 
-    /// JSON consumed by `VirtualGamepadShim.mm`.
+    /// JSON consumed by the runtime's virtual gamepad (`input/virtual_gamepad.rs`).
     var environmentValue: String {
         var buttons: [String: [String]] = [:]
         var mouseButtons: [String: [String]] = [:]

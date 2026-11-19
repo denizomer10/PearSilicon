@@ -1075,3 +1075,12 @@ Test disiplini / yollar:
 - İçerik: exclusive ANGLE; GLKit adaptörü; Catalyst PVRTC; APPLE MSAA, chained fixups, RGB565, eski SDK MSL tabanı; iPhone uzantı profili; GTA III (sıralı çok thread bağlam paylaşımı, ortak legacy mantıksal boyut, açılış videosu katman sırası); GLES1 düzeltmeleri; depolama seçici (dahili + işaretli disk); gamepad eşleme onarımları.
 - Testler: ANGLE backend/routing/exclusive + graphics-geometry geçti; Swift 372 test/23 atlama/0 hata + 24 Swift Testing.
 - Bilinen açıklar: Angry Birds Transformers haritası (yukarıda), Run Sackboy Run çökmesi.
+
+### PearRuntime Catalyst katmanı tamamen Rust — 2026-11-19
+- `libPearRuntime.dylib` artık Objective-C/C++ kaynak içermiyor: kalan modüller (çekirdek bootstrap ve log, keymapper, GameController köprüsü, sanal gamepad, dokunma sentezi, consent ve bulut uyumluluğu, ANGLE/EAGL/GLKit graphics-gl yığını) `runtime/rust/crates/pear-catalyst` altında Rust. `EAGLContext`/`GLKView` gibi yükleme anında bağlanan sınıflar Rust'tan statik sınıf verisi olarak üretiliyor.
+- `libPearOpenGLES.dylib` Rust köprüsü (`pear-opengles`): ANGLE başlıklarındaki her GLES prototipi için kayıt koruyan trampolin; eski Khronos XML üreticisi (bu checkout'ta hiç çalışmıyordu) kaldırıldı. `libcxxcompat.dylib` de Rust.
+- Doğrulama: ObjC++ derlemesiyle census + başlangıç log eşitliği; servis/sandbox/cihaz/keychain/bulut/dokunma/gamepad/keymapper davranış karşılaştırmaları aynı; ANGLE backend/routing/exclusive (klasik + chained fixups + çalışma anı dlopen) testleri geçti; PearHost rt testleri 0 hata, PearHost E2E geçti.
+- Build düzeltmeleri: boş modül klasörleri derlemeyi bozuyordu (önceki port'lar eski dylib'le test edilmişti, yeniden doğrulandı); çözümsüz flat-namespace import'ları artık build hatası (biri tüm interpose tuple'larını düşürüyordu); Rust 1.99 uyumu.
+- macOS 27'de iOSSupport UIKit sistem OpenGLES image'ını kendisi yüklüyor; exclusive testler artık istemcinin çözdüğü sembol/sınıfları kontrol ediyor.
+- Açık iş: `legacy-direct-touch-smoke`, `screen-cache-smoke`, `device-profile-smoke.py`, `filesystem-smoke`, `keychain-smoke`, `runtime-client-smoke.py` eski ObjC kaynaklarını derleyip iç fonksiyonları sahteyle değiştiriyordu; Rust tarafında harness gerekiyor.
+

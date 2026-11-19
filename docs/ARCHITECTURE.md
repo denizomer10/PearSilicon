@@ -228,20 +228,20 @@ and keychain handling remain in-process. The split does not currently reduce
 the injected library. See the [CLI host-service reference](CLI.md#experimental-host-service-split)
 for protocol limits, lifecycle and failure behavior, and
 [`HostService.swift`](../Sources/PearSilicon/Core/Runtime/HostService.swift),
-[`runtime/HostService.mm`](../runtime/HostService.mm) and
-[`runtime/DeviceProfile.mm`](../runtime/DeviceProfile.mm) for implementation.
+[`core/host.rs`](../runtime/rust/crates/pear-catalyst/src/core/host.rs) and
+[`device/profile.rs`](../runtime/rust/crates/pear-catalyst/src/device/profile.rs) (the Rust Catalyst runtime) for implementation.
 
 ## What the shims do—and do not do
 
-- **Graphics:** [`MetalLayerShim`](../runtime/MetalLayerShim.mm) adjusts existing
+- **Graphics:** [`graphics_metal/layer.rs`](../runtime/rust/crates/pear-catalyst/src/graphics_metal/layer.rs) adjusts existing
   Metal devices, layers, drawable sizes and texture descriptors. It does not
   replace the game's renderer, rewrite shaders or provide a general graphics
   translation engine. Rendering still uses the game's engine and Apple's stack.
-- **Paths:** [`PathShim`](../runtime/PathShim.mm) redirects supported directory
+- **Paths:** [`storage/path.rs`](../runtime/rust/crates/pear-catalyst/src/storage/path.rs) redirects supported directory
   APIs. This is not a new filesystem or enforcement of filesystem isolation.
   Launcher-provided root variables matter; direct Finder launches do not infer
   the selected storage location. See [storage limitations](CLI.md#storage-location).
-- **Cloud surfaces:** [`CloudShim`](../runtime/CloudShim.mm) supplies local-only
+- **Cloud surfaces:** [`storage/cloud.rs`](../runtime/rust/crates/pear-catalyst/src/storage/cloud.rs) supplies local-only
   compatibility behavior, not access to real iCloud/Game Center accounts or
   equivalent online service functionality.
 - **Device identity:** synthetic descriptors can satisfy some API expectations;
@@ -286,7 +286,7 @@ and [PlayTools: how it works](https://github.com/PlayCover/PlayTools#how-it-work
 - The prebuilt bundle includes PearSilicon's libraries, but some app-preparation
   and relocation paths still require Command Line Tools. That is not a fully
   tool-free clean-Mac installation guarantee.
-- [`SandboxShim`](../runtime/SandboxShim.mm) requests a macOS sandbox profile
+- [`storage/sandbox.rs`](../runtime/rust/crates/pear-catalyst/src/storage/sandbox.rs) requests a macOS sandbox profile
   through `sandbox_init`; if accepted, macOS enforces those rules. The experimental
   `--sandboxed` route uses `sandbox-exec`. Both profiles use `(allow default)`
   with selected path denials, not comprehensive app isolation or iOS kernel

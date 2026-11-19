@@ -150,9 +150,20 @@ int main(int argc, char **argv) { @autoreleasepool {
     assert([EAGLContext setCurrentContext:nil]);
     puts("PASS: GLES1 OES drawable allocation and ANGLE/Metal presentation preserve GL error state");
 #ifdef PEAR_EXCLUSIVE_PROBE
-    for (uint32_t index = 0; index < _dyld_image_count(); ++index)
-        assert(!strstr(_dyld_get_image_name(index), "/OpenGLES.framework/"));
-    puts("PASS: exclusive GLES/EAGL bridge, no system OpenGLES image loaded");
+    // On current macOS the iOSSupport UIKit closure itself maps the system
+    // OpenGLES image, so its presence proves nothing. What must hold is that
+    // none of this client's GL imports or EAGL classes resolve into it.
+    auto outsideSystemGL = [](const void *address) {
+        Dl_info info = {};
+        return address && dladdr(address, &info) && info.dli_fname &&
+            !strstr(info.dli_fname, "/OpenGLES.framework/") && !strstr(info.dli_fname, "/GLKit.framework/");
+    };
+    const void *imports[] = {(const void *)&glClear, (const void *)&glClearColor, (const void *)&glGetError,
+                             (const void *)&glReadPixels, (const void *)&glBindFramebuffer,
+                             (const void *)&glGenRenderbuffers, (const void *)EAGLGetProcAddress("glClear"),
+                             (__bridge const void *)EAGLContext.class, (__bridge const void *)objc_getClass("EAGLContext")};
+    for (const void *address : imports) assert(outsideSystemGL(address));
+    puts("PASS: exclusive GLES/EAGL bridge, no import or class resolves into system OpenGLES");
 #endif
     puts("PASS: Mach-O GL/class slots, dynamic proc/class lookup, Metal readback/presentation");
 } }
