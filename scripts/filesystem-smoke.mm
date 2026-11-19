@@ -1,4 +1,10 @@
 // Headless filesystem fixture: production wrappers, synthetic temporary files.
+// Links the Rust runtime's smoke build (scripts/build-smoke-runtime.sh): the
+// production storage/sandbox.rs wrappers with inert interpose tables, so the
+// fixture never interposes libc for Foundation, setup, native controls or
+// process startup. Only the adapters below, installed through the module's
+// test hooks, inject deterministic metadata/failure/race cases; normal runs
+// use the real filesystem and the real libc entry points.
 #import <Foundation/Foundation.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -18,31 +24,24 @@
     } \
 } while (0)
 
+extern "C" {
+int PearTraceOpen(const char *, int, ...);
+int PearTraceOpenAt(int, const char *, int, ...);
+int PearTraceCreat(const char *, mode_t);
+FILE *PearTraceFopen(const char *, const char *);
+bool PearTraceEnabled(void);
+void PearSmokeSandboxInit(void);
+void PearSmokeSetFilesystem(int (*)(int, struct stat *), int (*)(int, mode_t), int (*)(int, int, char *),
+                            int (*)(int, const char *, int, ...), int (*)(const char *, int, ...));
+}
 static int FixtureFstat(int, struct stat *);
 static int FixtureFchmod(int, mode_t);
 static int FixtureGetPath(int, int, char *);
-
-// Keep the actual production tables, but in an inert section: the fixture must
-// not interpose libc for Foundation, setup, native controls, or process startup.
-// Only these three adapters inject deterministic metadata/failure/race cases;
-// normal runs use the real filesystem and the real libc original entry points.
-#define section(name) section("__DATA,__pear_fs_test")
-#define fstat FixtureFstat
-#define fchmod FixtureFchmod
-#define fcntl FixtureGetPath
-#ifndef PEAR_FILESYSTEM_SOURCE
-#define PEAR_FILESYSTEM_SOURCE "../runtime/modules/storage/SandboxShim.mm"
-#endif
-#include PEAR_FILESYSTEM_SOURCE
-#undef section
-#undef fstat
-#undef fchmod
-#undef fcntl
-
-void PearLog(NSString *, ...) { abort(); }
-extern "C" int PearSysctlMIB(int *, u_int, void *, size_t *, void *, size_t) {
-    errno = ENOTSUP;
-    return -1;
+static int FixtureOpenAt(int, const char *, int, ...);
+static int FixtureOpen(const char *, int, ...);
+static void InstallAdapters(bool retryOpen) {
+    PearSmokeSetFilesystem(FixtureFstat, FixtureFchmod, FixtureGetPath, FixtureOpenAt,
+                           retryOpen ? FixtureOpen : NULL);
 }
 
 static std::string gRoot, gHome, gOutside;
@@ -286,11 +285,9 @@ static void FopenModesAndReadOnly(void) {
         Close(PearTraceOpen(path.c_str(), O_RDONLY | O_CREAT, 0000));
         int dirfd = DirectoryFD(directory);
         Close(PearTraceOpenAt(dirfd, "readonly", O_RDONLY, 0));
-#ifndef PEAR_FILESYSTEM_BASELINE
         // Actual libc-compatible calls with no mode argument at all.
         Close(PearTraceOpen(path.c_str(), O_RDONLY));
         Close(PearTraceOpenAt(dirfd, "readonly", O_RDONLY));
-#endif
         Close(dirfd);
         FILE *stream = PearTraceFopen(path.c_str(), "rb");
         CHECK(stream != NULL);
@@ -481,13 +478,12 @@ static void ErrorsAndDescriptorGuards(void) {
     gRedirectProbe.clear();
     CheckMode(path, 0405);
 
-    const void *original = kInterposeOpen.replacee;
-    kInterposeOpen.replacee = (const void *)(uintptr_t)&FixtureOpen;
+    InstallAdapters(true);
     gOpenCalls = 0;
     gRetryError = ENOSPC;
     CHECK(PearTraceOpen(path.c_str(), O_WRONLY, 0) == -1 && errno == ENOSPC);
     CHECK(gOpenCalls == 2);
-    kInterposeOpen.replacee = original;
+    InstallAdapters(false);
     gRetryError = 0;
     CheckMode(path, 0605);
     CheckContents(path);
@@ -536,6 +532,7 @@ int main(int argc, char **argv) {
         CHECK(argc == 2);
         CHECK(geteuid() != 0); // Native EACCES is a required regression control.
         CHECK(getenv("PEAR_IOS_SANDBOX") == NULL);
+        PearSmokeSandboxInit(); // The module's real start-up; no profile applies.
         CHECK(getenv("PEAR_DEBUG_PATHS") == NULL && !PearTraceEnabled());
         const char *root = getenv("FILESYSTEM_SMOKE_ROOT");
         const char *home = getenv("PEAR_HOME_DIR");
@@ -548,7 +545,7 @@ int main(int argc, char **argv) {
         CHECK(Below(gHome, gRoot));
         CHECK(chdir(gRoot.c_str()) == 0);
         umask(0); // Child process only; exact permission-bit assertions.
-        kInterposeOpenAt.replacee = (const void *)(uintptr_t)&FixtureOpenAt;
+        InstallAdapters(false);
         if (strcmp(argv[1], "persist") == 0) {
             PersistentNativeReopens();
             return 0;

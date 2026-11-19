@@ -4,7 +4,8 @@
 Usage: python3 scripts/runtime-client-smoke.py [path/to/pearsilicon]
 The optional executable is invoked ONLY as `host-service`, never as a GUI/app.
 Without it, deterministic adversarial peers still exercise the production client.
-Requires macOS, Xcode/CLT clang++, and Python 3's standard library; no packages.
+Requires macOS, Xcode/CLT clang++, cargo with rust-src, and Python 3's standard
+library; no packages. Links the runtime's Rust smoke build (build-smoke-runtime.sh).
 """
 
 import argparse
@@ -29,19 +30,41 @@ TOKEN = "runtime-client-smoke-token"
 BUNDLE = "com.pearsilicon.runtime-client-smoke"
 ROOT = Path(__file__).resolve().parents[1]
 
-# Import the exact production sources/header. Only UIKit's otherwise unused
-# import is stubbed in the test include path; no production SDK imports change.
-# Disable the Cloud constructor before exec. Install KV methods, and opt into
-# the local ubiquity surface only for token checks. No real iCloud store/account
+# Link the production Rust client (core/host.rs, storage/cloud.rs) from the
+# runtime's smoke build (scripts/build-smoke-runtime.sh): no image initializer,
+# so the Cloud constructor never runs. Install KV methods, and opt into the
+# local ubiquity surface only for token checks. No real iCloud store/account
 # is instantiated; KV accessors are invoked through their IMPs with nil self.
 HARNESS = r'''
 #import <Foundation/Foundation.h>
+#import <objc/runtime.h>
 #import <signal.h>
+#import <sys/socket.h>
 #import <sys/time.h>
-#import "HostService.mm"
-#import "CloudShim.mm"
+#import <fcntl.h>
+#import <unistd.h>
+#import "PearRuntime.h"
 
-void PearLog(NSString *format, ...) {}
+extern "C" {
+dispatch_semaphore_t PearSmokeHostLock(void);
+int PearSmokeHostFD(void);
+uint64_t PearSmokeHostNow(void);
+dispatch_semaphore_t PearSmokeCloudKVGate(void);
+NSDictionary *PearSmokeCloudCacheLocked(NSUInteger *unconfirmed);
+void PearSmokeInstallKeyValueStore(void);
+void PearSmokeInstallUbiquityContainer(void);
+id PearSmokeKVObject(NSString *key);
+bool PearSmokeKVSet(NSString *key, id value);
+}
+#define gHostLock PearSmokeHostLock()
+#define gHostFD PearSmokeHostFD()
+#define PearHostNow PearSmokeHostNow
+#define PearHostKVGate PearSmokeCloudKVGate
+#define PearInstallKeyValueStore PearSmokeInstallKeyValueStore
+#define PearInstallUbiquityContainer PearSmokeInstallUbiquityContainer
+#define PearKVObject PearSmokeKVObject
+#define PearKVSet PearSmokeKVSet
+
 static void Interrupted(int signal) {}
 
 static dispatch_group_t TestWorkers(void) {
@@ -91,9 +114,9 @@ static NSDictionary *Execute(NSDictionary *command) {
     if ([method isEqual:@"cloud.cache"]) {
         if (!PearHostAcquireUntil(PearHostKVGate(), PearHostDeadline())) return @{ @"success": @NO };
         @try {
-            PearCollectRejectedHostWrites();
-            return @{ @"success": @YES, @"value": [gKV copy] ?: @{},
-                      @"unconfirmed": @(gHostUnconfirmedWrites.count) };
+            NSUInteger unconfirmed = 0;
+            NSDictionary *cache = PearSmokeCloudCacheLocked(&unconfirmed);
+            return @{ @"success": @YES, @"value": cache ?: @{}, @"unconfirmed": @(unconfirmed) };
         } @finally {
             dispatch_semaphore_signal(PearHostKVGate());
         }
@@ -842,17 +865,20 @@ def main():
         args.host = args.host.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="pear-rt-", dir="/tmp") as directory:
         root = Path(directory)
-        stub = root / "include/UIKit"
-        stub.mkdir(parents=True)
-        (stub / "UIKit.h").write_text("#import <CoreGraphics/CoreGraphics.h>\n")
+        runtime = subprocess.check_output([str(ROOT / "scripts/build-smoke-runtime.sh"), "catalyst"],
+                                          text=True, timeout=1800).strip().splitlines()[-1]
+        sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip()
         source = root / "client.mm"
         source.write_text(HARNESS)
         executable = root / "runtime-client"
-        subprocess.run(["xcrun", "--sdk", "macosx", "clang++", "-std=c++17", "-fobjc-arc", "-fblocks",
+        subprocess.run(["xcrun", "clang++", "-target", "arm64-apple-ios15.0-macabi", "-isysroot", sdk,
+                        "-iframework", sdk + "/System/iOSSupport/System/Library/Frameworks",
+                        "-std=c++17", "-fobjc-arc", "-fblocks",
                         "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-unused-function", "-Wno-unused-local-typedef",
-                        "-I" + str(root / "include"), "-I" + str(ROOT / "runtime/include"),
-                        "-I" + str(ROOT / "runtime"), str(source), "-framework", "Foundation",
-                        "-framework", "CoreGraphics", "-o", str(executable)], check=True, timeout=60)
+                        "-I" + str(ROOT / "runtime/include"), str(source), runtime,
+                        "-framework", "Foundation", "-framework", "UIKit", "-framework", "CoreGraphics",
+                        "-framework", "QuartzCore", "-framework", "IOKit",
+                        "-Wl,-dead_strip", "-Wl,-dead_strip_dylibs", "-o", str(executable)], check=True, timeout=120)
         run_identity_tests(executable, root)
         run_cloud_deadline_tests(executable, root)
         run_fake_tests(executable, root)

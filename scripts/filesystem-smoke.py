@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""Headless production SandboxShim filesystem tests, plus Catalyst syntax check.
+"""Headless production storage/sandbox.rs filesystem tests (Mac Catalyst).
 
-Usage: python3 scripts/filesystem-smoke.py [--baseline-ref HEAD]
-Requires macOS, a non-root user, Xcode/CLT clang++, and Python's standard library.
-Includes production SandboxShim.mm in a native command-line fixture with inert
-interpose tables; invokes the actual wrappers against synthetic temporary files.
-The standalone production source is also syntax-checked for arm64 Mac Catalyst
-with its real PearRuntime.h/UIKit headers. No apps, UI, network, sandbox profiles,
-installed files, shared build outputs, or system/user settings are touched.
-All builds, module caches, homes, and data are removed with the temporary root.
-
---baseline-ref additionally compiles that Git revision's SandboxShim and requires
-the isolated exact-0405 regression to fail at writable reopen with EACCES. Use a
-pre-fix revision; omit this option once HEAD contains the fix.
+Usage: python3 scripts/filesystem-smoke.py
+Requires macOS, a non-root user, Xcode/CLT clang++, cargo with rust-src, and
+Python's standard library. Links the runtime's Rust smoke build
+(scripts/build-smoke-runtime.sh: inert interpose tables) into a headless
+fixture that invokes the actual wrappers against synthetic temporary files.
+No apps, UI, network, sandbox profiles, installed files or system/user
+settings are touched. Fixture builds, module caches, homes and data are
+removed with the temporary root; the smoke library stays in runtime/build.
 """
 
 import argparse
@@ -53,23 +49,20 @@ def isolated_environment(directory):
     return env
 
 
-def compile_fixture(compiler, sdk, directory, source=None):
+def compile_fixture(compiler, sdk, directory, runtime):
     directory.mkdir()
     env = isolated_environment(directory)
-    # Native macOS has no UIKit. SandboxShim only needs PearLog from this header;
-    # the separate Catalyst check uses the unmodified production UIKit header.
-    (directory / "PearRuntime.h").write_text(
-        '#import <Foundation/Foundation.h>\nvoid PearLog(NSString *format, ...);\n'
-    )
+    frameworks = Path(sdk) / "System/iOSSupport/System/Library/Frameworks"
+    if not frameworks.is_dir():
+        raise RuntimeError("SDK has no Mac Catalyst frameworks")
     executable = directory / "filesystem-smoke"
-    flags = []
-    if source is not None:
-        flags.extend([f'-DPEAR_FILESYSTEM_SOURCE="{source}"', "-DPEAR_FILESYSTEM_BASELINE=1"])
     subprocess.run([
         compiler, "-std=c++17", "-fobjc-arc", "-Wno-deprecated-declarations",
-        "-isysroot", sdk, "-I", str(directory), *flags,
-        "-framework", "Foundation", str(ROOT / "scripts/filesystem-smoke.mm"),
-        "-o", str(executable),
+        "-target", "arm64-apple-ios15.0-macabi", "-isysroot", sdk, "-iframework", str(frameworks),
+        str(ROOT / "scripts/filesystem-smoke.mm"),
+        *[flag for name in ("Foundation", "UIKit", "CoreGraphics", "QuartzCore", "Metal", "GameController",
+                            "Security", "AppKit", "AudioToolbox", "IOKit") for flag in ("-framework", name)],
+        "-Wl,-dead_strip", runtime, "-o", str(executable),
     ], cwd=ROOT, env=env, check=True, timeout=90)
     # A fixture must never globally interpose filesystem calls, even at startup.
     load_commands = subprocess.check_output(
@@ -81,42 +74,8 @@ def compile_fixture(compiler, sdk, directory, source=None):
     return executable, env
 
 
-def catalyst_syntax(compiler, sdk, env):
-    frameworks = Path(sdk) / "System/iOSSupport/System/Library/Frameworks"
-    if not frameworks.is_dir():
-        raise RuntimeError("SDK has no Mac Catalyst frameworks")
-    print("\nChecking standalone production SandboxShim: arm64 Mac Catalyst syntax", flush=True)
-    subprocess.run([
-        compiler, "-std=c++17", "-fobjc-arc", "-Wno-deprecated-declarations",
-        "-target", "arm64-apple-ios15.0-macabi", "-isysroot", sdk,
-        "-iframework", str(frameworks), "-I", str(ROOT / "runtime/include"),
-        "-include", "PearRuntime.h", "-fsyntax-only", str(ROOT / "runtime/modules/storage/SandboxShim.mm"),
-    ], cwd=ROOT, env=env, check=True, timeout=90)
-    print("PASS production Catalyst syntax (real PearRuntime.h/UIKit; no build outputs)", flush=True)
-
-
-def baseline_regression(ref, compiler, sdk, directory, env):
-    print(f"\nBuilding pre-fix source from Git {ref!r} for the negative regression control", flush=True)
-    source = directory / "baseline-SandboxShim.mm"
-    source.write_bytes(subprocess.check_output(
-        ["git", "--no-pager", "show", "--end-of-options", f"{ref}:runtime/SandboxShim.mm"],
-        cwd=ROOT, env=env, timeout=15,
-    ))
-    executable, baseline_env = compile_fixture(compiler, sdk, directory / "baseline", source)
-    result = subprocess.run(
-        [str(executable), "regression"], cwd=ROOT, env=baseline_env,
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30,
-    )
-    print(result.stdout, end="", flush=True)
-    expected = "REGRESSION: mode 0405 writable reopen failed (errno=13)"
-    if result.returncode != 1 or expected not in result.stdout:
-        raise RuntimeError("baseline did not fail at the expected EACCES writable reopen; choose a pre-fix revision")
-    print("PASS negative control: pre-fix production source deterministically fails exact 0405 writable reopen", flush=True)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline-ref", help="pre-fix Git revision to verify against the exact-0405 regression")
     args = parser.parse_args()
     if platform.system() != "Darwin":
         parser.error("these tests require macOS Foundation and Darwin filesystem APIs")
@@ -133,15 +92,15 @@ def main():
         sdk = subprocess.check_output(
             ["xcrun", "--sdk", "macosx", "--show-sdk-path"], env=env, text=True, timeout=15,
         ).strip()
-        print("Building native headless fixture including production SandboxShim.mm", flush=True)
-        executable, fixture_env = compile_fixture(compiler, sdk, directory / "current")
+        runtime = subprocess.check_output(
+            [str(ROOT / "scripts/build-smoke-runtime.sh"), "catalyst"], text=True, timeout=1800,
+        ).strip().splitlines()[-1]
+        print("Building headless Catalyst fixture linking production storage/sandbox.rs", flush=True)
+        executable, fixture_env = compile_fixture(compiler, sdk, directory / "current", runtime)
         for mode in ("all", "persist"):
             subprocess.run(
                 [str(executable), mode], cwd=ROOT, env=fixture_env, check=True, timeout=60,
             )
-        catalyst_syntax(compiler, sdk, env)
-        if args.baseline_ref:
-            baseline_regression(args.baseline_ref, compiler, sdk, directory, env)
     print("\nPASS filesystem smoke: temporary synthetic data, builds and caches removed; no live-app/gameplay claim", flush=True)
 
 

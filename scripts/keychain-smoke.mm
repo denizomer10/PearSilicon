@@ -12,38 +12,39 @@
     } \
 } while (0)
 
-#ifndef PEAR_KEYCHAIN_SOURCE
-#define PEAR_KEYCHAIN_SOURCE "../runtime/modules/storage/KeychainShim.mm"
-#endif
-
-#if defined(PEAR_KEYCHAIN_ACTIVE_DYLIB)
+#if defined(PEAR_KEYCHAIN_ACTIVE_CLI)
+// Links the BUILT libPearRuntime.dylib (runtime/build.sh): its keychain store
+// interposes the process's Security calls exactly as in a launched app.
 #import <dlfcn.h>
-
-static unsigned gActiveLegacyCalls;
-static void PearLog(NSString *format, ...) {
-    // Count entry without formatting queries or key material into the output.
-    if ([format hasPrefix:@"[PearRuntime][keychain] SecKeyGeneratePair type="]) ++gActiveLegacyCalls;
-}
-#include PEAR_KEYCHAIN_SOURCE
-
-extern "C" int PearSmokeActiveAudit(const void *caller, unsigned *calls) {
-    Dl_info original = {};
-    *calls = gActiveLegacyCalls;
-    return caller == kInterposeSecKeyGeneratePair.replacement &&
-        kInterposeSecKeyGeneratePair.replacee != kInterposeSecKeyGeneratePair.replacement &&
-        dladdr(kInterposeSecKeyGeneratePair.replacee, &original) &&
-        original.dli_fname && strstr(original.dli_fname, "/Security.framework/") &&
-        original.dli_sname && !strcmp(original.dli_sname, "SecKeyGeneratePair");
-}
-
-#elif defined(PEAR_KEYCHAIN_ACTIVE_CLI)
 #import <servers/bootstrap.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 
-extern "C" int PearSmokeActiveAudit(const void *, unsigned *);
-
+// Production wrapper entries in this process, counted from the runtime's own
+// log lines (PEAR_LOG_FILE) without formatting key material into the output.
+static unsigned ActiveLegacyCalls(void) {
+    const char *path = getenv("PEAR_LOG_FILE");
+    CHECK(path && path[0] == '/');
+    NSString *log = [NSString stringWithContentsOfFile:@(path) encoding:NSUTF8StringEncoding error:NULL];
+    unsigned calls = 0;
+    for (NSString *line in [log componentsSeparatedByString:@"\n"])
+        if ([line hasPrefix:@"[PearRuntime][keychain] SecKeyGeneratePair type="]) ++calls;
+    return calls;
+}
+// The CLI's SecKeyGeneratePair binding resolves to the runtime's replacement
+// (dyld interposes dlsym results too, so the original is not addressable from
+// here; that the wrapper reaches Security.framework is shown by the real key
+// generation, sign/verify and reload below).
+static int PearSmokeActiveAudit(const void *caller, unsigned *calls) {
+    Dl_info replacement = {}, security = {};
+    *calls = ActiveLegacyCalls();
+    return dladdr(caller, &replacement) && replacement.dli_fname &&
+        strstr(replacement.dli_fname, "/libPearRuntime.dylib") && replacement.dli_sname &&
+        strstr(replacement.dli_sname, "pear_sec_key_generate_pair") &&
+        dladdr((const void *)(uintptr_t)&SecKeyCopyAttributes, &security) && security.dli_fname &&
+        strstr(security.dli_fname, "/Security.framework/");
+}
 static NSString *ActiveEnvironment(const char *name) {
     const char *value = getenv(name);
     CHECK(value && value[0]);
@@ -79,7 +80,7 @@ static void ActiveGuards(void) {
     CHECK(calls == 0);
     printf("PASS active guards: securityd lookup=%d, outside read=%d/write=%d denied; temp write allowed\n",
            lookup, readError, writeError);
-    puts("PASS active binding: CLI -> production replacement; replacee -> Security.framework/SecKeyGeneratePair");
+    puts("PASS active binding: CLI SecKeyGeneratePair -> built libPearRuntime.dylib replacement");
 }
 static NSData *ActiveTag(NSString *side) {
     NSString *tag = [ActiveEnvironment("KEYCHAIN_SMOKE_RUN_ID") stringByAppendingFormat:@"-%@", side];
@@ -183,34 +184,37 @@ int main(int argc, char **argv) {
 
 #else
 
-// Capture the modern platform entry point before remapping the interpose table.
-// Never call native SecKeyGeneratePair: macOS can ignore its transient flags.
+// Links pear-keychain's smoke build (scripts/build-smoke-runtime.sh): the
+// production Rust store with an inert interpose table. The store's platform
+// generators are replaced through its test hook; its wrappers and store
+// internals are C entry points (pear-keychain/src/lib.rs, mod smoke).
+extern "C" {
+OSStatus PearSecItemAdd(CFDictionaryRef, CFTypeRef *);
+OSStatus PearSecItemCopyMatching(CFDictionaryRef, CFTypeRef *);
+SecKeyRef PearSecKeyCreateRandomKey(CFDictionaryRef, CFErrorRef *);
+OSStatus PearSecKeyGeneratePair(CFDictionaryRef, SecKeyRef *, SecKeyRef *);
+void PearKeychainSmokeSetPlatform(SecKeyRef (*)(CFDictionaryRef, CFErrorRef *),
+                                  OSStatus (*)(CFDictionaryRef, SecKeyRef *, SecKeyRef *));
+NSArray<NSDictionary *> *PearKeychainSmokeLoadAll(void);
+bool PearKeychainSmokeMatches(NSDictionary *item, NSDictionary *query);
+bool PearKeychainSmokeSaveItem(NSDictionary *item);
+void PearKeychainSmokeStoreSecKey(SecKeyRef key, NSDictionary *params, CFStringRef keyClass);
+}
+static NSArray<NSDictionary *> *LoadAll(void) { return PearKeychainSmokeLoadAll(); }
+static BOOL Matches(NSDictionary *item, NSDictionary *query) { return PearKeychainSmokeMatches(item, query); }
+static void SaveItem(NSDictionary *item) { CHECK(PearKeychainSmokeSaveItem(item)); }
+static void StoreSecKey(SecKeyRef key, NSDictionary *params, CFStringRef keyClass) {
+    PearKeychainSmokeStoreSecKey(key, params, keyClass);
+}
+
+// The modern platform entry point. Never call native SecKeyGeneratePair:
+// macOS can ignore its transient flags. The store itself never calls the
+// system SecItem* functions (they are only interpose replacees).
 static SecKeyRef PlatformRandomKey(CFDictionaryRef parameters, CFErrorRef *error) {
     return SecKeyCreateRandomKey(parameters, error);
 }
-static OSStatus UnexpectedAdd(CFDictionaryRef, CFTypeRef *) { abort(); }
-static OSStatus UnexpectedCopy(CFDictionaryRef, CFTypeRef *) { abort(); }
-static OSStatus UnexpectedUpdate(CFDictionaryRef, CFDictionaryRef) { abort(); }
-static OSStatus UnexpectedDelete(CFDictionaryRef) { abort(); }
 static OSStatus FixtureGeneratePair(CFDictionaryRef, SecKeyRef *, SecKeyRef *);
 static SecKeyRef FixtureRandomKey(CFDictionaryRef, CFErrorRef *);
-
-// No production logging: even synthetic private key representations stay out of
-// stdout. Remapping these names does not interpose any system Security symbol.
-static void PearLog(NSString *, ...) {}
-#define SecItemAdd UnexpectedAdd
-#define SecItemCopyMatching UnexpectedCopy
-#define SecItemUpdate UnexpectedUpdate
-#define SecItemDelete UnexpectedDelete
-#define SecKeyGeneratePair FixtureGeneratePair
-#define SecKeyCreateRandomKey FixtureRandomKey
-#include PEAR_KEYCHAIN_SOURCE
-#undef SecItemAdd
-#undef SecItemCopyMatching
-#undef SecItemUpdate
-#undef SecItemDelete
-#undef SecKeyGeneratePair
-#undef SecKeyCreateRandomKey
 
 static NSDictionary *gExpectedRequest;
 static OSStatus gPairFailure;
@@ -699,6 +703,7 @@ int main(int argc, char **argv) {
         // The runner supplies all paths; refuse to fall back to any user store.
         CHECK(getenv("PEAR_KEYCHAIN_DIR") && getenv("PEAR_SUPPORT_ROOT") && getenv("PEAR_LOG_FILE"));
         Root();
+        PearKeychainSmokeSetPlatform(FixtureRandomKey, FixtureGeneratePair);
         if (!strcmp(argv[1], "unit")) {
             TestSanitizer(); TestPermanence(); TestOutputsAndReentry(); TestClassesAndUntagged(); TestFailures();
         } else if (!strcmp(argv[1], "write")) WritePersistent();

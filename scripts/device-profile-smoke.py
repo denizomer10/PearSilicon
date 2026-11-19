@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Headless device-profile tests; production sources, temporary files, no UIKit/HTTP.
+"""Headless device-profile tests; production Rust sources, temporary files, no HTTP.
 
 Usage: python3 scripts/device-profile-smoke.py [path/to/.build/debug/PearSilicon]
 The optional CLI is invoked ONLY as host-service, with private temp HOME/data,
 socket, token, and six device inputs. No game, app installation, GUI, or device.set.
 Without the CLI, deterministic authenticated peers test the startup handoff.
-Requires macOS/CLT and Python's standard library. Does not build the Swift CLI.
+Requires macOS/CLT, cargo with rust-src and Python's standard library. Links the
+runtime's Rust smoke build (scripts/build-smoke-runtime.sh: no image initializer,
+inert interpose tables). Does not build the Swift CLI.
 """
 
 import argparse
@@ -55,6 +57,19 @@ SUPPORT = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef TEST_DEVICE
+#ifdef __cplusplus
+extern "C" {
+#endif
+// device/identity.rs sysctl values, through the smoke build's entry points.
+typedef struct { const char *text; uint64_t number; size_t size; } PearDeviceValue;
+int PearDeviceValueForName(const char *name, PearDeviceValue *value);
+int PearWriteDeviceValue(const PearDeviceValue *value, void *oldp, size_t *oldlenp);
+#ifdef __cplusplus
+}
+#endif
+#endif
 
 static void CheckProfile(const PearDeviceProfile *p) {
     assert(p);
@@ -208,17 +223,74 @@ int main(void) {
 '''
 
 SHIM_IMPORTS = r'''
-#import "PearRuntime.h"
-#import "DeviceShim.mm"
-// Only disambiguate TU-local helpers; compile the full production shims intact.
-#define PearDeviceModel PearNetworkModelForTest
-#define PearIOSVersion PearNetworkVersionForTest
-#import "NetworkShim.mm"
-#undef PearDeviceModel
-#undef PearIOSVersion
-void PearLog(NSString *format, ...) {}
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+#include "PearDeviceProfile.h"
+// Production device/identity.rs and services/network.rs from the Rust smoke
+// build (pear-catalyst/src/smoke.rs); its image initializer never runs.
+extern "C" {
+NSString *PearSmokeDeviceModel(void);
+NSString *PearSmokeDeviceName(void);
+NSString *PearSmokeIOSVersion(void);
+NSString *PearSmokeIOSBuild(void);
+NSString *PearSmokeDarwinRelease(void);
+bool PearSmokeWantsPadIdiom(void);
+NSUUID *PearSmokeSyntheticVendorID(void);
+bool PearSmokeDeviceShimDisabled(void);
+void PearSmokeDeviceShimInit(void);
+void PearSmokeInstallDeviceProperties(void);
+bool PearSmokeMotionMocksInstalled(void);
+void PearSmokeNetworkShimInit(void);
+void PearSmokeInstallNetworkShim(void);
+bool PearSmokeNetworkInstalled(void);
+bool PearSmokeNetworkKeepUA(void);
+void PearSmokeSetNetworkKeepUA(bool);
+NSDictionary *PearSmokeMergedHeaders(NSDictionary *);
+void PearSmokeSetInstallerClassLookup(Class (*)(NSString *));
+void PearSmokeSetDeviceInstallerDisabled(bool (*)(void));
+}
+#define PearDeviceModel PearSmokeDeviceModel
+#define PearNetworkModelForTest PearSmokeDeviceModel
+#define PearDeviceName PearSmokeDeviceName
+#define PearIOSVersion PearSmokeIOSVersion
+#define PearIOSBuild PearSmokeIOSBuild
+#define PearDarwinRelease PearSmokeDarwinRelease
+#define PearWantsPadIdiom PearSmokeWantsPadIdiom
+#define PearSyntheticVendorID PearSmokeSyntheticVendorID
+#define PearDeviceShimDisabled PearSmokeDeviceShimDisabled
+#define PearDeviceShimInit PearSmokeDeviceShimInit
+#define PearNetworkShimInit PearSmokeNetworkShimInit
+#define PearInstallDeviceProperties PearSmokeInstallDeviceProperties
+#define PearMergedHeaders PearSmokeMergedHeaders
+#define gInstalled (PearSmokeNetworkInstalled())
+#define gMockAccelerometer (PearSmokeMotionMocksInstalled())
+#define gMockGyro (PearSmokeMotionMocksInstalled())
 #define TEST_DEVICE 1
 #include "support.h"
+// UIKit is in the process (the runtime's static GL classes subclass UIView):
+// the real classes must keep every implementation, i.e. no real installer
+// or constructor patched them.
+static NSDictionary *RealImplementations(void) {
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    for (NSString *name in @[ @"UIDevice", @"UITraitCollection", @"NSMutableURLRequest",
+                              @"NSURLSessionConfiguration", @"NSURLSession", @"CMMotionManager" ]) {
+        Class cls = NSClassFromString(name);
+        for (Class level = cls; level; level = level == cls ? object_getClass(cls) : Nil) {
+            unsigned count = 0;
+            Method *methods = class_copyMethodList(level, &count);
+            for (unsigned i = 0; i < count; ++i)
+                result[[NSString stringWithFormat:@"%@%s%s", name, level == cls ? "-" : "+",
+                        sel_getName(method_getName(methods[i]))]] = @((uintptr_t)method_getImplementation(methods[i]));
+            free(methods);
+        }
+    }
+    return result;
+}
+static NSDictionary *gRealImplementations;
+static bool RealClassesUntouched(void) {
+    if (!gRealImplementations) gRealImplementations = RealImplementations();
+    return [RealImplementations() isEqual:gRealImplementations];
+}
 '''
 
 SHIMS = SHIM_IMPORTS + r'''
@@ -235,13 +307,13 @@ static void Emit(void) {
     @autoreleasepool {
         assert(getenv("PEAR_NO_DEVICE_SHIM") && getenv("PEAR_NO_NETWORK_SHIM"));
         assert(!gInstalled && !gMockAccelerometer && !gMockGyro);
-        assert(!NSClassFromString(@"UIDevice") && !NSClassFromString(@"UIApplication"));
+        assert(RealClassesUntouched());
         NSDictionary *supplied = @{ @"User-Agent": @"App-Supplied-UA", @"X-Device-Model": @"app-model",
             @"X-OS-Version": @"app-version", @"Other": @"preserved" };
-        gKeepUA = YES;
+        PearSmokeSetNetworkKeepUA(true);
         NSDictionary *kept = PearMergedHeaders(supplied);
         NSDictionary *macKept = PearMergedHeaders(@{ @"User-Agent": @"Macintosh; Mac OS X" });
-        gKeepUA = NO;
+        PearSmokeSetNetworkKeepUA(false);
         NSDictionary *replaced = PearMergedHeaders(supplied);
         NSUUID *vendor = PearSyntheticVendorID();
         NSDictionary *result = @{ @"profile": Profile(), @"constructorsDisabled": @YES,
@@ -325,13 +397,16 @@ static Class PearFixtureClassFromString(NSString *name) {
     assert([name isEqualToString:@"UITraitCollection"]);
     return gFixtureTraits;
 }
-#define PearInstallDeviceProperties PearFixtureInstallDeviceProperties
-#define PearDeviceShimDisabled PearFixtureDeviceDisabled
-#define NSClassFromString PearFixtureClassFromString
-#include "device-installer.inc"
-#undef NSClassFromString
-#undef PearDeviceShimDisabled
-#undef PearInstallDeviceProperties
+// The production installers, with fixture classes and opt-out predicate
+// substituted through the smoke build's hooks (for this installer only).
+static bool PearFixtureDeviceDisabledHook(void) { return PearFixtureDeviceDisabled(); }
+static void PearFixtureInstallDeviceProperties(void) {
+    PearSmokeSetInstallerClassLookup(PearFixtureClassFromString);
+    PearSmokeSetDeviceInstallerDisabled(PearFixtureDeviceDisabledHook);
+    PearSmokeInstallDeviceProperties();
+    PearSmokeSetDeviceInstallerDisabled(NULL);
+    PearSmokeSetInstallerClassLookup(NULL);
+}
 
 static unsigned gFixtureRequests, gFixtureConfigurations, gFixtureSessions, gFixtureH3Setters;
 @interface PearProfileRequestFixture : NSObject
@@ -378,15 +453,17 @@ static unsigned gFixtureRequests, gFixtureConfigurations, gFixtureSessions, gFix
 - (id)uploadTaskWithRequest:(id)request fromData:(NSData *)data { return nil; }
 - (id)uploadTaskWithRequest:(id)request fromFile:(NSURL *)file { return nil; }
 @end
-#define PearInstallNetworkShim PearFixtureInstallNetworkShim
-#define NSMutableURLRequest PearProfileRequestFixture
-#define NSURLSessionConfiguration PearProfileConfigurationFixture
-#define NSURLSession PearProfileSessionFixture
-#include "network-installer.inc"
-#undef NSURLSession
-#undef NSURLSessionConfiguration
-#undef NSMutableURLRequest
-#undef PearInstallNetworkShim
+static Class PearFixtureNetworkClass(NSString *name) {
+    if ([name isEqualToString:@"NSMutableURLRequest"]) return PearProfileRequestFixture.class;
+    if ([name isEqualToString:@"NSURLSessionConfiguration"]) return PearProfileConfigurationFixture.class;
+    assert([name isEqualToString:@"NSURLSession"]);
+    return PearProfileSessionFixture.class;
+}
+static void PearFixtureInstallNetworkShim(void) {
+    PearSmokeSetInstallerClassLookup(PearFixtureNetworkClass);
+    PearSmokeInstallNetworkShim();
+    PearSmokeSetInstallerClassLookup(NULL);
+}
 
 static IMP Implementation(Class cls, SEL selector) {
     Method method = class_getInstanceMethod(cls, selector);
@@ -454,7 +531,7 @@ static void DeviceCase(BOOL disabled, BOOL noUI, BOOL details, BOOL forceTraits)
 int main(void) {
     @autoreleasepool {
         assert(getenv("PEAR_NO_DEVICE_SHIM") && getenv("PEAR_NO_NETWORK_SHIM"));
-        assert(!NSClassFromString(@"UIDevice") && !NSClassFromString(@"UITraitCollection"));
+        assert(RealClassesUntouched());
         assert(!gInstalled && !gMockAccelerometer && !gMockGyro);
         PearDeviceShimInit();
         PearNetworkShimInit();
@@ -478,7 +555,7 @@ int main(void) {
         IMP fixtureTask = Implementation(PearProfileSessionFixture.class, @selector(dataTaskWithRequest:));
         PearFixtureInstallNetworkShim();
         assert(gInstalled && gFixtureConfigurations == 2);
-        assert(gKeepUA == (getenv("PEAR_NETWORK_KEEP_UA") != NULL));
+        assert(PearSmokeNetworkKeepUA() == (getenv("PEAR_NETWORK_KEEP_UA") != NULL));
         assert(gFixtureRequests == (ready ? 1u : 0u) && gFixtureSessions == (ready ? 1u : 0u));
         PearProfileConfigurationFixture *configuration = [PearProfileConfigurationFixture new];
         assert(!configuration.assumesHTTP3Capable);
@@ -496,7 +573,7 @@ int main(void) {
         assert(gFixtureConfigurations == 2);
         assert(method_getImplementation(realHeaders) == headersBefore && method_getImplementation(realRequest) == requestBefore);
         assert(PearDeviceShimDisabled() && getenv("PEAR_NO_NETWORK_SHIM"));
-        assert(!NSClassFromString(@"UIDevice") && !NSClassFromString(@"UIApplication"));
+        assert(RealClassesUntouched());
         printf("{\"profileReady\":%s,\"HTTP3Off\":true,\"fixedBattery\":true,\"optInMultitasking\":true,"
                "\"profileGates\":true,\"optOutGates\":true,\"constructorsDisabled\":true}\n", ready ? "true" : "false");
     }
@@ -974,10 +1051,27 @@ def cli_tests(executables, executable, root):
     print("PASS supplied CLI: normalized defaults/overrides, host UUID algorithm, authenticated handoff, host loss/cache stability", flush=True)
 
 
+PROFILE_SOURCE = ROOT / "runtime/rust/crates/pear-catalyst/src/device/profile.rs"
+FRAMEWORKS = Path(subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip())
+
+
+def audit_profile_source():
+    """The C profile reader may use only getenv/strnlen: no ObjC, Foundation,
+    runtime helpers, allocation-heavy std, files or IPC (see profile.rs)."""
+    text = PROFILE_SOURCE.read_text()
+    uses = set(re.findall(r"^use ([^;]+);", text, re.M))
+    assert uses <= {"std::ffi::{c_char, c_int, CStr}", "std::sync::Once"}, uses
+    externs = re.findall(r'extern "C" \{(.*?)\n\}', text, re.S)
+    imported = {name for block in externs for name in re.findall(r"\bfn (\w+)\(", block)}
+    assert imported <= {"getenv", "strnlen"}, imported
+    for forbidden in ("crate::", "pear_objc", "std::fs", "std::net", "std::os", "Box::", "Vec<", "String", "format!"):
+        assert forbidden not in text, forbidden
+
+
 def build(root):
-    include = root / "include/UIKit"
-    include.mkdir(parents=True)
-    (include / "UIKit.h").write_text("#import <CoreGraphics/CoreGraphics.h>\n")
+    audit_profile_source()
+    runtime = subprocess.check_output([str(ROOT / "scripts/build-smoke-runtime.sh"), "catalyst"],
+                                      text=True, timeout=1800).strip().splitlines()[-1]
     (root / "support.h").write_text(SUPPORT)
     source = root / "profile.c"
     source.write_text('#include "support.h"\n')
@@ -985,49 +1079,29 @@ def build(root):
     shims.write_text(SHIMS)
     installers = root / "installers.mm"
     installers.write_text(INSTALLERS)
-    for filename, function, boundary, output in (
-        ("DeviceShim.mm", "PearInstallDeviceProperties", "\n#pragma mark - Foundation version", "device-installer.inc"),
-        ("NetworkShim.mm", "PearInstallNetworkShim", "\n__attribute__((constructor))", "network-installer.inc"),
-    ):
-        text = (ROOT / "runtime" / filename).read_text()
-        declaration = "static void " + function + "(void) {"
-        assert text.count(declaration) == 1, "installer extraction requires a unique definition"
-        start = text.index(declaration)
-        (root / output).write_text(text[start:text.index(boundary, start)])
-    strict_c_object = root / "profile-c.o"
-    profile_object = root / "profile.o"
-    common = ["xcrun", "--sdk", "macosx", "clang", "-x", "c", "-std=c11", "-Wall", "-Wextra",
-              "-Werror", "-Wno-unused-parameter", "-I" + str(ROOT / "runtime/include")]
-    subprocess.run(common + ["-c", str(ROOT / "runtime/modules/device/DeviceProfile.mm"), "-o", str(strict_c_object)],
-                   check=True, timeout=60)
-    subprocess.run(["xcrun", "--sdk", "macosx", "clang++", "-x", "c++", "-std=c++17",
-                    "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT / "runtime/include"),
-                    "-c", str(ROOT / "runtime/modules/device/DeviceProfile.mm"), "-o", str(profile_object)],
-                   check=True, timeout=60)
-    # A strict dependency audit catches accidental ObjC/Foundation/IPC/file access
-    # even when an early-access test happens not to exercise the offending path.
-    allowed = {"___stack_chk_fail", "___stack_chk_guard", "___memcpy_chk", "_getenv", "_memcpy",
-               "_pthread_once", "_strcmp", "_strlen", "_strnlen"}
-    for artifact in (strict_c_object, profile_object):
-        symbols = subprocess.check_output(["nm", "-u", str(artifact)], text=True, timeout=10)
-        assert {line.split()[-1] for line in symbols.splitlines() if line.strip()} <= allowed, symbols
+    sdk = str(FRAMEWORKS)
+    target = ["-target", "arm64-apple-ios15.0-macabi", "-isysroot", sdk,
+              "-iframework", sdk + "/System/iOSSupport/System/Library/Frameworks"]
+    # Only what the linked code needs: dead-stripped code takes its imports
+    # (and their libraries) with it.
+    strip = ["-Wl,-dead_strip", "-Wl,-dead_strip_dylibs"]
     plain = root / "profile"
-    subprocess.run(common + [str(source), "-x", "none", str(profile_object), "-pthread", "-o", str(plain)],
-                   check=True, timeout=60)
+    subprocess.run(["xcrun", "clang", *target, "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                    "-Wno-unused-parameter", "-I" + str(ROOT / "runtime/include"), str(source), "-x", "none",
+                    runtime, *strip, "-pthread", "-o", str(plain)], check=True, timeout=120)
     libraries = subprocess.check_output(["otool", "-L", str(plain)], text=True, timeout=10)
     assert "Foundation" not in libraries and "UIKit" not in libraries and "libobjc" not in libraries, libraries
     shim_binary = root / "shims"
     installer_binary = root / "installers"
-    shim_command = ["xcrun", "--sdk", "macosx", "clang++", "-std=c++17", "-fobjc-arc", "-fblocks",
+    shim_command = ["xcrun", "clang++", *target, "-std=c++17", "-fobjc-arc", "-fblocks",
                     "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-unused-function", "-Wno-unused-local-typedef",
-                    "-I" + str(root / "include"), "-I" + str(ROOT / "runtime/include"),
-                    "-I" + str(ROOT / "runtime"), "-framework", "Foundation", "-framework", "IOKit"]
+                    "-I" + str(root), "-I" + str(ROOT / "runtime/include")]
     for source_file, binary in ((shims, shim_binary), (installers, installer_binary)):
-        subprocess.run(shim_command + [str(source_file), str(profile_object), "-o", str(binary)],
-                       check=True, timeout=60)
-        libraries = subprocess.check_output(["otool", "-L", str(binary)], text=True, timeout=10)
-        assert "UIKit" not in libraries, libraries
-    print("PASS build/dependency audit: strict C/C++ helper, no ObjC/Foundation/IPC/file symbols; C caller and production shims link without UIKit", flush=True)
+        subprocess.run(shim_command + [str(source_file), runtime, "-framework", "Foundation",
+                                       "-framework", "UIKit", "-framework", "IOKit", "-framework", "QuartzCore",
+                                       *strip, "-o", str(binary)],
+                       check=True, timeout=120)
+    print("PASS build/dependency audit: profile.rs uses only getenv/strnlen; C caller links no ObjC/Foundation/UIKit", flush=True)
     return plain, shim_binary, installer_binary
 
 

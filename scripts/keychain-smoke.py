@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Headless production KeychainShim tests; synthetic keys, no system keychain/UI.
+"""Headless production keychain-store tests; synthetic keys, no system keychain/UI.
 
 Usage: python3 scripts/keychain-smoke.py [--platform all|macos|catalyst]
                                        [--active-interpose]
-Requires macOS, Xcode/CLT clang++, and Python's standard library. Builds and all
-keys live in a temporary directory under .build/keychain-smoke/ and are removed.
-The default suite remaps the shim's Security interpose entries to an adapter
-using real, in-memory SecKeyCreateRandomKey/SecKeyCopyPublicKey. Native macOS RSA
-512 rejection is reported, never replaced with a larger key; Catalyst must pass.
-The optional active check calls ACTUAL Catalyst SecKeyGeneratePair through a
-production-shim dylib. It first requires sandbox guards denying securityd/Mach
-lookup, networking, user-keychain reads, and filesystem writes outside the test
-root (except device I/O). Generation is never attempted if those guards fail.
+Requires macOS, Xcode/CLT clang++, cargo with rust-src, and Python's standard
+library. Fixture builds and all keys live in a temporary directory under
+.build/keychain-smoke/ and are removed. The default suite links pear-keychain's
+smoke build (scripts/build-smoke-runtime.sh: inert interpose table) and
+replaces the store's platform generators with an adapter using real, in-memory
+SecKeyCreateRandomKey/SecKeyCopyPublicKey. Native macOS RSA 512 rejection is
+reported, never replaced with a larger key; Catalyst must pass.
+The optional active check calls ACTUAL Catalyst SecKeyGeneratePair in a CLI
+linked against the built libPearRuntime.dylib (runtime/build.sh), whose store
+interposes it. It first requires sandbox guards denying securityd/Mach lookup,
+networking, user-keychain reads, and filesystem writes outside the test root
+(except device I/O). Generation is never attempted if those guards fail.
 No app/GUI/network or native-macOS legacy generator is launched.
 """
 
@@ -49,6 +52,13 @@ def isolated_environment(directory):
     return env
 
 
+def smoke_library(kind):
+    """The production Rust store with its `smoke` seams (inert interposing)."""
+    output = subprocess.check_output([str(ROOT / "scripts/build-smoke-runtime.sh"), kind],
+                                     text=True, timeout=1800)
+    return output.strip().splitlines()[-1]
+
+
 def run_platform(name, directory, compiler, sdk):
     directory.mkdir()
     env = isolated_environment(directory)
@@ -68,12 +78,12 @@ def run_platform(name, directory, compiler, sdk):
             "DYLD_LIBRARY_PATH": "/System/iOSSupport/usr/lib",
             "DYLD_FALLBACK_LIBRARY_PATH": "/System/iOSSupport/usr/lib",
         })
-    print(f"\nBuilding {name} headless fixture", flush=True)
+    print(f"\nBuilding {name} headless fixture (pear-keychain smoke build)", flush=True)
     subprocess.run([
         compiler, "-std=c++17", "-fobjc-arc", "-Wno-deprecated-declarations",
         "-isysroot", sdk, *flags,
-        "-framework", "Foundation", "-framework", "Security",
-        str(ROOT / "scripts/keychain-smoke.mm"), "-o", str(executable),
+        "-framework", "Foundation", "-framework", "Security", "-Wl,-dead_strip",
+        str(ROOT / "scripts/keychain-smoke.mm"), smoke_library(f"keychain-{name}"), "-o", str(executable),
     ], cwd=ROOT, env=env, check=True, timeout=90)
     failed = []
     rsa512_supported = True
@@ -95,31 +105,35 @@ def run_platform(name, directory, compiler, sdk):
     return failed
 
 
-def run_active_interpose(directory, compiler, sdk, shim_source=None):
+def run_active_interpose(directory, compiler, sdk):
     directory.mkdir()
     env = isolated_environment(directory)
     env["PEAR_KEYCHAIN_DIR"] = str(directory / "store")
     env["KEYCHAIN_SMOKE_RUN_ID"] = "pearsilicon-keychain-smoke-" + uuid.uuid4().hex
+    # The runtime's other modules stay off; its interpose tables still apply.
+    env["PEAR_RUNTIME_ONLY"] = "core"
     denied = directory.parent / (directory.name + "-denied-synthetic-file")
     denied.write_text("synthetic sandbox guard; not credential data\n")
     env["KEYCHAIN_SMOKE_DENIED_FILE"] = str(denied)
     fixture = ROOT / "scripts/keychain-smoke.mm"
-    dylib = directory / "keychain-active.dylib"
+    built = Path(os.environ.get("PEAR_RUNTIME_BUILD", ROOT / "runtime/build"))
+    if not built.is_absolute():
+        built = ROOT / built
+    runtime = built / "libPearRuntime.dylib"
+    if not runtime.is_file():
+        raise RuntimeError(f"{runtime} is missing; run runtime/build.sh first")
+    # The sandbox denies reads under /Users outside the test root: use a copy.
+    dylib = directory / "libPearRuntime.dylib"
+    dylib.write_bytes(runtime.read_bytes())
     executable = directory / "keychain-active"
-    common = [
+    print("\nBuilding ACTUAL Catalyst legacy/interpose check against the built libPearRuntime.dylib (sandbox required)", flush=True)
+    subprocess.run([
         compiler, "-std=c++17", "-fobjc-arc", "-Wno-deprecated-declarations",
         "-target", f"{platform.machine()}-apple-ios15.0-macabi",
         "-isysroot", sdk, "-iframework", str(Path(sdk) / "System/iOSSupport/System/Library/Frameworks"),
         "-framework", "Foundation", "-framework", "Security",
-    ]
-    source_flags = [] if shim_source is None else [f'-DPEAR_KEYCHAIN_SOURCE="{shim_source}"']
-    print("\nBuilding ACTUAL Catalyst legacy/interpose check (sandbox required)", flush=True)
-    subprocess.run([
-        *common, *source_flags, "-DPEAR_KEYCHAIN_ACTIVE_DYLIB", "-dynamiclib",
-        "-install_name", str(dylib), str(fixture), "-o", str(dylib),
-    ], cwd=ROOT, env=env, check=True, timeout=90)
-    subprocess.run([
-        *common, "-DPEAR_KEYCHAIN_ACTIVE_CLI", str(fixture), str(dylib), "-o", str(executable),
+        "-DPEAR_KEYCHAIN_ACTIVE_CLI", str(fixture), str(dylib), "-Wl,-rpath," + str(directory),
+        "-o", str(executable),
     ], cwd=ROOT, env=env, check=True, timeout=90)
 
     # The exception is only our temporary subtree. No Security daemon can be
@@ -148,6 +162,7 @@ def run_active_interpose(directory, compiler, sdk, shim_source=None):
     ]
     for mode in ("guard", "generate", "reload"):
         print(f"[active-interpose] {mode}", flush=True)
+        env["PEAR_LOG_FILE"] = str(directory / f"active-{mode}.log")
         result = subprocess.run([*command, mode], cwd=directory, env=env, timeout=30)
         if result.returncode:
             print(f"[active-interpose] STOP: {mode} exited {result.returncode}; no later stages attempted", flush=True)

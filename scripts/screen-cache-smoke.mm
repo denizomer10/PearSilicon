@@ -4,7 +4,13 @@
 #include <cassert>
 #include <unistd.h>
 #import "../runtime/include/PearRuntime.h"
-static CGRect PearReportedBounds(void);
+// Links the Rust runtime's smoke build (scripts/build-smoke-runtime.sh): the
+// production graphics/screen.rs, with the primary-window lookup replaced
+// through its test hook (pear-catalyst/src/smoke.rs).
+extern "C" CGRect PearSmokeReportedBounds(void);
+extern "C" bool PearSmokeScreenRefreshQueued(void);
+extern "C" void PearSmokeSetPrimaryWindow(UIWindow *(*)(void));
+static CGRect PearReportedBounds(void) { return PearSmokeReportedBounds(); }
 static bool gReenterBounds;
 @interface PearScreenWindow : NSObject
 @property(nonatomic) CGSize size;
@@ -18,7 +24,7 @@ static bool gReenterBounds;
 }
 @end
 static PearScreenWindow *gTestWindow;
-UIWindow *PearPrimaryWindow(void) {
+static UIWindow *FakePrimaryWindow(void) {
     assert(NSThread.isMainThread);
     if (gReenterBounds) {
         CGRect nested = PearReportedBounds();
@@ -26,10 +32,8 @@ UIWindow *PearPrimaryWindow(void) {
     }
     return (UIWindow *)(id)gTestWindow;
 }
-void PearLog(NSString *format, ...) { (void)format; }
-extern "C" int PearRuntimeModuleEnabled(const char *) { return 0; }
-#import "../runtime/modules/graphics/ScreenShim.mm"
 int main() { @autoreleasepool {
+    PearSmokeSetPrimaryWindow(FakePrimaryWindow);
     gTestWindow = [PearScreenWindow new]; gTestWindow.size = CGSizeMake(800, 600);
     gReenterBounds = true; // Lazy delegate.window builds its window from UIScreen.bounds.
     assert(CGSizeEqualToSize(PearReportedBounds().size, gTestWindow.size));
@@ -44,11 +48,11 @@ int main() { @autoreleasepool {
         dispatch_semaphore_signal(finished);
     });
     assert(dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0);
-    assert(gTestWindow.reads == initialReads && atomic_load(&gScreenRefreshQueued));
+    assert(gTestWindow.reads == initialReads && PearSmokeScreenRefreshQueued());
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
-    while (atomic_load(&gScreenRefreshQueued) && deadline.timeIntervalSinceNow > 0)
+    while (PearSmokeScreenRefreshQueued() && deadline.timeIntervalSinceNow > 0)
         [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
-    assert(!atomic_load(&gScreenRefreshQueued) && gTestWindow.reads == initialReads + 1);
+    assert(!PearSmokeScreenRefreshQueued() && gTestWindow.reads == initialReads + 1);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         assert(CGSizeEqualToSize(PearReportedBounds().size, CGSizeMake(1600, 900)));
         dispatch_semaphore_signal(finished);

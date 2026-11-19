@@ -3,13 +3,18 @@
 #import <UIKit/UIKit.h>
 #import "../runtime/include/PearRuntime.h"
 #import <assert.h>
+// Links the Rust runtime's smoke build (scripts/build-smoke-runtime.sh): the
+// production input/legacy_touch.rs with the window lookup and GL touch mapping
+// replaced through its test hooks (pear-catalyst/src/smoke.rs).
 extern void PearSendLegacyDirectTouch(BOOL down, CGFloat nx, CGFloat ny);
 extern void PearCancelLegacyDirectTouch(void);
+extern "C" void PearSmokeLegacyTouchInit(void);
+extern "C" void PearSmokeSetPrimaryWindow(UIWindow *(*)(void));
+extern "C" void PearSmokeSetGLMapTouchPoint(CGPoint (*)(UITouch *, UIView *, CGPoint));
 static UIWindow *gWindow;
-UIWindow *PearPrimaryWindow(void) { return gWindow; }
-void PearLog(NSString *format, ...) { (void)format; }
+static UIWindow *FakePrimaryWindow(void) { return gWindow; }
 static BOOL gMapTouch;
-CGPoint PearGLMapTouchPoint(UITouch *touch, UIView *view, CGPoint point) {
+static CGPoint FakeGLMapTouchPoint(UITouch *touch, UIView *view, CGPoint point) {
     assert(touch.view != nil);
     return gMapTouch ? CGPointMake(point.x * 0.5, point.y * 0.5) : point;
 }
@@ -49,6 +54,9 @@ CGPoint PearGLMapTouchPoint(UITouch *touch, UIView *view, CGPoint point) {
 @end
 int main(void) {
     @autoreleasepool {
+        PearSmokeLegacyTouchInit();
+        PearSmokeSetPrimaryWindow(FakePrimaryWindow);
+        PearSmokeSetGLMapTouchPoint(FakeGLMapTouchPoint);
         PearFakeWindow *window = [PearFakeWindow new];
         window.spy = [PearSpyView new]; gWindow = (UIWindow *)(id)window;
         PearSendLegacyDirectTouch(YES, 0.25, 0.5);
