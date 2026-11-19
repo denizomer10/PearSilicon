@@ -37,6 +37,18 @@ if [[ -x "$ROOT/runtime/build.sh" ]]; then
   PEAR_BUILD_DIR="$BUILD_DIR" "$ROOT/runtime/build.sh"
 fi
 
+# --- 2c) Build the PearHost frameworks (macOS-platform UIKit & co.) --------
+# The launcher's PearHost mode installs these into an app; it looks for them
+# in Contents/Resources/PearHost. OpenGLES.framework re-exports the macOS
+# PearANGLE build (runtime/host/build-pearangle.sh) when one is available.
+HOST_ANGLE="${PEAR_HOST_ANGLE_DIR:-}"
+for candidate in "$BUILD_DIR/host/PearANGLE-src" "$ROOT/runtime/build/host/PearANGLE-src"; do
+  [[ -z "$HOST_ANGLE" && -f "$candidate/libGLESv2.dylib" ]] && HOST_ANGLE="$candidate"
+done
+echo ">> Building PearHost frameworks"
+PEAR_BUILD_DIR="$BUILD_DIR" PEAR_HOST_ANGLE_DIR="${HOST_ANGLE:-$BUILD_DIR/host/PearANGLE-src}" \
+  "$ROOT/runtime/host/build-host.sh"
+
 # --- 3) Assemble .app -----------------------------------------------------
 echo ">> Assembling bundle: $OUT"
 rm -rf "$OUT"
@@ -72,6 +84,19 @@ done
 cp "$BUILD_DIR/libPearOpenGLES.dylib" "$OUT/Contents/Resources/"
 rm -rf "$OUT/Contents/Resources/PearANGLE"
 cp -R "$BUILD_DIR/PearANGLE" "$OUT/Contents/Resources/PearANGLE"
+
+# PearHost frameworks, and the macOS PearANGLE they re-export, if built.
+HOST_OUT="$OUT/Contents/Resources/PearHost"
+rm -rf "$HOST_OUT"
+mkdir -p "$HOST_OUT"
+for fw in UIKit OpenGLES MetalKit iAd; do
+  cp -R "$BUILD_DIR/host/$fw.framework" "$HOST_OUT/"
+done
+if [[ -d "$BUILD_DIR/host/PearANGLE" ]]; then
+  cp -R "$BUILD_DIR/host/PearANGLE" "$HOST_OUT/PearANGLE"
+else
+  echo "WARNING: no macOS PearANGLE; PearHost apps will have no OpenGL ES (run runtime/host/build-pearangle.sh)" >&2
+fi
 
 # --- 3a-legacy) Bundle PearLegacyEngine (32-bit iOS runtime) --------------
 if [[ -n "${PEAR_LEGACY_ENGINE_REPO:-}" ]]; then

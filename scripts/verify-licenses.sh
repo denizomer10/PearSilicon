@@ -48,6 +48,12 @@ need Licenses/SOURCE.txt "github.com/denizomer10/PearSilicon/tree/"
 need PearANGLE/LICENSE.ANGLE "Redistribution and use"
 need PearANGLE/THIRD_PARTY_LICENSES.txt "abseil-cpp" "zlib"
 
+# --- ANGLE for PearHost (macOS-platform) apps --------------------------------
+if [[ -d "$res/PearHost/PearANGLE" ]]; then
+  need PearHost/PearANGLE/LICENSE.ANGLE "Redistribution and use"
+  need PearHost/PearANGLE/THIRD_PARTY_LICENSES.txt "abseil-cpp" "zlib"
+fi
+
 # --- PearLegacyEngine (GPL-3.0-or-later binary) ------------------------------
 engine="PearLegacyEngine"
 if [[ -e "$res/$engine/touchHLE" ]]; then
@@ -79,7 +85,7 @@ fi
 # --- Every shipped Mach-O must be covered ------------------------------------
 # PearSilicon's own components are covered by Licenses/; anything else must sit
 # in a directory (or a parent inside Resources) that has its own license file.
-own='^(libPearRuntime|libPearOpenGLES|libcxxcompat|libswiftUIKit)\.dylib$|^MarketplaceKit\.framework/'
+own='^(libPearRuntime|libPearOpenGLES|libcxxcompat|libswiftUIKit)\.dylib$|^MarketplaceKit\.framework/|^PearHost/(UIKit|OpenGLES|MetalKit|iAd)\.framework/'
 while IFS= read -r -d '' file; do
   rel="${file#"$res"/}"
   file -b "$file" | grep -q "Mach-O" || continue
