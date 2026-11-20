@@ -74,7 +74,9 @@ final class AppLauncher: @unchecked Sendable {
                 activate: activate
             )
         }
-        if AppSettings.usePearHost(for: app.id) || PearHostPreparer.isPrepared(app.bundleURL) {
+        // 64-bit apps run on PearRuntime's own layer (PearHost): never Mac
+        // Catalyst or /System/iOSSupport.
+        if true {
             return try await launchPearHost(
                 app,
                 extraEnvironment: extraEnvironment,
@@ -590,7 +592,7 @@ final class AppLauncher: @unchecked Sendable {
         nativeContainer: Bool,
         activate: Bool
     ) async throws -> NSRunningApplication? {
-        if !PearHostPreparer.isPrepared(app.bundleURL) {
+        if !PearHostPreparer.isPrepared(app.bundleURL) || PearHostPreparer.needsPreparation(app.bundleURL) {
             guard let hostDir = PearHostPreparer.locateHostFrameworks() else {
                 throw PearError.missingRuntimeComponent("PearHost frameworks (run runtime/host/build-host.sh)")
             }

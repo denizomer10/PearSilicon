@@ -4,10 +4,31 @@ import Foundation
 /// platform, zero `/System/iOSSupport`) using `runtime/build/host` frameworks.
 enum PearHostPreparer {
     static let markerFileName = ".pearsilicon-pearhost"
-    private static let redirectedFrameworks = ["UIKit", "iAd", "OpenGLES", "MetalKit"]
+    /// Libraries PearHost builds next to its frameworks and installs into
+    /// every prepared bundle (macOS builds replacing the app's Catalyst ones).
+    private static let hostLibraries = ["libcxxcompat.dylib", "libswiftUIKit.dylib"]
+
+    /// Every framework PearHost built (runtime/host/build-host.sh): its own
+    /// UIKit, OpenGLES and MetalKit, stand-ins for iOS-only frameworks
+    /// (MessageUI, iAd, ...), overlays adding iOS-only API to a macOS
+    /// framework (AVKit, GameController, ...), and MobileCoreServices.
+    private static func hostFrameworks(in hostDir: URL) -> [String] {
+        let items = (try? FileManager.default.contentsOfDirectory(atPath: hostDir.path)) ?? []
+        return items.filter { $0.hasSuffix(".framework") }.map { String($0.dropLast(".framework".count)) }.sorted()
+    }
 
     static func markerURL(in bundleURL: URL) -> URL {
         bundleURL.appendingPathComponent(markerFileName)
+    }
+
+    /// Bumped when preparation itself changes (which load commands are
+    /// redirected, what is installed): an older bundle is prepared again.
+    static let preparerVersion = 2
+
+    /// The bundle was prepared by an older preparer (or not at all).
+    static func needsPreparation(_ bundleURL: URL) -> Bool {
+        let recorded = (try? String(contentsOf: markerURL(in: bundleURL), encoding: .utf8)) ?? ""
+        return !recorded.contains("preparer=\(preparerVersion)\n")
     }
 
     static func isPrepared(_ bundleURL: URL) -> Bool {
@@ -45,7 +66,7 @@ enum PearHostPreparer {
         try fm.createDirectory(at: frameworksDir, withIntermediateDirectories: true)
 
         // Remove Catalyst-only shims if switching an already-prepared Catalyst bundle.
-        for catalystArtifact in ["libPearRuntime.dylib", "libPearOpenGLES.dylib", "libswiftUIKit.dylib", "PearANGLE", "MarketplaceKit.framework"] {
+        for catalystArtifact in ["libPearRuntime.dylib", "libPearOpenGLES.dylib", "libswiftUIKit.dylib", "libcxxcompat.dylib", "PearANGLE", "MarketplaceKit.framework"] {
             let url = frameworksDir.appendingPathComponent(catalystArtifact)
             if fm.fileExists(atPath: url.path) {
                 try? fm.removeItem(at: url)
@@ -55,22 +76,23 @@ enum PearHostPreparer {
         try installHostFrameworks(into: frameworksDir, from: hostDir)
 
         // Retarget executable + app-bundled frameworks to macOS platform.
+        let host = hostFrameworks(in: hostDir)
         let exeURL = bundleURL.appendingPathComponent(executableName)
-        try retargetMachO(at: exeURL, mainExecutable: true)
+        try retargetMachO(at: exeURL, hostFrameworks: host, mainExecutable: true)
 
         if let items = try? fm.contentsOfDirectory(at: frameworksDir, includingPropertiesForKeys: nil) {
             for item in items {
                 let name = item.lastPathComponent
-                if redirectedFrameworks.contains(where: { name == "\($0).framework" }) || name == "PearANGLE" {
+                if host.contains(where: { name == "\($0).framework" }) || name == "PearANGLE" || hostLibraries.contains(name) {
                     continue
                 }
                 if name.hasSuffix(".framework") {
                     let fwBin = item.appendingPathComponent(String(name.dropLast(".framework".count)))
                     if fm.fileExists(atPath: fwBin.path) {
-                        try? retargetMachO(at: fwBin)
+                        try? retargetMachO(at: fwBin, hostFrameworks: host)
                     }
                 } else if name.hasSuffix(".dylib") {
-                    try? retargetMachO(at: item)
+                    try? retargetMachO(at: item, hostFrameworks: host)
                 }
             }
         }
@@ -103,36 +125,44 @@ enum PearHostPreparer {
     }
 
     private static func writeMarker(in bundleURL: URL, hostDir: URL) throws {
-        try Data("pearhost\n\(hostStamp(hostDir))\n".utf8).write(to: markerURL(in: bundleURL), options: .atomic)
+        try Data("pearhost\n\(hostStamp(hostDir))\npreparer=\(preparerVersion)\n".utf8).write(to: markerURL(in: bundleURL), options: .atomic)
     }
 
-    /// Copies the PearHost frameworks (and PearANGLE) into <app>/Frameworks and signs them.
+    /// Copies the PearHost frameworks, PearANGLE and PearHost's libraries into
+    /// <app>/Frameworks and signs them.
     private static func installHostFrameworks(into frameworksDir: URL, from hostDir: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: frameworksDir, withIntermediateDirectories: true)
-        for fw in redirectedFrameworks {
-            let src = hostDir.appendingPathComponent("\(fw).framework", isDirectory: true)
-            let dst = frameworksDir.appendingPathComponent("\(fw).framework", isDirectory: true)
-            if fm.fileExists(atPath: src.path) {
-                if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
-                try fm.copyItem(at: src, to: dst)
-            }
+        let host = hostFrameworks(in: hostDir)
+        for item in host.map({ "\($0).framework" }) + ["PearANGLE"] + hostLibraries {
+            let src = hostDir.appendingPathComponent(item)
+            let dst = frameworksDir.appendingPathComponent(item)
+            guard fm.fileExists(atPath: src.path) else { continue }
+            if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
+            try fm.copyItem(at: src, to: dst)
         }
-        let angleSrc = hostDir.appendingPathComponent("PearANGLE", isDirectory: true)
-        let angleDst = frameworksDir.appendingPathComponent("PearANGLE", isDirectory: true)
-        if fm.fileExists(atPath: angleSrc.path) {
-            if fm.fileExists(atPath: angleDst.path) { try fm.removeItem(at: angleDst) }
-            try fm.copyItem(at: angleSrc, to: angleDst)
+        // The UIKit Swift overlay is a Mac Catalyst build: retarget it like
+        // the app's own images.
+        let overlay = frameworksDir.appendingPathComponent("libswiftUIKit.dylib")
+        if fm.fileExists(atPath: overlay.path) {
+            try retargetMachO(at: overlay, hostFrameworks: host)
         }
-        for fw in redirectedFrameworks {
+        for fw in host {
             let fwBin = frameworksDir.appendingPathComponent("\(fw).framework/\(fw)")
             if fm.fileExists(atPath: fwBin.path) {
                 _ = runTool("/usr/bin/codesign", ["-f", "-s", "-", fwBin.path])
             }
         }
+        let cxx = frameworksDir.appendingPathComponent("libcxxcompat.dylib")
+        if fm.fileExists(atPath: cxx.path) {
+            _ = runTool("/usr/bin/codesign", ["-f", "-s", "-", cxx.path])
+        }
     }
 
-    private static func retargetMachO(at url: URL, mainExecutable: Bool = false) throws {
+    private static func retargetMachO(at url: URL, hostFrameworks host: [String], mainExecutable: Bool = false) throws {
+        // A bundle prepared earlier can name CoreServices twice (an older
+        // PearHost preparation mapped MobileCoreServices to it); dyld refuses that.
+        try dedupeDylibs(at: url)
         // Undo a Catalyst preparation of the same bundle (while the image is
         // still iOS/Catalyst, which is what BinaryPatcher edits): its runtime
         // dylib is removed above, and its load command is the last one
@@ -143,20 +173,31 @@ enum PearHostPreparer {
         _ = try BinaryPatcher.patchFile(at: url, targetPlatform: BinaryPatcher.Platform.macOS)
         // OpenGLES dependencies pointed at the Catalyst ANGLE shim go to
         // PearHost's OpenGLES.framework.
-        for dep in dependencies(of: url) where dep.contains("libPearOpenGLES") {
-            _ = runTool("/usr/bin/install_name_tool", ["-change", dep, "@rpath/OpenGLES.framework/OpenGLES", url.path])
+        let iosSupport = "/System/iOSSupport/System/Library/Frameworks/"
+        for dep in dependencies(of: url) {
+            var target: String?
+            if dep.contains("libPearOpenGLES") {
+                target = "@rpath/OpenGLES.framework/OpenGLES"
+            } else if dep.hasSuffix("/libcxxcompat.dylib") && dep != "@rpath/libcxxcompat.dylib" {
+                target = "@rpath/libcxxcompat.dylib"
+            } else if dep.hasSuffix("libswiftUIKit.dylib") && dep != "@rpath/libswiftUIKit.dylib" {
+                target = "@rpath/libswiftUIKit.dylib"
+            } else if dep.hasPrefix(iosSupport), let fw = dep.dropFirst(iosSupport.count).split(separator: "/").first,
+                      fw.hasSuffix(".framework") {
+                // Never /System/iOSSupport: PearHost's framework of that name, or macOS's.
+                let name = String(fw.dropLast(".framework".count))
+                target = host.contains(name) ? "@rpath/\(name).framework/\(name)" : "/System/Library/Frameworks/\(name).framework/\(name)"
+            } else if dep.hasPrefix("/System/Library/Frameworks/"), let fw = dep.split(separator: "/").dropFirst(3).first,
+                      fw.hasSuffix(".framework") {
+                let name = String(fw.dropLast(".framework".count))
+                if host.contains(name) && dep == "/System/Library/Frameworks/\(name).framework/\(name)" {
+                    target = "@rpath/\(name).framework/\(name)"
+                }
+            }
+            if let target, target != dep {
+                _ = runTool("/usr/bin/install_name_tool", ["-change", dep, target, url.path])
+            }
         }
-        for fw in redirectedFrameworks {
-            let sysPath = "/System/Library/Frameworks/\(fw).framework/\(fw)"
-            let rpath = "@rpath/\(fw).framework/\(fw)"
-            _ = runTool("/usr/bin/install_name_tool", ["-change", sysPath, rpath, url.path])
-        }
-        _ = runTool("/usr/bin/install_name_tool", [
-            "-change",
-            "/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices",
-            "/System/Library/Frameworks/CoreServices.framework/CoreServices",
-            url.path,
-        ])
         let rpaths = rpaths(of: url)
         if !rpaths.contains("/usr/lib/swift") {
             _ = runTool("/usr/bin/install_name_tool", ["-add_rpath", "/usr/lib/swift", url.path])
@@ -167,6 +208,43 @@ enum PearHostPreparer {
             _ = runTool("/usr/bin/install_name_tool", ["-add_rpath", "@executable_path/Frameworks", url.path])
         }
         _ = runTool("/usr/bin/codesign", ["-f", "-s", "-", url.path])
+    }
+
+    /// Points the later of two load commands naming the same dylib at a
+    /// PearHost framework re-exporting that library, in place (both keep their
+    /// ordinals, so every import still binds).
+    static func dedupeDylibs(at url: URL) throws {
+        let replacements = [
+            "/System/Library/Frameworks/CoreServices.framework/CoreServices":
+                "@rpath/MobileCoreServices.framework/MobileCoreServices",
+        ]
+        var data = try Data(contentsOf: url)
+        guard data.count > 32 else { return }
+        func u32(_ offset: Int) -> UInt32 {
+            data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) }
+        }
+        guard u32(0) == 0xFEED_FACF else { return }  // thin 64-bit images only
+        let dylibCommands: Set<UInt32> = [0xC, 0x8000_0018, 0x8000_001F, 0x8000_0023, 0x8000_0020]
+        var offset = 32
+        var seen = Set<String>()
+        var changed = false
+        for _ in 0..<Int(u32(16)) {
+            let cmd = u32(offset), size = Int(u32(offset + 4))
+            if dylibCommands.contains(cmd) {
+                let start = offset + Int(u32(offset + 8))
+                let end = data[start..<(offset + size)].firstIndex(of: 0) ?? (offset + size)
+                let name = String(decoding: data[start..<end], as: UTF8.self)
+                if seen.contains(name), let new = replacements[name], new.utf8.count < offset + size - start {
+                    var bytes = Array(new.utf8)
+                    bytes += Array(repeating: 0, count: offset + size - start - bytes.count)
+                    data.replaceSubrange(start..<(offset + size), with: bytes)
+                    changed = true
+                }
+                seen.insert(name)
+            }
+            offset += size
+        }
+        if changed { try data.write(to: url) }  // in place: keeps the mode bits
     }
 
     private static func toolOutput(_ path: String, _ args: [String]) -> String {

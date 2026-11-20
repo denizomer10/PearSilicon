@@ -596,6 +596,11 @@ final class PackageInstaller: @unchecked Sendable {
         let lease = try launchLease ?? AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
         defer { if launchLease == nil { lease.release() } }
         try lease.validate(appID: app.id, libraryURL: libraryURL)
+        // A bundle prepared for PearHost runs on PearRuntime's own frameworks;
+        // the Mac Catalyst preparation modes do not apply to its (macOS) images.
+        if PearHostPreparer.isPrepared(app.bundleURL) {
+            return
+        }
         try validateBundleForPreparation(at: app.bundleURL)
         if isLegacy32BitBundle(at: app.bundleURL) {
             return
@@ -629,6 +634,10 @@ final class PackageInstaller: @unchecked Sendable {
         for app: InstalledApp, sourceRuntimeDirectory: URL, launchLease: AppLaunchLease? = nil
     ) throws -> Bool {
         if isLegacy32BitBundle(at: app.bundleURL) { return false }
+        // A bundle prepared for PearHost runs on PearRuntime's own frameworks
+        // (PearHostPreparer refreshes those); its images are macOS-platform
+        // now, and the Mac Catalyst runtime is not part of it.
+        if PearHostPreparer.isPrepared(app.bundleURL) { return false }
         let mode = currentPreparationMode(for: app)
         guard mode != .nativeContainer else { return false }
         let installed = app.bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
