@@ -488,6 +488,7 @@ private final class PreparationFixture {
     func tools() -> PackageInstaller.PreparationTools {
         var tools = PackageInstaller.PreparationTools()
         tools.runtimeLibraryURL = { [runtimeURL] in runtimeURL }
+        tools.hostFrameworksURL = { nil }
         tools.requireStopped = { _ in }
         tools.run = { tool, arguments in
             if tool == "/usr/bin/codesign" { return "" }
