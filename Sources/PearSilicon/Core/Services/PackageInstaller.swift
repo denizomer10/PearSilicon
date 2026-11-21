@@ -35,15 +35,34 @@ final class PackageInstaller: @unchecked Sendable {
 
     /// Injectable operations keep installation and mode-switch failure tests on synthetic bundles.
     struct PreparationTools {
-        var runtimeLibraryURL: () -> URL? = { AppLauncher.runtimeLibraryURL() }
-        var removeLoadDylib: (URL, String) throws -> Bool = {
-            try BinaryPatcher.removeLoadDylib(at: $0, containing: $1)
-        }
-        var run: (String, [String]) throws -> String = { try Shell.run($0, $1) }
+        var runtimeLibraryURL: () -> URL?
+        var hostFrameworksURL: () -> URL?
+        var removeLoadDylib: (URL, String) throws -> Bool
+        var run: (String, [String]) throws -> String
         /// Runs on any thread: the running-app check itself hops to the main
         /// thread, so preparation (clone, patch, re-sign) can stay off it.
-        var requireStopped: @Sendable (InstalledApp) throws -> Void = { app in
-            try PackageInstaller.onMainThread { try AppLauncher.requireStopped(app) }
+        var requireStopped: @Sendable (InstalledApp) throws -> Void
+
+        init(
+            runtimeLibraryURL: (() -> URL?)? = nil,
+            hostFrameworksURL: (() -> URL?)? = nil,
+            removeLoadDylib: @escaping (URL, String) throws -> Bool = {
+                try BinaryPatcher.removeLoadDylib(at: $0, containing: $1)
+            },
+            run: @escaping (String, [String]) throws -> String = { try Shell.run($0, $1) },
+            requireStopped: @escaping @Sendable (InstalledApp) throws -> Void = { app in
+                try PackageInstaller.onMainThread { try AppLauncher.requireStopped(app) }
+            }
+        ) {
+            self.runtimeLibraryURL = runtimeLibraryURL ?? { AppLauncher.runtimeLibraryURL() }
+            // Synthetic tests that inject a custom runtimeLibraryURL test the
+            // Catalyst preparation path unless they also pass hostFrameworksURL.
+            self.hostFrameworksURL = hostFrameworksURL ?? (runtimeLibraryURL == nil
+                ? { PearHostPreparer.locateHostFrameworks() }
+                : { nil })
+            self.removeLoadDylib = removeLoadDylib
+            self.run = run
+            self.requireStopped = requireStopped
         }
     }
 
@@ -311,6 +330,19 @@ final class PackageInstaller: @unchecked Sendable {
         if isLegacy32BitBundle(at: staged) {
             try prepareForMacOS(at: staged, mode: mode, targetBundleURL: targetBundleURL)
             try validateBundleForPreparation(at: staged)
+            return
+        }
+        if mode != .nativeContainer,
+           let hostDir = preparationTools.hostFrameworksURL(),
+           let probe = try? makeInstalledApp(fromBundleAt: staged) {
+            try validateBundleForPreparation(at: staged)
+            try patchInfoPlist(at: staged)
+            removeLegacySignatureArtifacts(at: staged)
+            try PearHostPreparer.prepare(bundleURL: staged, executableName: probe.executableName, hostDir: hostDir)
+            try signBundle(at: staged, mode: .nativeContainer)
+            _ = try preparationTools.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", staged.path])
+            ensureExecutableBits(at: staged)
+            _ = try? preparationTools.run("/usr/bin/xattr", ["-cr", staged.path])
             return
         }
         try prepareForMacOS(at: staged, mode: mode, targetBundleURL: targetBundleURL)

@@ -350,13 +350,10 @@ struct AppDetailView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Toggle("PearHost mode (no iOSSupport)", isOn: Binding(
-                        get: { state.isPearHostEnabled(for: app) },
-                        set: { state.setPearHostEnabled($0, for: app) }
-                    ))
-                    .toggleStyle(.switch)
-                    Text("Runs the app on native macOS with PearHost's Swift/Rust UIKit, MetalKit and Metal-only frameworks instead of Mac Catalyst.")
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("PearHost (native macOS, no iOSSupport)", systemImage: "cpu")
+                        .font(.subheadline.weight(.medium))
+                    Text("64-bit apps run directly on PearRuntime's Rust UIKit, MetalKit and Metal-only frameworks without Mac Catalyst.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

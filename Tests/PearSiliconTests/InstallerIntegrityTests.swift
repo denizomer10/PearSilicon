@@ -647,6 +647,7 @@ private final class IntegrityFixture {
     func tools(failure: IntegrityFailure? = nil) -> PackageInstaller.PreparationTools {
         var tools = PackageInstaller.PreparationTools()
         tools.runtimeLibraryURL = { [runtime] in runtime }
+        tools.hostFrameworksURL = { nil }
         tools.requireStopped = { _ in }
         tools.run = { tool, arguments in
             if tool == "/usr/bin/codesign" {

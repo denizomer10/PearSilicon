@@ -76,123 +76,13 @@ final class AppLauncher: @unchecked Sendable {
         }
         // 64-bit apps run on PearRuntime's own layer (PearHost): never Mac
         // Catalyst or /System/iOSSupport.
-        if true {
-            return try await launchPearHost(
-                app,
-                extraEnvironment: extraEnvironment,
-                nativeContainer: nativeContainer,
-                activate: activate
-            )
-        }
-        let environmentMode = fileManager.fileExists(
-            atPath: PackageInstaller.injectionMarkerURL(in: app.bundleURL).path
+        return try await launchPearHost(
+            app,
+            extraEnvironment: extraEnvironment,
+            nativeContainer: nativeContainer,
+            sandboxed: sandboxed,
+            activate: activate
         )
-        if environmentMode {
-            guard !nativeContainer && !sandboxed else {
-                throw PearError.launchFailed(
-                    "Launcher injection is not supported by this sandbox-exec launch path. Select --load-command explicitly instead."
-                )
-            }
-            guard fileManager.fileExists(atPath: app.bundleURL
-                .appendingPathComponent("Frameworks/libPearRuntime.dylib").path),
-                  !BinaryPatcher.hasLoadDylib(at: app.executableURL, containing: "libPearRuntime") else {
-                throw PearError.launchFailed("Inconsistent launcher-injection preparation; prepare the app again before launching")
-            }
-
-        }
-
-        // Some games need a one-line options change to be usable at all (the
-        // value is read at boot, before the runtime could influence it).
-        GameTweaks.applyBeforeLaunch(
-            bundleID: app.id,
-            supportRoot: libraryURL.deletingLastPathComponent()
-        )
-
-        if nativeContainer {
-            AppPaths.migrateToNativeContainerIfNeeded(for: app.id)
-        } else {
-            try AppDataLifecycle(root: libraryURL.deletingLastPathComponent()).importNativeData(
-                id: app.id, source: AppPaths.nativeContainerData(for: app.id))
-        }
-
-        var env = buildEnvironment(app: app, keymapURL: keymapURL, extra: extraEnvironment,
-                                   nativeContainer: nativeContainer)
-        let host: RuntimeHostSession?
-        if environmentMode {
-            guard let executable = Bundle.main.executableURL,
-                  let home = env["PEAR_HOME_DIR"] else {
-                throw PearError.launchFailed("Host service launch configuration is incomplete")
-            }
-            // Fail before starting the game if an authenticated host is not
-            // ready. Never silently switch the bundle back to load-command mode.
-            host = try await RuntimeHostSession.start(
-                executableURL: executable, bundleID: app.id,
-                dataDirectory: URL(fileURLWithPath: home, isDirectory: true),
-                logURL: logDirectory.appendingPathComponent("\(app.id).host.log"),
-                deviceEnvironment: env
-            )
-            if let host {
-                env["PEAR_HOST_SOCKET"] = host.socketPath
-                env["PEAR_HOST_TOKEN"] = host.token
-                // Resolved and authenticated before dyld can run early device
-                // hooks. They read this immutable startup snapshot, never IPC.
-                env.merge(host.deviceProfile.runtimeEnvironment) { _, canonical in canonical }
-            }
-        } else {
-            host = nil
-        }
-
-        var running: NSRunningApplication?
-        var spawnedProcess: Process?
-        do {
-            try Task.checkCancellation()
-            let pid: pid_t
-            if nativeContainer || sandboxed {
-                let process = try spawnSandboxed(app, env: env, activate: activate)
-                spawnedProcess = process
-                pid = process.processIdentifier
-                running = NSRunningApplication(processIdentifier: pid)
-            } else {
-                switch method {
-                case .direct:
-                    let process = try spawnDirect(app, env: env)
-                    spawnedProcess = process
-                    pid = process.processIdentifier
-                    running = NSRunningApplication(processIdentifier: pid)
-                case .launchServices:
-                    // LaunchServices owns stdout here; the runtime writes its
-                    // own log at <id>.log. Start a PearDebug session so each
-                    // launch gets a fresh log and the previous run is kept as
-                    // <id>.1.log instead of everything being appended.
-                    if env["PEAR_LOG_FILE"] == nil {
-                        try? openLogSession(for: app, source: .runtime)?.close()
-                    }
-                    running = try await openViaLaunchServices(app, env: env, activate: activate)
-                    pid = running?.processIdentifier ?? 0
-                }
-            }
-            if let host {
-                guard pid > 0 else {
-                    throw PearError.launchFailed("Could not determine the process for the host-backed session")
-                }
-                try await host.attach(to: pid)
-            }
-            return running
-        } catch {
-            if let host {
-                // Only roll back the result of this launch attempt. The
-                // preflight rejects existing instances before preparation.
-                if let spawnedProcess {
-                    await Task.detached(priority: .utility) {
-                        RuntimeHostSession.terminateProcess(spawnedProcess)
-                    }.value
-                } else if let running {
-                    await Self.rollBackApplication(running)
-                }
-                await host.stop()
-            }
-            throw error
-        }
     }
 
     @MainActor
@@ -590,8 +480,12 @@ final class AppLauncher: @unchecked Sendable {
         _ app: InstalledApp,
         extraEnvironment: [String: String],
         nativeContainer: Bool,
+        sandboxed: Bool = false,
         activate: Bool
     ) async throws -> NSRunningApplication? {
+        if sandboxed {
+            throw PearError.launchFailed("sandbox-exec launch is retired; PearHost runs directly on macOS.")
+        }
         if !PearHostPreparer.isPrepared(app.bundleURL) || PearHostPreparer.needsPreparation(app.bundleURL) {
             guard let hostDir = PearHostPreparer.locateHostFrameworks() else {
                 throw PearError.missingRuntimeComponent("PearHost frameworks (run runtime/host/build-host.sh)")
