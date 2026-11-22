@@ -102,6 +102,7 @@ final class PearHostPreparerTests: XCTestCase {
         let source = root.appendingPathComponent("main.m")
         try """
         #import <UIKit/UIKit.h>
+        #import <MetalKit/MetalKit.h>
         #import <WebKit/WebKit.h>
         #include <dlfcn.h>
         @interface NSLayoutConstraint (PearHostProbe)
@@ -110,11 +111,15 @@ final class PearHostPreparerTests: XCTestCase {
         @implementation NSLayoutConstraint (PearHostProbe)
         - (void)autoInstall { self.active = YES; }
         @end
-        @interface AppDelegate : UIResponder <UIApplicationDelegate>
+        @interface AppDelegate : UIResponder <UIApplicationDelegate, MTKViewDelegate>
         @property (nonatomic, strong) UIWindow *window;
         @property (nonatomic, strong) UILabel *label;
+        @property (nonatomic) NSUInteger metalFrames;
         @end
         @implementation AppDelegate
+        - (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {}
+        - (void)drawInMTKView:(MTKView *)view { self.metalFrames++; }
+
         - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
           self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
           UIViewController *vc = [UIViewController new];
@@ -143,19 +148,30 @@ final class PearHostPreparerTests: XCTestCase {
           WKWebView *webView = [[WKWebView alloc] initWithFrame:CGRectMake(20, 160, 280, 160)
             configuration:webConfiguration];
           webView.scrollView.bounces = NO;
+          webView.scrollView.opaque = NO;
+          UIColor *scrollBackground = UIColor.clearColor;
+          webView.scrollView.backgroundColor = scrollBackground;
           if (@available(iOS 26.0, *)) {
             webView.scrollView.topEdgeEffect.hidden = YES;
           }
           webView.opaque = NO;
           [vc.view addSubview:webView];
+          MTKView *metalView = [[MTKView alloc] initWithFrame:CGRectMake(20, 340, 80, 80)];
+          metalView.delegate = self;
+          metalView.enableSetNeedsDisplay = YES;
+          [vc.view addSubview:metalView];
           self.window.rootViewController = vc;
           [self.window makeKeyAndVisible];
+          metalView.paused = NO;
+          metalView.enableSetNeedsDisplay = NO;
           dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             BOOL imageRendered = imageView.image != nil && imageView.layer.contents != nil;
             BOOL transformApplied = CGRectGetMinX(imageView.frame) == 32 && CGRectGetMinY(imageView.frame) == 108;
             BOOL anchorsLinked = anchorConstraint.isActive && anchorConstraint.firstItem == imageView &&
               anchorConstraint.secondItem == vc.view && anchorConstraint.constant == 100;
-            BOOL webViewMounted = webView.window != nil && webConfiguration.allowsInlineMediaPlayback &&
+            BOOL webViewMounted = webView.window != nil && !webView.scrollView.isOpaque &&
+              webView.scrollView.backgroundColor == scrollBackground &&
+              webConfiguration.allowsInlineMediaPlayback &&
               webConfiguration.dataDetectorTypes == WKDataDetectorTypePhoneNumber;
             void *uiKit = dlopen("/System/Library/Frameworks/UIKit.framework/UIKit", RTLD_LAZY);
             void *activeSymbol = uiKit ? dlsym(uiKit, "UIApplicationDidBecomeActiveNotification") : NULL;
@@ -167,9 +183,14 @@ final class PearHostPreparerTests: XCTestCase {
             if (gles) dlclose(gles);
             void *relativeGLES = dlopen("@rpath/OpenGLES.framework/OpenGLES", RTLD_LAZY);
             if (relativeGLES) dlclose(relativeGLES);
-            exit(self.label.layer.contents != nil && self.window.isKeyWindow &&
+            BOOL success = self.label.layer.contents != nil && self.window.isKeyWindow &&
               imageRendered && transformApplied && constraint.isActive && anchorsLinked && webViewMounted &&
-              dynamicUIKitLoaded && glesLoaded && relativeGLES ? 0 : 3);
+              dynamicUIKitLoaded && glesLoaded && relativeGLES && self.metalFrames > 1;
+            if (!success) NSLog(@"PearHost checks: label=%d key=%d image=%d transform=%d constraint=%d anchors=%d web=%d UIKit=%d GLES=%d rpath=%d frames=%lu",
+              self.label.layer.contents != nil, self.window.isKeyWindow, imageRendered, transformApplied,
+              constraint.isActive, anchorsLinked, webViewMounted, dynamicUIKitLoaded, glesLoaded,
+              relativeGLES != NULL, (unsigned long)self.metalFrames);
+            exit(success ? 0 : 3);
           });
           return YES;
         }
@@ -181,7 +202,7 @@ final class PearHostPreparerTests: XCTestCase {
         let exe = bundle.appendingPathComponent("E2E")
         try run("/usr/bin/xcrun", ["--sdk", "iphoneos", "clang", "-fobjc-arc", "-target", "arm64-apple-ios14.0",
                                    "-framework", "UIKit", "-framework", "Foundation", "-framework", "CoreGraphics",
-                                   "-framework", "WebKit", "-Wl,-headerpad,0x2000",
+                                   "-framework", "WebKit", "-framework", "MetalKit", "-Wl,-headerpad,0x2000",
                                    source.path, "-o", exe.path])
 
         try PearHostPreparer.prepare(bundleURL: bundle, executableName: "E2E", hostDir: host)
@@ -190,13 +211,15 @@ final class PearHostPreparerTests: XCTestCase {
         let proc = Process()
         proc.executableURL = exe
         proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
+        let errors = Pipe()
+        proc.standardError = errors
         try proc.run()
         let deadline = Date().addingTimeInterval(30)
         while proc.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
         if proc.isRunning { proc.terminate(); XCTFail("PearHost app did not finish") }
         proc.waitUntilExit()
-        XCTAssertEqual(proc.terminationStatus, 0)
+        let diagnostics = errors.fileHandleForReading.readDataToEndOfFile()
+        XCTAssertEqual(proc.terminationStatus, 0, String(decoding: diagnostics, as: UTF8.self))
     }
 
     // MARK: - Helpers
