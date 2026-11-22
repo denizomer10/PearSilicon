@@ -21,7 +21,7 @@ case "$angle_target" in
   *) echo 'PEAR_ANGLE_TARGET must be catalyst or macos' >&2; exit 2;;
 esac
 if [[ ! -f "$angle_source/DEPS" ]]; then
-  echo 'Initialize runtime/third_party/angle before building.' >&2; exit 2
+  echo 'runtime/third_party/angle/DEPS is missing: PearANGLE is part of PearRuntime (git submodule update --init runtime).' >&2; exit 2
 fi
 if [[ "${1:-}" == --sync ]]; then
   if [[ ! -f "$angle_tools/gclient.py" ]]; then
@@ -29,7 +29,6 @@ if [[ "${1:-}" == --sync ]]; then
     git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$angle_tools"
   fi
   [[ -f "$angle_source/.gclient" ]] || cp "$angle_workspace/scripts/angle-metal.gclient" "$angle_source/.gclient"
-  git -C "$angle_source" submodule update --init --depth 1 testing
   (cd "$angle_source" && PATH="$angle_tools:$PATH" DEPOT_TOOLS_UPDATE=0 "$angle_tools/gclient" sync --nohooks --shallow)
 fi
 if [[ ! -x "$angle_source/buildtools/mac/gn" || ! -x "$angle_source/third_party/llvm-build/Release+Asserts/bin/clang++" ]]; then

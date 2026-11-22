@@ -1,6 +1,8 @@
 solutions = [{
   'name': '.',
-  'url': 'https://github.com/denizomer10/PearANGLE.git',
+  # PearANGLE is a folder of PearRuntime (runtime/third_party/angle), not a
+  # repository of its own: gclient only fetches the DEPS below.
+  'url': None,
   'managed': False,
   'custom_vars': {
     'checkout_angle_dawn_deps': False,
@@ -9,8 +11,6 @@ solutions = [{
     'checkout_angle_restricted_traces': False,
   },
   'custom_deps': {
-    # Testing's GN metadata is initialized at its pinned gitlink separately.
-    'testing': None,
     'third_party/SwiftShader': None,
     'third_party/VK-GL-CTS/src': None,
     'third_party/glslang/src': None,

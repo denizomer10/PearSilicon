@@ -1,5 +1,10 @@
 # ANGLE integration — development progress, 2026-11-13
 
+> Update 2026-11-22: PearANGLE is now a folder of PearRuntime
+> ([`third_party/angle`](https://github.com/denizomer10/PearRuntime/tree/main/third_party/angle)),
+> no longer a submodule pointing at the standalone `denizomer10/PearANGLE`
+> repository. The notes below are the record of 2026-11-13.
+
 ## Implemented and verified
 
 - Branches: `main` in PearSilicon/PearRuntime (work branch `codex/angle-metal-bridge` merged);
@@ -228,5 +233,5 @@ ANGLE is an explicitly selected, licensed third-party dependency; it is not
 presented as original clean-room PearRuntime implementation or as a legal
 provenance certification. No Apple OS implementation is included.
 
-References: [ANGLE fork](https://github.com/denizomer10/PearANGLE),
+References: [ANGLE fork](https://github.com/denizomer10/PearRuntime/tree/main/third_party/angle) (PearRuntime `third_party/angle`),
 [upstream support matrix](https://chromium.googlesource.com/angle/angle/+/main/README.md).

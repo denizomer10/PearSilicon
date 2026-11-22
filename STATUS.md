@@ -1,5 +1,12 @@
 # PearSilicon — Çalışma Durumu
 
+> **Güncel durum (2026-11-22):** PearANGLE, PearLegacyEngine, PearLegacyJIT ve
+> PearDebug artık PearRuntime'ın içinde (`runtime/third_party/angle`,
+> `runtime/third_party/legacy-engine`, `runtime/third_party/legacy-jit`,
+> `runtime/debug`); ayrı repolarına ve `Vendor/` alt modüllerine gerek yok.
+> PearLegacyEngine ve PearLegacyJIT'in tüm geçmişi de PearRuntime'da. Tek dal
+> `main`. Aşağıdaki tarihli bölümler o günlerin kaydıdır.
+
 > **Güncel çalışma — 2026-11-13 akşam (bu bölüm eskilerin önündedir):** Kullanıcının yeni kapsamı: ANGLE oyun hataları, gerçek klavye/fare→gamepad eşlemeleri, pencere kapatınca sahip olunan süreci durdurma, işaretli diskleri canlı izleme, platform seçimi sızıntısı, yalnız MetalSharp ve sade Liquid Glass arayüz. Çalışma sürüyor; GTA III ve Sackboy çözülmedi. Aşağıdaki eski devir notu tarihsel kayıttır. Güncel ayrıntılar belgenin sonundaki “Akşam uyumluluk çalışması” bölümünde.
 
 > **DEVİR NOTU — 2026-11-13:** Kullanıcı kalan işi başka ajana devrediyor. Son hedef: GL/EAGL yolu tamamen ANGLE; sistem OpenGLES bağımlılığı/fallback kaldırılacak. Yeni exclusive geçiş **WIP**, bitmedi; 45 kurucu testinde 1 hata açık. Önce belgenin sonundaki **“Sonraki ajana devir — tamamen ANGLE”** bölümünü oku. Çalışan önceki checkpoint `fd11163` / runtime `26096cc`.

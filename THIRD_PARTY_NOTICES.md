@@ -116,10 +116,10 @@ These are recorded so that they are checked, not assumed:
 
 - PearLegacyEngine's README credits HyperHLE-Reborn. If any of its code was
   copied, its license and copyright lines must be kept and listed here.
-- The engine's `touchHLE --copyright` text describes the engine's
-  `vendor/dynarmic` submodule; release builds use PearLegacyJIT instead. Both
-  are 0BSD with the same bundled libraries, but the text names the upstream
-  project.
+- The engine's `touchHLE --copyright` text gives PearLegacyJIT's license
+  section (its README's "License": 0BSD, with the bundled libraries and their
+  licenses) followed by the 0BSD text; upstream Dynarmic's "Legal" section is
+  used only when the engine is built against an upstream Dynarmic checkout.
 - `touchHLE_dylibs/angle` was taken from the 0.8.10 package; the binaries
   report ANGLE commit `686adbb2a398`, which is public, but the exact GN
   arguments of that build are not recorded. `THIRD_PARTY_LICENSES.txt` there

@@ -161,7 +161,7 @@ if [[ -n "$LEGACY_BIN" ]]; then
     for candidate in "$LEGACY_REPO" "$ROOT/runtime/third_party/legacy-engine"; do
       [[ -z "$LEGACY_SRC_REPO" && -f "$candidate/LICENSE" ]] && LEGACY_SRC_REPO="$candidate"
     done
-    "$ROOT/scripts/stage-legacy-licenses.sh" "$LEGACY_STAGE" "${LEGACY_SRC_REPO:?no PearLegacyEngine checkout found for the engine license files}" \
+    "$ROOT/scripts/stage-legacy-licenses.sh" "$LEGACY_STAGE" "${LEGACY_SRC_REPO:?runtime/third_party/legacy-engine not found for the engine license files}" \
       "${PEAR_DYNARMIC_ROOT:-$ROOT/runtime/third_party/legacy-jit}"
   fi
   rm -rf "$OUT/Contents/Resources/PearLegacyEngine"
@@ -177,15 +177,15 @@ mkdir -p "$LICENSES"
 cp "$ROOT/LICENSE" "$LICENSES/LICENSE.PearSilicon"
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$LICENSES/THIRD_PARTY_NOTICES.md"
 cp "$ROOT/runtime/LICENSE" "$LICENSES/LICENSE.PearRuntime"
-cp "$ROOT/Vendor/PearDebug/LICENSE" "$LICENSES/LICENSE.PearDebug"
+cp "$ROOT/runtime/debug/LICENSE" "$LICENSES/LICENSE.PearDebug"
 sub_commit() { git -C "$ROOT/$1" rev-parse HEAD 2>/dev/null || echo unknown; }
 cat > "$LICENSES/SOURCE.txt" <<SOURCE
 PearSilicon $APP_VERSION (build $APP_BUILD) was built from these public sources:
 
   PearSilicon   https://github.com/denizomer10/PearSilicon/tree/$COMMIT
   PearRuntime   https://github.com/denizomer10/PearRuntime/tree/$(sub_commit runtime)
-  PearDebug     https://github.com/denizomer10/PearDebug/tree/$(sub_commit Vendor/PearDebug)
-  PearANGLE     https://github.com/denizomer10/PearANGLE/tree/$(sub_commit runtime/third_party/angle)
+    PearDebug   https://github.com/denizomer10/PearRuntime/tree/$(sub_commit runtime)/debug
+    PearANGLE   https://github.com/denizomer10/PearRuntime/tree/$(sub_commit runtime)/third_party/angle
 
 PearLegacyEngine/SOURCE.txt lists the sources of the 32-bit iOS engine.
 SOURCE

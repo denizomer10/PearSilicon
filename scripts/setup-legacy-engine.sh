@@ -75,7 +75,7 @@ echo "PearLegacyEngine: $engine_home ($engine_rev)"
 if [[ -n "$jit_home" ]]; then
     echo "PearLegacyJIT:    $jit_home ($jit_rev)"
 else
-    echo "PearLegacyJIT:    not found, the engine's bundled Dynarmic submodule will be used"
+    echo "PearLegacyJIT:    not found; the engine looks for it at ../legacy-jit itself"
 fi
 
 if [[ "$check_only" == 1 ]]; then
