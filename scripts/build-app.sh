@@ -31,13 +31,7 @@ echo ">> swift build -c $CONFIG"
 swift build -c "$CONFIG"
 BIN="$(swift build -c "$CONFIG" --show-bin-path)/$APP_NAME"
 
-# --- 2b) Build runtime dylib ----------------------------------------------
-if [[ -x "$ROOT/runtime/build.sh" ]]; then
-  echo ">> Building runtime dylib"
-  PEAR_BUILD_DIR="$BUILD_DIR" "$ROOT/runtime/build.sh"
-fi
-
-# --- 2c) Build the PearHost frameworks (macOS-platform UIKit & co.) --------
+# --- 2b) Build the PearHost frameworks (macOS-platform UIKit & co.) --------
 # The launcher's PearHost mode installs these into an app; it looks for them
 # in Contents/Resources/PearHost. OpenGLES.framework re-exports the macOS
 # PearANGLE build (runtime/host/build-pearangle.sh) when one is available.
@@ -60,37 +54,25 @@ if [[ -d "$RES_BUNDLE" ]]; then
   cp -R "$RES_BUNDLE" "$OUT/Contents/Resources/"
 fi
 
-if [[ -f "$BUILD_DIR/libPearRuntime.dylib" ]]; then
-  cp "$BUILD_DIR/libPearRuntime.dylib" "$OUT/Contents/Resources/"
-fi
-if [[ -f "$BUILD_DIR/libswiftUIKit.dylib" ]]; then
-  cp "$BUILD_DIR/libswiftUIKit.dylib" "$OUT/Contents/Resources/"
-fi
-if [[ -f "$BUILD_DIR/libcxxcompat.dylib" ]]; then
-  cp "$BUILD_DIR/libcxxcompat.dylib" "$OUT/Contents/Resources/"
-fi
+for opt in "$BUILD_DIR/host/libswiftUIKit.dylib" "$BUILD_DIR/host/libcxxcompat.dylib" \
+           "$BUILD_DIR/libswiftUIKit.dylib" "$BUILD_DIR/libcxxcompat.dylib"; do
+  if [[ -f "$opt" && ! -f "$OUT/Contents/Resources/$(basename "$opt")" ]]; then
+    cp "$opt" "$OUT/Contents/Resources/"
+  fi
+done
 if [[ -d "$BUILD_DIR/MarketplaceKit.framework" ]]; then
   cp -R "$BUILD_DIR/MarketplaceKit.framework" "$OUT/Contents/Resources/"
 fi
-# OpenGL ES runs only on ANGLE: the installer copies the GLES/EAGL bridge and
-# the Catalyst ANGLE dylibs into every compatibility app and refuses to
-# prepare one without them. Never fall back to another copy's resources.
-for component in libPearOpenGLES.dylib PearANGLE/libEGL.dylib PearANGLE/libGLESv2.dylib; do
-  if [[ ! -f "$BUILD_DIR/$component" ]]; then
-    echo "ERROR: $BUILD_DIR/$component is missing (runtime/build.sh stages it)." >&2
-    exit 1
-  fi
-done
-cp "$BUILD_DIR/libPearOpenGLES.dylib" "$OUT/Contents/Resources/"
-rm -rf "$OUT/Contents/Resources/PearANGLE"
-cp -R "$BUILD_DIR/PearANGLE" "$OUT/Contents/Resources/PearANGLE"
 
 # PearHost frameworks, and the macOS PearANGLE they re-export, if built.
 HOST_OUT="$OUT/Contents/Resources/PearHost"
 rm -rf "$HOST_OUT"
 mkdir -p "$HOST_OUT"
-for fw in UIKit OpenGLES MetalKit iAd; do
-  cp -R "$BUILD_DIR/host/$fw.framework" "$HOST_OUT/"
+for fw in "$BUILD_DIR/host"/*.framework; do
+  [[ -d "$fw" ]] && cp -R "$fw" "$HOST_OUT/"
+done
+for lib in libcxxcompat.dylib libswiftUIKit.dylib libPearHostPlaceholder.dylib; do
+  [[ -f "$BUILD_DIR/host/$lib" ]] && cp "$BUILD_DIR/host/$lib" "$HOST_OUT/"
 done
 if [[ -d "$BUILD_DIR/host/PearANGLE" ]]; then
   cp -R "$BUILD_DIR/host/PearANGLE" "$HOST_OUT/PearANGLE"

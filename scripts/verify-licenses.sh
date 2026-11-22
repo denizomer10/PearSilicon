@@ -44,9 +44,11 @@ need Licenses/LICENSE.PearDebug "MIT License"
 need Licenses/THIRD_PARTY_NOTICES.md "GPL-3.0-or-later" "ANGLE" "OpenAL Soft"
 need Licenses/SOURCE.txt "github.com/denizomer10/PearSilicon/tree/"
 
-# --- ANGLE for Mac Catalyst apps --------------------------------------------
-need PearANGLE/LICENSE.ANGLE "Redistribution and use"
-need PearANGLE/THIRD_PARTY_LICENSES.txt "abseil-cpp" "zlib"
+# --- ANGLE for Mac Catalyst apps (optional legacy bundle) -------------------
+if [[ -d "$res/PearANGLE" ]]; then
+  need PearANGLE/LICENSE.ANGLE "Redistribution and use"
+  need PearANGLE/THIRD_PARTY_LICENSES.txt "abseil-cpp" "zlib"
+fi
 
 # --- ANGLE for PearHost (macOS-platform) apps --------------------------------
 if [[ -d "$res/PearHost/PearANGLE" ]]; then
