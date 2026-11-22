@@ -10,15 +10,14 @@ let package = Package(
         .executable(name: "PearSilicon", targets: ["PearSilicon"])
     ],
     dependencies: [
-        // PearDebug: log sessions, log analysis and engine probes.
-        // https://github.com/denizomer10/PearDebug (git submodule)
-        .package(path: "Vendor/PearDebug")
+        // PearDebug: integrated directly under runtime/debug.
+        .package(path: "runtime/debug")
     ],
     targets: [
         .executableTarget(
             name: "PearSilicon",
             dependencies: [
-                .product(name: "PearDebugKit", package: "PearDebug")
+                .product(name: "PearDebugKit", package: "debug")
             ],
             path: "Sources/PearSilicon",
             resources: [

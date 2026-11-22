@@ -2,7 +2,3 @@
 	path = runtime
 	url = https://github.com/denizomer10/PearRuntime.git
 	branch = main
-[submodule "Vendor/PearDebug"]
-	path = Vendor/PearDebug
-	url = https://github.com/denizomer10/PearDebug.git
-	branch = main
