@@ -207,9 +207,9 @@ A successful launch is not a compatibility claim for a game.
 | [PearDebug](https://github.com/denizomer10/PearRuntime/tree/main/debug) (`runtime/debug`) | logging, analysis and probes | MIT |
 
 PearANGLE, PearLegacyEngine, PearLegacyJIT and PearDebug are part of the
-PearRuntime repository; their former standalone repositories are kept
-read-only for their history and for the sources that releases up to v0.9.2
-cite.
+PearRuntime repository. PearLegacyEngine's and PearLegacyJIT's complete
+histories are merged into it with their original commit IDs, including the
+commits that releases up to v0.9.2 cite as the engine's source.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the execution model and
 [docs/CLI.md](docs/CLI.md) for commands, diagnostics and environment variables.

@@ -70,8 +70,10 @@ PearRuntime compiles against the EGL/OpenGL ES headers in the ANGLE checkout
   of the shipped build (engine, PearLegacyJIT and ANGLE folders) and the
   upstream commits of the libraries copied into the engine
   (`vendor/VENDORED.txt`). Releases up to v0.9.2 name commits of the former
-  standalone PearLegacyEngine, PearLegacyJIT and PearANGLE repositories,
-  which therefore stay available, read-only. All of them
+  standalone PearLegacyEngine and PearLegacyJIT repositories; their complete
+  histories, with those same commit IDs, are part of PearRuntime, so each one
+  is also at `https://github.com/denizomer10/PearRuntime/tree/<commit>`
+  (ANGLE, BSD-3-Clause, carries no source obligation). All of them
   are public; `scripts/publish-release.sh` refuses to publish when one of the
   named commits is not on GitHub.
 - **Separate program:** PearSilicon starts the engine as its own process
