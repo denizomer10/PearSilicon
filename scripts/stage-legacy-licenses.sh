@@ -51,7 +51,7 @@ grep -q "GNU General Public License" "$stage/NOTICES.txt" \
 # --- Corresponding Source --------------------------------------------------
 # The binary embeds `git describe --always` of the commit it was built from,
 # which may be older than the checkout's HEAD.
-version="$({ "$binary" --version 2>&1 || true; } | sed -n 's/^PearLegacyEngine \(v[^ ]*\).*/\1/p' | head -1)"
+version="$({ "$binary" --version 2>&1 || true; } | sed -n 's/^PearLegacyEngine \([^ ]*\).*/\1/p' | head -1)"
 [[ -n "$version" ]] || fail "cannot read the engine version from $binary"
 engine_ref="$version"
 if [[ "$version" =~ -g([0-9a-f]+)$ ]]; then
