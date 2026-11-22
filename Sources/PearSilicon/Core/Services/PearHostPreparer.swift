@@ -23,7 +23,7 @@ enum PearHostPreparer {
 
     /// Bumped when preparation itself changes (which load commands are
     /// redirected, what is installed): an older bundle is prepared again.
-    static let preparerVersion = 2
+    static let preparerVersion = 3
 
     /// The bundle was prepared by an older preparer (or not at all).
     static func needsPreparation(_ bundleURL: URL) -> Bool {
@@ -206,6 +206,12 @@ enum PearHostPreparer {
         // embedded frameworks (older titles) carry no such rpath.
         if mainExecutable && !rpaths.contains("@executable_path/Frameworks") {
             _ = runTool("/usr/bin/install_name_tool", ["-add_rpath", "@executable_path/Frameworks", url.path])
+        }
+        // dyld gathers interposers at launch. Games that dlopen UnityFramework
+        // may load UIKit too late for its app-local Keychain implementation.
+        let uikit = "@rpath/UIKit.framework/UIKit"
+        if mainExecutable, host.contains("UIKit"), !BinaryPatcher.hasLoadDylib(at: url, containing: uikit) {
+            try BinaryPatcher.addLoadDylib(at: url, path: uikit, allowMacOS: true)
         }
         _ = runTool("/usr/bin/codesign", ["-f", "-s", "-", url.path])
     }

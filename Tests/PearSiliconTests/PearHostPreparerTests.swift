@@ -71,6 +71,7 @@ final class PearHostPreparerTests: XCTestCase {
         XCTAssertFalse(BinaryPatcher.hasLoadDylib(at: exe, containing: "libPearRuntime"))
         XCTAssertFalse(BinaryPatcher.hasLoadDylib(at: exe, containing: "libPearOpenGLES"))
         XCTAssertTrue(BinaryPatcher.hasLoadDylib(at: exe, containing: "@rpath/OpenGLES.framework/OpenGLES"))
+        XCTAssertTrue(BinaryPatcher.hasLoadDylib(at: exe, containing: "@rpath/UIKit.framework/UIKit"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: runtime.path))
         XCTAssertTrue(PearHostPreparer.isPrepared(bundle))
         XCTAssertEqual(try BinaryPatcher.buildPlatform(at: exe), BinaryPatcher.Platform.macOS)
@@ -101,6 +102,14 @@ final class PearHostPreparerTests: XCTestCase {
         let source = root.appendingPathComponent("main.m")
         try """
         #import <UIKit/UIKit.h>
+        #import <WebKit/WebKit.h>
+        #include <dlfcn.h>
+        @interface NSLayoutConstraint (PearHostProbe)
+        - (void)autoInstall;
+        @end
+        @implementation NSLayoutConstraint (PearHostProbe)
+        - (void)autoInstall { self.active = YES; }
+        @end
         @interface AppDelegate : UIResponder <UIApplicationDelegate>
         @property (nonatomic, strong) UIWindow *window;
         @property (nonatomic, strong) UILabel *label;
@@ -112,10 +121,55 @@ final class PearHostPreparerTests: XCTestCase {
           self.label = [[UILabel alloc] initWithFrame:CGRectMake(20, 40, 280, 40)];
           self.label.text = @"PearHost";
           [vc.view addSubview:self.label];
+          UIImageView *imageView = [[UIImageView alloc] initWithFrame:CGRectMake(20, 100, 20, 20)];
+          UIGraphicsBeginImageContext(CGSizeMake(20, 20));
+          CGContextRef context = UIGraphicsGetCurrentContext();
+          CGContextSetRGBFillColor(context, 0, 0, 0, 1);
+          CGContextFillRect(context, CGRectMake(0, 0, 20, 20));
+          imageView.image = UIGraphicsGetImageFromCurrentImageContext();
+          UIGraphicsEndImageContext();
+          imageView.transform = CGAffineTransformMakeTranslation(12, 8);
+          [vc.view addSubview:imageView];
+          NSLayoutConstraint *constraint = [NSLayoutConstraint constraintWithItem:imageView
+            attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil
+            attribute:NSLayoutAttributeNotAnAttribute multiplier:1 constant:20];
+          [constraint autoInstall];
+          NSLayoutConstraint *anchorConstraint = [imageView.topAnchor
+            constraintEqualToAnchor:vc.view.topAnchor constant:100];
+          [NSLayoutConstraint activateConstraints:@[anchorConstraint]];
+          WKWebViewConfiguration *webConfiguration = [WKWebViewConfiguration new];
+          webConfiguration.allowsInlineMediaPlayback = YES;
+          webConfiguration.dataDetectorTypes = WKDataDetectorTypePhoneNumber;
+          WKWebView *webView = [[WKWebView alloc] initWithFrame:CGRectMake(20, 160, 280, 160)
+            configuration:webConfiguration];
+          webView.scrollView.bounces = NO;
+          if (@available(iOS 26.0, *)) {
+            webView.scrollView.topEdgeEffect.hidden = YES;
+          }
+          webView.opaque = NO;
+          [vc.view addSubview:webView];
           self.window.rootViewController = vc;
           [self.window makeKeyAndVisible];
           dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            exit(self.label.layer.contents != nil && self.window.isKeyWindow ? 0 : 3);
+            BOOL imageRendered = imageView.image != nil && imageView.layer.contents != nil;
+            BOOL transformApplied = CGRectGetMinX(imageView.frame) == 32 && CGRectGetMinY(imageView.frame) == 108;
+            BOOL anchorsLinked = anchorConstraint.isActive && anchorConstraint.firstItem == imageView &&
+              anchorConstraint.secondItem == vc.view && anchorConstraint.constant == 100;
+            BOOL webViewMounted = webView.window != nil && webConfiguration.allowsInlineMediaPlayback &&
+              webConfiguration.dataDetectorTypes == WKDataDetectorTypePhoneNumber;
+            void *uiKit = dlopen("/System/Library/Frameworks/UIKit.framework/UIKit", RTLD_LAZY);
+            void *activeSymbol = uiKit ? dlsym(uiKit, "UIApplicationDidBecomeActiveNotification") : NULL;
+            NSString *active = activeSymbol ? *(__unsafe_unretained NSString **)activeSymbol : nil;
+            BOOL dynamicUIKitLoaded = [active isEqualToString:UIApplicationDidBecomeActiveNotification];
+            if (uiKit) dlclose(uiKit);
+            void *gles = dlopen("/System/Library/Frameworks/OpenGLES.framework/OpenGLES", RTLD_LAZY);
+            BOOL glesLoaded = gles && dlsym(gles, "OBJC_CLASS_$_EAGLContext") != NULL;
+            if (gles) dlclose(gles);
+            void *relativeGLES = dlopen("@rpath/OpenGLES.framework/OpenGLES", RTLD_LAZY);
+            if (relativeGLES) dlclose(relativeGLES);
+            exit(self.label.layer.contents != nil && self.window.isKeyWindow &&
+              imageRendered && transformApplied && constraint.isActive && anchorsLinked && webViewMounted &&
+              dynamicUIKitLoaded && glesLoaded && relativeGLES ? 0 : 3);
           });
           return YES;
         }
@@ -126,7 +180,8 @@ final class PearHostPreparerTests: XCTestCase {
         """.write(to: source, atomically: true, encoding: .utf8)
         let exe = bundle.appendingPathComponent("E2E")
         try run("/usr/bin/xcrun", ["--sdk", "iphoneos", "clang", "-fobjc-arc", "-target", "arm64-apple-ios14.0",
-                                   "-framework", "UIKit", "-framework", "Foundation", "-Wl,-headerpad,0x2000",
+                                   "-framework", "UIKit", "-framework", "Foundation", "-framework", "CoreGraphics",
+                                   "-framework", "WebKit", "-Wl,-headerpad,0x2000",
                                    source.path, "-o", exe.path])
 
         try PearHostPreparer.prepare(bundleURL: bundle, executableName: "E2E", hostDir: host)

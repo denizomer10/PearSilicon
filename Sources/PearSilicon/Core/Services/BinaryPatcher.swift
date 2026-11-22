@@ -432,7 +432,7 @@ enum BinaryPatcher {
                      paddingEnd: sectionlessContent ? end : paddingEnd, name: name)
     }
 
-    private static func preparationImage(_ data: Data, name: String) throws -> Image {
+    private static func preparationImage(_ data: Data, name: String, allowMacOS: Bool = false) throws -> Image {
         let parsed = try selectedImage(data, name: name)
         let builds = parsed.commands.filter { $0.kind == LoadCommand.buildVersion }
         var legacyVersions = 0
@@ -457,7 +457,8 @@ enum BinaryPatcher {
         }
         for build in builds {
             let platform = readU32(data, build.offset + 8)
-            guard platform == Platform.iOS || platform == Platform.macCatalyst else {
+            guard platform == Platform.iOS || platform == Platform.macCatalyst
+                    || (allowMacOS && platform == Platform.macOS) else {
                 throw invalid(name, "unsupported Mach-O platform \(platform); expected iOS (2) or Mac Catalyst (6), or a zippered macOS/Catalyst dylib")
             }
         }
@@ -585,16 +586,17 @@ enum BinaryPatcher {
     /// (PearHost) result is checked structurally, since preparation metadata
     /// rules only describe iOS and Mac Catalyst images.
     private static func mutateFile(
-        at url: URL, thin: Bool, resultPlatform: UInt32? = nil, mutation: (inout Data, Image) throws -> Bool
+        at url: URL, thin: Bool, resultPlatform: UInt32? = nil, allowMacOS: Bool = false,
+        mutation: (inout Data, Image) throws -> Bool
     ) throws -> Bool {
         let original = try Data(contentsOf: url)
         guard looksLikeMachO(original) else { return false }
-        let parsed = try preparationImage(original, name: url.lastPathComponent)
+        let parsed = try preparationImage(original, name: url.lastPathComponent, allowMacOS: allowMacOS)
         let thinned = thin && (parsed.slice.offset != 0 || parsed.slice.size != original.count)
         var candidate = thinned ? original.subdata(in: parsed.slice.range) : original
         let workingImage: Image
         if thinned {
-            workingImage = try preparationImage(candidate, name: parsed.name)
+            workingImage = try preparationImage(candidate, name: parsed.name, allowMacOS: allowMacOS)
         } else {
             workingImage = parsed
         }
@@ -603,7 +605,7 @@ enum BinaryPatcher {
         if resultPlatform == Platform.macOS {
             _ = try selectedImage(candidate, name: parsed.name)
         } else {
-            _ = try preparationImage(candidate, name: parsed.name)
+            _ = try preparationImage(candidate, name: parsed.name, allowMacOS: allowMacOS)
         }
         let permissions = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]) as? NSNumber
         try candidate.write(to: url, options: .atomic)
@@ -744,8 +746,8 @@ enum BinaryPatcher {
     // MARK: - Load command edits
 
     @discardableResult
-    static func addLoadDylib(at url: URL, path dylibPath: String) throws -> Bool {
-        try mutateFile(at: url, thin: true) { data, parsed in
+    static func addLoadDylib(at url: URL, path dylibPath: String, allowMacOS: Bool = false) throws -> Bool {
+        try mutateFile(at: url, thin: true, allowMacOS: allowMacOS) { data, parsed in
             if try parsed.commands.contains(where: { command in
                 guard command.kind == LoadCommand.loadDylib else { return false }
                 return try commandPath(data, command: command, name: parsed.name) == dylibPath

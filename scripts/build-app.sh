@@ -68,6 +68,7 @@ fi
 HOST_OUT="$OUT/Contents/Resources/PearHost"
 rm -rf "$HOST_OUT"
 mkdir -p "$HOST_OUT"
+cp "$ROOT/runtime/LICENSE" "$HOST_OUT/LICENSE.PearRuntime"
 for fw in "$BUILD_DIR/host"/*.framework; do
   [[ -d "$fw" ]] && cp -R "$fw" "$HOST_OUT/"
 done
