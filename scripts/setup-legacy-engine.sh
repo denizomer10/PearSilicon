@@ -1,6 +1,7 @@
 #!/bin/bash
-# Resolves PearLegacyEngine and PearLegacyJIT, builds them, and stages the
-# result where PearSilicon looks for the 32-bit iOS runtime:
+# Builds PearLegacyEngine with PearLegacyJIT, both part of PearRuntime
+# (runtime/third_party/legacy-engine, runtime/third_party/legacy-jit), and
+# stages the result where PearSilicon looks for the 32-bit iOS runtime:
 #
 #   build/PearLegacyEngine/touchHLE
 #   build/PearLegacyEngine/touchHLE_dylibs/
@@ -19,8 +20,11 @@ Usage: scripts/setup-legacy-engine.sh [--check] [--no-build]
   --no-build   Stage an existing build instead of running cargo.
 
 Environment:
-  PEAR_LEGACY_ENGINE_HOME   PearLegacyEngine checkout (default: ../PearLegacyEngine)
-  PEAR_DYNARMIC_ROOT        PearLegacyJIT checkout (default: ../PearLegacyJIT)
+  PEAR_LEGACY_ENGINE_HOME   engine sources (default: runtime/third_party/legacy-engine)
+  PEAR_DYNARMIC_ROOT        JIT sources (default: runtime/third_party/legacy-jit)
+  PEAR_ANGLE_LIB_DIR        ANGLE dylibs to stage (default: an engine-style
+                            build in runtime/third_party/angle/out/MacMetal,
+                            else PearHost's runtime/build/host/PearANGLE-src)
 EOF
 }
 
@@ -52,15 +56,14 @@ find_dir() {
 }
 
 engine_home="$(find_dir "${PEAR_LEGACY_ENGINE_HOME:-}" \
-    "$repo_root/../PearLegacyEngine" "$HOME/PearLegacyEngine")" || {
-    echo "error: no PearLegacyEngine checkout found." >&2
-    echo "       clone https://github.com/denizomer10/PearLegacyEngine and set" >&2
-    echo "       PEAR_LEGACY_ENGINE_HOME, or point PEARSILICON_LEGACY_ENGINE at a binary." >&2
+    "$repo_root/runtime/third_party/legacy-engine")" || {
+    echo "error: runtime/third_party/legacy-engine is missing (git submodule update --init runtime)," >&2
+    echo "       or set PEAR_LEGACY_ENGINE_HOME." >&2
     exit 1
 }
 
 jit_home="$(find_dir "${PEAR_DYNARMIC_ROOT:-}" \
-    "$repo_root/../PearLegacyJIT" "$HOME/PearLegacyJIT")" || jit_home=""
+    "$repo_root/runtime/third_party/legacy-jit")" || jit_home=""
 
 engine_rev="$(git -C "$engine_home" describe --tags --always 2>/dev/null || echo unknown)"
 jit_rev="unknown"
@@ -114,7 +117,8 @@ fi
 # ANGLE: the engine looks for touchHLE_dylibs/angle next to its resources, so
 # stage the Metal-backed GLES runtime that the engine was built against.
 angle_src=""
-for candidate in "${PEAR_ANGLE_LIB_DIR:-}" "$engine_home/vendor/angle/out/MacMetal"; do
+for candidate in "${PEAR_ANGLE_LIB_DIR:-}" "$engine_home/vendor/angle/out/MacMetal" \
+    "$repo_root/runtime/third_party/angle/out/MacMetal" "$repo_root/runtime/build/host/PearANGLE-src"; do
     if [[ -n "$candidate" && -f "$candidate/libEGL.dylib" ]]; then
         angle_src="$candidate"
         break
@@ -122,8 +126,8 @@ for candidate in "${PEAR_ANGLE_LIB_DIR:-}" "$engine_home/vendor/angle/out/MacMet
 done
 if [[ -z "$angle_src" ]]; then
     echo "error: ANGLE's libEGL.dylib was not found." >&2
-    echo "       build it in the engine checkout (vendor/angle/build-macos.sh or the" >&2
-    echo "       documented gn/ninja command) or set PEAR_ANGLE_LIB_DIR." >&2
+    echo "       build it with runtime/host/build-pearangle.sh (--sync the first time)" >&2
+    echo "       or set PEAR_ANGLE_LIB_DIR." >&2
     exit 1
 fi
 

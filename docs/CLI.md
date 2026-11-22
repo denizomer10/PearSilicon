@@ -183,7 +183,7 @@ be installed separately — the first location searched is
 `<support root>/PearLegacyEngine`, and `PEAR_LEGACY_ENGINE_HOME` overrides it:
 
 ```sh
-export PEAR_LEGACY_ENGINE_HOME="$PWD/../PearLegacyEngine"   # source checkout
+export PEAR_LEGACY_ENGINE_HOME="$PWD/runtime/third_party/legacy-engine"   # engine sources (part of PearRuntime)
 pearsilicon install ~/Downloads/MikuFlick02.ipa --launch
 pearsilicon stop com.sega.MikuFlick02
 ```

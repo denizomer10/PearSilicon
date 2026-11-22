@@ -31,11 +31,11 @@ games in one library and runs each of them the right way:
 
 - **64-bit iOS apps** can run in **PearHost mode (no iOSSupport)** directly on
   native macOS using [PearRuntime](https://github.com/denizomer10/PearRuntime)'s
-  Swift/Rust `UIKit`, `MetalKit`, and Metal-only `OpenGLES` ([PearANGLE](https://github.com/denizomer10/PearANGLE))
+  Swift/Rust `UIKit`, `MetalKit`, and Metal-only `OpenGLES` ([PearANGLE](https://github.com/denizomer10/PearRuntime/tree/main/third_party/angle))
   frameworks, or via the classic Mac Catalyst (`/System/iOSSupport`) path.
 - **32-bit iOS games** (`armv6`/`armv7`), which macOS cannot load, run on
-  [PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine) +
-  [PearLegacyJIT](https://github.com/denizomer10/PearLegacyJIT) (unified under `PearRuntime`).
+  [PearLegacyEngine](https://github.com/denizomer10/PearRuntime/tree/main/third_party/legacy-engine) +
+  [PearLegacyJIT](https://github.com/denizomer10/PearRuntime/tree/main/third_party/legacy-jit) (both part of `PearRuntime`).
 - **Mac apps** are imported as copies with their data redirected into the library.
 - **Windows games** run in a private Wine prefix per game.
 
@@ -53,7 +53,7 @@ Use it only with software you are entitled to run.
 | **Library** | iOS, Mac and Windows tabs, movable storage including external disks, one-file `.pearbackup` backups |
 | **Updates** | in-app updater that verifies GitHub's SHA-256 digest and the build commit |
 | **CLI** | `pearsilicon install`, `launch`, `doctor`, `analyze` and more ([docs/CLI.md](docs/CLI.md)) |
-| **Diagnostics** | a [PearDebug](https://github.com/denizomer10/PearDebug) log session per launch, with an analyzer |
+| **Diagnostics** | a [PearDebug](https://github.com/denizomer10/PearRuntime/tree/main/debug) log session per launch, with an analyzer |
 
 ## Requirements
 
@@ -201,10 +201,15 @@ A successful launch is not a compatibility claim for a game.
 | --- | --- | --- |
 | **PearSilicon** | SwiftUI app: library, installer, launcher, updater, CLI | MIT |
 | [PearRuntime](https://github.com/denizomer10/PearRuntime) (`runtime/`) | in-process compatibility layer for arm64 iOS apps | MIT |
-| [PearANGLE](https://github.com/denizomer10/PearANGLE) (`runtime/third_party/angle`) | OpenGL ES on Metal, fork of ANGLE | BSD-3-Clause |
-| [PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine) | 32-bit iOS engine, fork of touchHLE | MPL-2.0 source, GPL-3.0-or-later binary |
-| [PearLegacyJIT](https://github.com/denizomer10/PearLegacyJIT) | ARMv7 recompiler, fork of Dynarmic | 0BSD |
-| [PearDebug](https://github.com/denizomer10/PearDebug) (`Vendor/PearDebug`) | logging, analysis and probes | MIT |
+| [PearANGLE](https://github.com/denizomer10/PearRuntime/tree/main/third_party/angle) (`runtime/third_party/angle`) | OpenGL ES on Metal, fork of ANGLE | BSD-3-Clause |
+| [PearLegacyEngine](https://github.com/denizomer10/PearRuntime/tree/main/third_party/legacy-engine) (`runtime/third_party/legacy-engine`) | 32-bit iOS engine, fork of touchHLE | MPL-2.0 source, GPL-3.0-or-later binary |
+| [PearLegacyJIT](https://github.com/denizomer10/PearRuntime/tree/main/third_party/legacy-jit) (`runtime/third_party/legacy-jit`) | ARMv7 recompiler, fork of Dynarmic | 0BSD |
+| [PearDebug](https://github.com/denizomer10/PearRuntime/tree/main/debug) (`runtime/debug`) | logging, analysis and probes | MIT |
+
+PearANGLE, PearLegacyEngine, PearLegacyJIT and PearDebug are part of the
+PearRuntime repository; their former standalone repositories are kept
+read-only for their history and for the sources that releases up to v0.9.2
+cite.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the execution model and
 [docs/CLI.md](docs/CLI.md) for commands, diagnostics and environment variables.

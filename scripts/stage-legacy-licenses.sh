@@ -59,26 +59,29 @@ if [[ "$version" =~ -g([0-9a-f]+)$ ]]; then
 fi
 engine_commit="$(git -C "$engine_home" rev-parse --verify --quiet "$engine_ref^{commit}" 2>/dev/null || true)"
 [[ -n "$engine_commit" ]] || fail "engine commit $engine_ref ($version) is not in $engine_home"
-engine_dirty=""
-if [[ "$engine_commit" == "$(git -C "$engine_home" rev-parse HEAD)" && \
-      -n "$(git -C "$engine_home" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-  engine_dirty=" (WARNING: the checkout had uncommitted changes when this was staged)"
-fi
-
-jit_line="not used (the engine's vendor/dynarmic submodule)"
-if [[ -n "$jit_home" && -e "$jit_home/.git" ]]; then
-  jit_commit="$(git -C "$jit_home" rev-parse HEAD)"
-  jit_line="https://github.com/denizomer10/PearLegacyJIT/tree/$jit_commit"
-  if [[ -n "$(git -C "$jit_home" status --porcelain --untracked-files=no)" ]]; then
-    jit_line="$jit_line (WARNING: uncommitted changes)"
-  fi
-fi
 
 angle_dir="$stage/touchHLE_dylibs/angle"
 angle_hash=""
 if [[ -f "$angle_dir/libGLESv2.dylib" ]]; then
   angle_hash="$(strings -a "$angle_dir/libGLESv2.dylib" | sed -n 's/.*git hash: \([0-9a-f]\{7,\}\).*/\1/p' | head -1)"
 fi
+
+# The engine is either its own repository (PearLegacyEngine) or a folder of
+# PearRuntime (third_party/legacy-engine, next to legacy-jit and angle).
+engine_top="$(git -C "$engine_home" rev-parse --show-toplevel)"
+engine_prefix="$(git -C "$engine_home" rev-parse --show-prefix)"
+engine_prefix="${engine_prefix%/}"
+# The public https URL of a checkout's origin (github.com/<owner>/<repo>).
+repo_url() {
+  git -C "$1" remote get-url origin 2>/dev/null \
+    | sed -E 's#^git@github\.com:#https://github.com/#; s#\.git$##'
+}
+# Uncommitted changes to tracked files under a path, as a warning.
+dirty_note() {
+  if [[ -n "$(git -C "$1" status --porcelain --untracked-files=no -- "${2:-.}" 2>/dev/null)" ]]; then
+    printf ' (WARNING: uncommitted changes when this was staged)'
+  fi
+}
 
 {
   cat <<EOF
@@ -95,23 +98,52 @@ later (COPYING). NOTICES.txt lists every library inside it.
 The complete Corresponding Source, including the build scripts, is available
 at no charge from the public repositories below, at exactly these commits:
 
-  PearLegacyEngine  https://github.com/denizomer10/PearLegacyEngine/tree/$engine_commit$engine_dirty
-  PearLegacyJIT     $jit_line
 EOF
-  if [[ -n "$angle_hash" ]]; then
-    echo "  ANGLE (dylibs)    https://github.com/denizomer10/angle/tree/$angle_hash"
+  if [[ -n "$engine_prefix" ]]; then
+    # PearRuntime layout: one repository, one commit, three folders.
+    runtime_url="$(repo_url "$engine_top")"
+    [[ -n "$runtime_url" ]] || fail "$engine_top has no origin remote to name in SOURCE.txt"
+    tree="$runtime_url/tree/$engine_commit"
+    echo "  PearRuntime       $tree$(dirty_note "$engine_top" "$engine_prefix")"
+    echo "    PearLegacyEngine  $tree/$engine_prefix"
+    jit_rel="$(dirname "$engine_prefix")/legacy-jit"
+    angle_rel="$(dirname "$engine_prefix")/angle"
+    if [[ -n "$jit_home" ]]; then
+      echo "    PearLegacyJIT     $tree/$jit_rel$(dirty_note "$engine_top" "$jit_rel")"
+    fi
+    if [[ -f "$angle_dir/libGLESv2.dylib" ]]; then
+      # ANGLE built inside PearRuntime embeds no git hash (its folder has no
+      # .git of its own); the PearRuntime commit above identifies it.
+      echo "    ANGLE (dylibs)    $tree/$angle_rel (PearANGLE${angle_hash:+; build hash $angle_hash})$(dirty_note "$engine_top" "$angle_rel")"
+    fi
+    echo
+    echo "Libraries copied into the engine's tree, with their upstream commits"
+    echo "(from $engine_prefix/vendor/VENDORED.txt at that commit):"
+    git -C "$engine_top" show "$engine_commit:$engine_prefix/vendor/VENDORED.txt" 2>/dev/null \
+      | awk '/^vendor\/(SDL|stb|openal-soft) / {printf "  %-20s %s @ %s\n", $1, $2, $3}' || true
+  else
+    # A separate PearLegacyEngine checkout (its submodules pin the libraries).
+    jit_line="not used (the engine's vendor/dynarmic submodule)"
+    if [[ -n "$jit_home" && -e "$jit_home/.git" ]]; then
+      jit_line="$(repo_url "$jit_home")/tree/$(git -C "$jit_home" rev-parse HEAD)$(dirty_note "$jit_home")"
+    fi
+    echo "  PearLegacyEngine  $(repo_url "$engine_top")/tree/$engine_commit$(dirty_note "$engine_top")"
+    echo "  PearLegacyJIT     $jit_line"
+    if [[ -n "$angle_hash" ]]; then
+      echo "  ANGLE (dylibs)    https://github.com/denizomer10/PearANGLE/tree/$angle_hash"
+    fi
+    echo
+    echo "Submodules pinned by that PearLegacyEngine commit (git submodule update --init):"
+    urls="$(git -C "$engine_home" show "$engine_commit:.gitmodules" 2>/dev/null || true)"
+    git -C "$engine_home" ls-tree "$engine_commit" vendor/ | while read -r mode type object path; do
+      [[ "$type" == commit ]] || continue
+      url="$(printf '%s\n' "$urls" | awk -v p="$path" '
+        $1 == "path" && $3 == p {hit=1; next}
+        hit && $1 == "url" {print $3; exit}
+        /^\[submodule/ {hit=0}')"
+      printf '  %-20s %s @ %s\n' "$path" "${url:-unknown}" "$object"
+    done
   fi
-  echo
-  echo "Submodules pinned by that PearLegacyEngine commit (git submodule update --init):"
-  urls="$(git -C "$engine_home" show "$engine_commit:.gitmodules" 2>/dev/null || true)"
-  git -C "$engine_home" ls-tree "$engine_commit" vendor/ | while read -r mode type object path; do
-    [[ "$type" == commit ]] || continue
-    url="$(printf '%s\n' "$urls" | awk -v p="$path" '
-      $1 == "path" && $3 == p {hit=1; next}
-      hit && $1 == "url" {print $3; exit}
-      /^\[submodule/ {hit=0}')"
-    printf '  %-20s %s @ %s\n' "$path" "${url:-unknown}" "$object"
-  done
   cat <<EOF
 
 touchHLE_dylibs/ holds guest libraries loaded into the emulated iOS app, each
@@ -123,8 +155,10 @@ EOF
 } > "$stage/SOURCE.txt"
 
 # --- ANGLE beside the engine -------------------------------------------------
-# The engine's ANGLE is a component build: Dawn, abseil, libc++ and zlib ship
-# as separate dylibs, and libGLESv2 itself contains astc-encoder and xxHash.
+# ANGLE beside the engine: either PearRuntime's static PearHost build (two
+# self-contained dylibs) or an engine-style component build, where Dawn,
+# abseil, libc++ and zlib ship as separate dylibs and libGLESv2 itself
+# contains astc-encoder and xxHash.
 if [[ -d "$angle_dir" ]]; then
   angle_root=""
   for candidate in "${PEAR_ANGLE_SOURCE_DIR:-}" "$engine_home/vendor/angle" "$repo_root/runtime/third_party/angle"; do
@@ -135,15 +169,29 @@ if [[ -d "$angle_dir" ]]; then
   done
   [[ -n "$angle_root" ]] || fail "no ANGLE checkout with third_party/ to take license texts from; set PEAR_ANGLE_SOURCE_DIR"
   cp "$angle_root/LICENSE" "$angle_dir/LICENSE.ANGLE"
-  components=(abseil-cpp astc-encoder libc++ libc++abi spirv-headers vulkan-headers xxhash zlib)
   license_args=()
+  extra_dylibs="$(find "$angle_dir" -maxdepth 1 -name '*.dylib' ! -name libEGL.dylib ! -name libGLESv2.dylib | wc -l | tr -d ' ')"
+  angle_ninja="$angle_root/out/PearHostMetal"
+  if [[ "$extra_dylibs" == 0 ]]; then
+    # A static build (PearHost's runtime/host/build-pearangle.sh): everything
+    # is inside libEGL/libGLESv2, with the system libc++. Read what was linked
+    # from its ninja files when they are there, as runtime/host/build-host.sh does.
+    if [[ -f "$angle_ninja/build.ninja" ]]; then
+      license_args+=(--ninja-dir "$angle_ninja" --target libEGL.dylib --target libGLESv2.dylib)
+      components=()
+    else
+      components=(abseil-cpp astc-encoder perfetto volk xxhash zlib)
+    fi
+  else
+    components=(abseil-cpp astc-encoder libc++ libc++abi spirv-headers vulkan-headers xxhash zlib)
+  fi
   if compgen -G "$angle_dir/libdawn_*.dylib" >/dev/null; then
     components+=(dawn)
     if [[ ! -f "$angle_root/third_party/dawn/LICENSE" ]]; then
       license_args+=(--license "dawn=$repo_root/licenses/dawn/LICENSE")
     fi
   fi
-  for component in "${components[@]}"; do license_args+=(--component "$component"); done
+  for component in ${components[@]+"${components[@]}"}; do license_args+=(--component "$component"); done
   python3 "$repo_root/runtime/collect-angle-licenses.py" --angle-root "$angle_root" \
     --title "the PearLegacyEngine ANGLE build" \
     --out "$angle_dir/THIRD_PARTY_LICENSES.txt" "${license_args[@]}" >/dev/null

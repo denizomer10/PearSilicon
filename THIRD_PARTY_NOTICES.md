@@ -24,7 +24,7 @@ when a shipped binary has no license next to it.
 | Component | Repository | License | How it is shipped |
 | --- | --- | --- | --- |
 | PearSilicon | [denizomer10/PearSilicon](https://github.com/denizomer10/PearSilicon) | MIT | app executable |
-| PearDebug | [denizomer10/PearDebug](https://github.com/denizomer10/PearDebug) | MIT | Swift package, statically linked into the app executable |
+| PearDebug | [denizomer10/PearRuntime](https://github.com/denizomer10/PearRuntime/tree/main/debug) (`debug/`) | MIT | Swift package, statically linked into the app executable |
 | PearRuntime | [denizomer10/PearRuntime](https://github.com/denizomer10/PearRuntime) | MIT | `libPearRuntime`, `libPearOpenGLES`, `libcxxcompat`, `libswiftUIKit` and the `MarketplaceKit` stub, all built from source |
 
 PearRuntime compiles against the EGL/OpenGL ES headers in the ANGLE checkout
@@ -32,9 +32,9 @@ PearRuntime compiles against the EGL/OpenGL ES headers in the ANGLE checkout
 
 ## ANGLE for Mac Catalyst apps (`PearANGLE/`)
 
-- Source: [denizomer10/PearANGLE](https://github.com/denizomer10/PearANGLE), a
-  modified fork of [ANGLE](https://chromium.googlesource.com/angle/angle),
-  pinned by PearRuntime as `third_party/angle`.
+- Source: PearANGLE, a modified fork of
+  [ANGLE](https://chromium.googlesource.com/angle/angle), part of PearRuntime as
+  [`third_party/angle`](https://github.com/denizomer10/PearRuntime/tree/main/third_party/angle).
 - License: BSD-3-Clause (`LICENSE.ANGLE`), copyright The ANGLE Project Authors.
 - Shipped as `libEGL.dylib` and `libGLESv2.dylib`, built from source with
   `scripts/build-angle-metal.sh` and loaded dynamically by `libPearOpenGLES`.
@@ -49,8 +49,8 @@ PearRuntime compiles against the EGL/OpenGL ES headers in the ANGLE checkout
 
 ## PearLegacyEngine — 32-bit iOS engine (`PearLegacyEngine/`)
 
-- Source: [denizomer10/PearLegacyEngine](https://github.com/denizomer10/PearLegacyEngine),
-  a modified fork of [touchHLE](https://github.com/touchHLE/touchHLE) by the
+- Source: PearLegacyEngine, part of PearRuntime as
+  [`third_party/legacy-engine`](https://github.com/denizomer10/PearRuntime/tree/main/third_party/legacy-engine), a modified fork of [touchHLE](https://github.com/touchHLE/touchHLE) by the
   touchHLE project contributors.
 - **Source files:** Mozilla Public License 2.0 (`LICENSE.MPL-2.0`).
 - **The shipped `touchHLE` binary: GNU GPL version 3 or later** (`COPYING`).
@@ -58,7 +58,7 @@ PearRuntime compiles against the EGL/OpenGL ES headers in the ANGLE checkout
   touchHLE does, the executable as a whole is distributed under
   GPL-3.0-or-later. Every library inside it is listed with its license in
   `NOTICES.txt` (the output of `touchHLE --copyright`):
-  - PearLegacyJIT ([denizomer10/PearLegacyJIT](https://github.com/denizomer10/PearLegacyJIT)),
+  - PearLegacyJIT ([`third_party/legacy-jit`](https://github.com/denizomer10/PearRuntime/tree/main/third_party/legacy-jit) in PearRuntime),
     a fork of [Dynarmic](https://github.com/merryhime/dynarmic) — 0BSD, with
     its bundled libraries (fmt, mcl, oaknut, robin-map, xbyak, zydis, …) under
     MIT/BSD-style licenses and Boost (BSL-1.0);
@@ -66,8 +66,12 @@ PearRuntime compiles against the EGL/OpenGL ES headers in the ANGLE checkout
     domain; PVRTDecompress — MIT;
   - about 90 Rust crates under MIT, Apache-2.0, MPL-2.0, Zlib, BSD-3-Clause
     and Unicode licenses, all GPL-3.0 compatible.
-- **Corresponding Source:** `SOURCE.txt` names the exact engine, PearLegacyJIT
-  and ANGLE commits and every submodule pin of the shipped build. All of them
+- **Corresponding Source:** `SOURCE.txt` names the exact PearRuntime commit
+  of the shipped build (engine, PearLegacyJIT and ANGLE folders) and the
+  upstream commits of the libraries copied into the engine
+  (`vendor/VENDORED.txt`). Releases up to v0.9.2 name commits of the former
+  standalone PearLegacyEngine, PearLegacyJIT and PearANGLE repositories,
+  which therefore stay available, read-only. All of them
   are public; `scripts/publish-release.sh` refuses to publish when one of the
   named commits is not on GitHub.
 - **Separate program:** PearSilicon starts the engine as its own process

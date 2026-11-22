@@ -60,7 +60,14 @@ if [[ -e "$res/$engine/touchHLE" ]]; then
   need "$engine/COPYING" "GNU GENERAL PUBLIC LICENSE" "Version 3"
   need "$engine/LICENSE.MPL-2.0" "Mozilla Public License Version 2.0"
   need "$engine/NOTICES.txt" "GNU General Public License" "OpenAL Soft" "SDL 2" "Dynarmic"
-  need "$engine/SOURCE.txt" "github.com/denizomer10/PearLegacyEngine/tree/"
+  # Since the engine became part of PearRuntime its source is a PearRuntime
+  # commit (with the engine, JIT and ANGLE folders); older builds name the
+  # separate PearLegacyEngine repository.
+  if grep -q "github.com/denizomer10/PearRuntime/tree/" "$res/$engine/SOURCE.txt" 2>/dev/null; then
+    need "$engine/SOURCE.txt" "github.com/denizomer10/PearRuntime/tree/" "third_party/legacy-engine" "third_party/legacy-jit"
+  else
+    need "$engine/SOURCE.txt" "github.com/denizomer10/PearLegacyEngine/tree/"
+  fi
   if grep -q "WARNING" "$res/$engine/SOURCE.txt" 2>/dev/null; then
     fail "$engine/SOURCE.txt: the engine was staged from a checkout with uncommitted changes"
   fi

@@ -99,13 +99,8 @@ else
 fi
 
 # --- 3a-legacy) Bundle PearLegacyEngine (32-bit iOS runtime) --------------
-if [[ -n "${PEAR_LEGACY_ENGINE_REPO:-}" ]]; then
-  LEGACY_REPO="${PEAR_LEGACY_ENGINE_REPO}"
-elif [[ -d "$HOME/PearLegacyEngine" ]]; then
-  LEGACY_REPO="$HOME/PearLegacyEngine"
-else
-  LEGACY_REPO="$HOME/Documents/PearLegacyEngine"
-fi
+# The engine's sources are part of PearRuntime (runtime/third_party/legacy-engine).
+LEGACY_REPO="${PEAR_LEGACY_ENGINE_REPO:-$ROOT/runtime/third_party/legacy-engine}"
 LEGACY_BIN=""
 LEGACY_STAGE="$BUILD_DIR/PearLegacyEngine"
 # A tree staged by scripts/setup-legacy-engine.sh is already in the release
@@ -163,11 +158,11 @@ if [[ -n "$LEGACY_BIN" ]]; then
   # the engine came from somewhere else.
   if [[ ! -f "$LEGACY_STAGE/SOURCE.txt" || "$LEGACY_FROM_STAGE" == 0 ]]; then
     LEGACY_SRC_REPO="${PEAR_LEGACY_ENGINE_HOME:-}"
-    for candidate in "$LEGACY_REPO" "$ROOT/../PearLegacyEngine"; do
+    for candidate in "$LEGACY_REPO" "$ROOT/runtime/third_party/legacy-engine"; do
       [[ -z "$LEGACY_SRC_REPO" && -f "$candidate/LICENSE" ]] && LEGACY_SRC_REPO="$candidate"
     done
     "$ROOT/scripts/stage-legacy-licenses.sh" "$LEGACY_STAGE" "${LEGACY_SRC_REPO:?no PearLegacyEngine checkout found for the engine license files}" \
-      "${PEAR_DYNARMIC_ROOT:-$ROOT/../PearLegacyJIT}"
+      "${PEAR_DYNARMIC_ROOT:-$ROOT/runtime/third_party/legacy-jit}"
   fi
   rm -rf "$OUT/Contents/Resources/PearLegacyEngine"
   cp -R "$LEGACY_STAGE" "$OUT/Contents/Resources/PearLegacyEngine"
