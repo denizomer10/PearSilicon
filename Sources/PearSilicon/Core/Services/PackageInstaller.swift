@@ -18,6 +18,26 @@ import Foundation
     case nativeContainer
 }
 
+enum RuntimeRefreshSource: Sendable {
+    case pearHost(URL)
+    case catalyst(URL)
+
+    static func locate() -> Self? {
+        if let host = PearHostPreparer.locateHostFrameworks() { return .pearHost(host) }
+        return AppLauncher.runtimeLibraryURL().map { .catalyst($0.deletingLastPathComponent()) }
+    }
+
+    func fingerprint() throws -> String? {
+        switch self {
+        case .pearHost(let directory):
+            let stamp = PearHostPreparer.hostStamp(directory)
+            return stamp.isEmpty ? nil : stamp
+        case .catalyst(let directory):
+            return try RuntimeRevision.fingerprint(in: directory)
+        }
+    }
+}
+
 /// Installs app package files into the library, prepares them to run on macOS,
 /// scans the library and removes apps.
 ///
@@ -640,6 +660,14 @@ final class PackageInstaller: @unchecked Sendable {
         if !force, try preparationModeIsValid(at: app.bundleURL, mode: mode, targetBundleURL: app.bundleURL) {
             return
         }
+        try replacePreparedBundle(for: app) { staged in
+            try finalizeInstall(at: staged, mode: mode, targetBundleURL: app.bundleURL)
+        }
+    }
+
+    private func replacePreparedBundle(
+        for app: InstalledApp, replacingRuntimeComponents components: [String] = [], prepare: (URL) throws -> Void
+    ) throws {
         try preparationTools.requireStopped(app)
 
         // A sibling keeps the exchange on the same filesystem. Copy the current
@@ -649,26 +677,85 @@ final class PackageInstaller: @unchecked Sendable {
         try fileManager.createDirectory(at: transaction, withIntermediateDirectories: false)
         defer { try? fileManager.removeItem(at: transaction) }
         let staged = transaction.appendingPathComponent(app.bundleURL.lastPathComponent, isDirectory: true)
-        _ = try preparationTools.run("/usr/bin/ditto", ["--clone", app.bundleURL.path, staged.path])
+        if components.isEmpty {
+            _ = try preparationTools.run("/usr/bin/ditto", ["--clone", app.bundleURL.path, staged.path])
+        } else {
+            try stageRuntimeReplacement(from: app.bundleURL, to: staged, replacingComponents: components)
+        }
         try validateStagingIsolation(at: staged)
         let stagedApp = try makeInstalledApp(fromBundleAt: staged)
         _ = try preparationLoadPaths(at: stagedApp.executableURL)
 
-        try finalizeInstall(at: staged, mode: mode, targetBundleURL: app.bundleURL)
+        try prepare(staged)
         try preparationTools.requireStopped(app)
         try commitBundle(at: staged, to: app.bundleURL, replacing: true)
+    }
+
+    /// Clone on APFS and copy on other volumes. Discarded runtime files never
+    /// enter staging, avoiding a second copy across the external connection.
+    private func stageRuntimeReplacement(from source: URL, to staged: URL, replacingComponents: [String]) throws {
+        let source = source.standardizedFileURL
+        let frameworks = source.appendingPathComponent("Frameworks", isDirectory: true)
+        let skipped = Set(replacingComponents.map { frameworks.appendingPathComponent($0).path })
+        guard let state = copyfile_state_alloc() else { throw POSIXError(.ENOMEM) }
+        defer { copyfile_state_free(state) }
+        let callback: copyfile_callback_t = { event, stage, _, path, _, context in
+            guard stage == COPYFILE_START, event == COPYFILE_RECURSE_FILE || event == COPYFILE_RECURSE_DIR,
+                  let path, let context else { return COPYFILE_CONTINUE }
+            let paths = context.assumingMemoryBound(to: Set<String>.self).pointee
+            return paths.contains(String(cString: path)) ? COPYFILE_SKIP : COPYFILE_CONTINUE
+        }
+        try withUnsafePointer(to: skipped) { context in
+            guard copyfile_state_set(state, UInt32(COPYFILE_STATE_STATUS_CB), unsafeBitCast(callback, to: UnsafeRawPointer.self)) == 0,
+                  copyfile_state_set(state, UInt32(COPYFILE_STATE_STATUS_CTX), UnsafeRawPointer(context)) == 0,
+                  copyfile(source.path, staged.path, state, copyfile_flags_t(COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_CLONE | COPYFILE_NOFOLLOW)) == 0
+            else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSFilePathErrorKey: source.path])
+            }
+        }
     }
 
     /// Installs a new PearSilicon build's runtime into an already-installed iOS
     /// app. Only runs when the runtime fingerprint differs; the app's own files
     /// and data are preserved and the staged copy is re-signed before exchange.
     func refreshRuntimeIfNeeded(
-        for app: InstalledApp, sourceRuntimeDirectory: URL, launchLease: AppLaunchLease? = nil
+        for app: InstalledApp, source: RuntimeRefreshSource, launchLease: AppLaunchLease? = nil,
+        hostRuntime: PearHostPreparer.RuntimeSnapshot? = nil
     ) throws -> Bool {
         if isLegacy32BitBundle(at: app.bundleURL) { return false }
-        // A bundle prepared for PearHost runs on PearRuntime's own frameworks
-        // (PearHostPreparer refreshes those); its images are macOS-platform
-        // now, and the Mac Catalyst runtime is not part of it.
+        switch source {
+        case .pearHost(let host):
+            let lease = try launchLease ?? AppLaunchLease.acquire(appID: app.id, libraryURL: libraryURL)
+            defer { if launchLease == nil { lease.release() } }
+            try lease.validate(appID: app.id, libraryURL: libraryURL)
+            guard let runtime = hostRuntime ?? PearHostPreparer.runtimeSnapshot(host) else {
+                throw PearError.missingRuntimeComponent("PearHost frameworks")
+            }
+
+            if !PearHostPreparer.isPrepared(app.bundleURL) || PearHostPreparer.needsPreparation(app.bundleURL) {
+                try validateBundleForPreparation(at: app.bundleURL, allowMacOS: true)
+                try replacePreparedBundle(for: app) { staged in
+                    try PearHostPreparer.prepare(bundleURL: staged, executableName: app.executableName, hostDir: host, runtime: runtime)
+                    try signBundle(at: staged, mode: .nativeContainer)
+                    try verifyPreparedSignature(at: staged)
+                }
+            } else {
+                let changed = runtime.changedComponents(in: app.bundleURL)
+                guard !changed.isEmpty else { return false }
+                try replacePreparedBundle(for: app, replacingRuntimeComponents: changed) { staged in
+                    try PearHostPreparer.refreshHostFrameworks(bundleURL: staged, hostDir: host, runtime: runtime, components: changed)
+                    try signRuntimeReplacement(in: staged, components: changed)
+                }
+            }
+            return true
+        case .catalyst(let directory):
+            return try refreshCatalystRuntime(for: app, sourceRuntimeDirectory: directory, launchLease: launchLease)
+        }
+    }
+
+    private func refreshCatalystRuntime(
+        for app: InstalledApp, sourceRuntimeDirectory: URL, launchLease: AppLaunchLease?
+    ) throws -> Bool {
         if PearHostPreparer.isPrepared(app.bundleURL) { return false }
         let mode = currentPreparationMode(for: app)
         guard mode != .nativeContainer else { return false }
@@ -688,7 +775,7 @@ final class PackageInstaller: @unchecked Sendable {
     /// Read-only admission check, not a decryption or runtime-compatibility test.
     /// Every regular file is inspected, including hidden and extensionless files.
     /// This deliberately creates no work, library, or transaction directories.
-    func validateBundleForPreparation(at bundleURL: URL) throws {
+    func validateBundleForPreparation(at bundleURL: URL, allowMacOS: Bool = false) throws {
         let isLegacy32 = isLegacy32BitBundle(at: bundleURL)
         for file in try machOTargets(in: bundleURL) {
             if isLegacy32 {
@@ -698,14 +785,14 @@ final class PackageInstaller: @unchecked Sendable {
                     throw preparationError(error, at: file, in: bundleURL)
                 }
             } else {
-                try validateBinaryForPreparation(at: file, in: bundleURL)
+                try validateBinaryForPreparation(at: file, in: bundleURL, allowMacOS: allowMacOS)
             }
         }
     }
 
-    private func validateBinaryForPreparation(at file: URL, in bundleURL: URL) throws {
+    private func validateBinaryForPreparation(at file: URL, in bundleURL: URL, allowMacOS: Bool = false) throws {
         do {
-            try BinaryPatcher.validateForPreparation(at: file)
+            try BinaryPatcher.validateForPreparation(at: file, allowMacOS: allowMacOS)
         } catch {
             throw preparationError(error, at: file, in: bundleURL)
         }
@@ -1146,7 +1233,11 @@ final class PackageInstaller: @unchecked Sendable {
                 throw PearError.invalidPackage("Main executable must be a regular file")
             }
         } catch { throw preparationError(error, at: app.executableURL, in: bundleURL) }
-        var targets: Set<URL> = [main]
+        return try machOTargets(in: entries, relativeTo: bundleURL).union([main]).sorted { $0.path < $1.path }
+    }
+
+    private func machOTargets(in entries: [BundleEntry], relativeTo bundleURL: URL) throws -> Set<URL> {
+        var targets: Set<URL> = []
         let magics: Set<UInt32> = [0xFEEDFACE, 0xCEFAEDFE, 0xFEEDFACF, 0xCFFAEDFE,
                                     0xCAFEBABE, 0xBEBAFECA, 0xCAFEBABF, 0xBFBAFECA]
         for entry in entries where entry.kind == .typeRegular {
@@ -1160,7 +1251,7 @@ final class PackageInstaller: @unchecked Sendable {
                 }
             } catch { throw preparationError(error, at: entry.url, in: bundleURL) }
         }
-        return targets.sorted { $0.path < $1.path }
+        return targets
     }
 
     /// Store builds may link `MarketplaceKit`, which macOS provides as
@@ -1254,12 +1345,19 @@ final class PackageInstaller: @unchecked Sendable {
         let attrs = try? fileManager.attributesOfItem(atPath: bundleURL.path)
         let installedAt = (attrs?[.creationDate] as? Date) ?? Date()
 
+        func version(forKey key: String) -> String? {
+            guard let value = (info[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return nil }
+            return value
+        }
+        let buildVersion = version(forKey: "CFBundleVersion")
+
         return InstalledApp(
             id: bundleID,
             displayName: display,
             bundleName: (info["CFBundleName"] as? String) ?? display,
-            shortVersion: (info["CFBundleShortVersionString"] as? String) ?? "—",
-            bundleVersion: (info["CFBundleVersion"] as? String) ?? "—",
+            shortVersion: version(forKey: "CFBundleShortVersionString") ?? buildVersion ?? "—",
+            bundleVersion: buildVersion ?? "—",
             minimumOSVersion: info["MinimumOSVersion"] as? String,
             bundleURL: targetBundleURL ?? bundleURL,
             executableName: executable,
@@ -1299,6 +1397,37 @@ final class PackageInstaller: @unchecked Sendable {
         try sign(bundleURL, entitlements: entitlements)
     }
 
+    private func signRuntimeReplacement(in bundleURL: URL, components: [String]) throws {
+        let entitlements = try ensureEntitlementsPath(for: bundleURL, mode: .nativeContainer)
+        let frameworks = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
+        for component in components {
+            let url = frameworks.appendingPathComponent(component)
+            if url.pathExtension == "dylib" {
+                try sign(url, entitlements: entitlements)
+            } else {
+                let entries = try bundleEntries(at: url)
+                for nested in try codeObjectURLs(in: entries, relativeTo: url) {
+                    try sign(nested, entitlements: entitlements)
+                }
+                if url.pathExtension == "framework" { try sign(url, entitlements: entitlements) }
+            }
+        }
+        try sign(bundleURL, entitlements: entitlements)
+        do {
+            try verifyPreparedSignature(at: bundleURL)
+        } catch {
+            // Preserve repair of old bundles whose unchanged nested code needs
+            // re-signing. It must pass the same strict check before exchange.
+            try validateBundleForPreparation(at: bundleURL, allowMacOS: true)
+            try signBundle(at: bundleURL, mode: .nativeContainer)
+            try verifyPreparedSignature(at: bundleURL)
+        }
+    }
+
+    private func verifyPreparedSignature(at bundleURL: URL) throws {
+        _ = try preparationTools.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", bundleURL.path])
+    }
+
     private func sign(_ url: URL, entitlements: String) throws {
         _ = try preparationTools.run("/usr/bin/codesign", [
             "--force", "--sign", "-",
@@ -1310,10 +1439,14 @@ final class PackageInstaller: @unchecked Sendable {
     /// Sign discovered binaries and their code containers inside-out, including
     /// extensionless code outside the usual Frameworks/PlugIns directories.
     private func codeObjects(in bundleURL: URL) throws -> [URL] {
-        var result = Set(try machOTargets(in: bundleURL))
         let app = try makeInstalledApp(fromBundleAt: bundleURL)
-        result.remove(app.executableURL.resolvingSymlinksInPath().standardizedFileURL)
-        for entry in try bundleEntries(at: bundleURL) where entry.kind == .typeDirectory {
+        let main = app.executableURL.resolvingSymlinksInPath().standardizedFileURL
+        return try codeObjectURLs(in: bundleEntries(at: bundleURL), relativeTo: bundleURL).filter { $0 != main }
+    }
+
+    private func codeObjectURLs(in entries: [BundleEntry], relativeTo root: URL) throws -> [URL] {
+        var result = try machOTargets(in: entries, relativeTo: root)
+        for entry in entries where entry.kind == .typeDirectory {
             if ["framework", "appex", "app", "xpc"].contains(entry.url.pathExtension.lowercased()) {
                 result.insert(entry.url)
             }

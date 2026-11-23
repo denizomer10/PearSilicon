@@ -869,6 +869,17 @@ actor AppUpdateService {
                 proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, $0, Int32(MemoryLayout<proc_bsdinfo>.size))
             }
             guard read == MemoryLayout<proc_bsdinfo>.size else {
+                // Protected processes such as login can share our real UID
+                // while running under a different effective UID. Apply the
+                // same ownership check even when libproc denies inspection.
+                var mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+                var owner = kinfo_proc()
+                var length = MemoryLayout<kinfo_proc>.size
+                if sysctl(&mib, u_int(mib.count), &owner, &length, nil, 0) == 0,
+                   length == MemoryLayout<kinfo_proc>.size, owner.kp_proc.p_pid == pid,
+                   owner.kp_eproc.e_ucred.cr_uid != getuid() {
+                    continue
+                }
                 if kill(pid, 0) == 0 { throw AppUpdateError.operation("Cannot inspect a running process; quit apps and retry.") }
                 continue
             }

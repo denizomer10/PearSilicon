@@ -62,9 +62,9 @@ struct PortableLibrary: Sendable {
             ) else { continue }
             for bundle in bundles where bundle.pathExtension == "app" {
                 do {
-                    let app = try installer.makeInstalledApp(fromBundleAt: bundle)
-                    guard !seen.contains(app.id) else { continue }
-                    seen.insert(app.id)
+                    var app = try installer.makeInstalledApp(fromBundleAt: bundle)
+                    guard seen.insert(app.id).inserted else { continue }
+                    app.isLegacy32Bit = BinaryPatcher.fileIsLegacy32BitARM(app.executableURL)
                     apps.append(app)
                 } catch {
                     warnings.append("\(bundle.lastPathComponent): \(error.localizedDescription)")

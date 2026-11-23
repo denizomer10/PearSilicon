@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// Intercepts quitting so running games opened through PearSilicon are not left
 /// behind. If any are running, a warning is shown: confirming quits PearSilicon
@@ -6,18 +7,23 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
-    /// Custom About panel: a channel label followed by the real version code so
-    /// users can tell exactly which build they are running.
+    private static var aboutWindow: NSWindow?
+
     static func showAboutPanel() {
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "0.0.0"
-        let build = info?["CFBundleVersion"] as? String ?? "0"
-        let alert = NSAlert()
-        alert.messageText = "PearSilicon"
-        alert.informativeText = "Development Beta\nVersion \(version) (\(build))"
-        alert.icon = NSApplication.shared.applicationIconImage
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        if let window = aboutWindow {
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 450, height: 360),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "About PearSilicon"
+        window.contentMinSize = NSSize(width: 330, height: 260)
+        window.contentView = NSHostingView(rootView: PearAboutView(version: version))
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        aboutWindow = window
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

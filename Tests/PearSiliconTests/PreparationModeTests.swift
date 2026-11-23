@@ -352,14 +352,14 @@ final class PreparationModeTests: XCTestCase {
         }
         let installer = fixture.installer(tools: tools)
         let app = try fixture.app(using: installer)
-        let source = fixture.runtimeURL.deletingLastPathComponent()
+        let source = RuntimeRefreshSource.catalyst(fixture.runtimeURL.deletingLastPathComponent())
 
         let first = try await Task.detached {
             XCTAssertFalse(Thread.isMainThread)
-            return try installer.refreshRuntimeIfNeeded(for: app, sourceRuntimeDirectory: source)
+            return try installer.refreshRuntimeIfNeeded(for: app, source: source)
         }.value
         let second = try await Task.detached {
-            try installer.refreshRuntimeIfNeeded(for: app, sourceRuntimeDirectory: source)
+            try installer.refreshRuntimeIfNeeded(for: app, source: source)
         }.value
 
         XCTAssertTrue(first, "the changed runtime should have been installed")

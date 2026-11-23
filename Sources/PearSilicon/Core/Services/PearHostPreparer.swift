@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -7,7 +8,7 @@ enum PearHostPreparer {
     static let markerFileName = ".pearsilicon-pearhost"
     /// Libraries PearHost builds next to its frameworks and installs into
     /// every prepared bundle (macOS builds replacing the app's Catalyst ones).
-    private static let hostLibraries = ["libcxxcompat.dylib", "libswiftUIKit.dylib"]
+    private static let hostLibraries = ["libcxxcompat.dylib", "libswiftUIKit.dylib", "libPearHostPlaceholder.dylib"]
 
     private final class ErrorBox: @unchecked Sendable {
         private let lock = NSLock()
@@ -67,7 +68,7 @@ enum PearHostPreparer {
 
     /// Bumped when preparation itself changes (which load commands are
     /// redirected, what is installed): an older bundle is prepared again.
-    static let preparerVersion = 3
+    static let preparerVersion = 4
 
     /// The bundle was prepared by an older preparer (or not at all).
     static func needsPreparation(_ bundleURL: URL) -> Bool {
@@ -104,7 +105,12 @@ enum PearHostPreparer {
         }
     }
 
-    static func prepare(bundleURL: URL, executableName: String, hostDir: URL) throws {
+    static func prepare(
+        bundleURL: URL, executableName: String, hostDir: URL, runtime: RuntimeSnapshot? = nil
+    ) throws {
+        guard let runtime = runtime ?? runtimeSnapshot(hostDir) else {
+            throw PearError.missingRuntimeComponent("PearHost frameworks")
+        }
         let fm = FileManager.default
         let frameworksDir = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
         try fm.createDirectory(at: frameworksDir, withIntermediateDirectories: true)
@@ -145,45 +151,110 @@ enum PearHostPreparer {
             }
         }
 
-        try writeMarker(in: bundleURL, hostDir: hostDir)
+        try runtime.writeMarker(in: bundleURL)
     }
 
-    /// A prepared bundle carries copies of the PearHost frameworks. When the
-    /// runtime has been rebuilt since, replace those copies so the app runs the
-    /// current PearHost. Returns true when the copies were refreshed.
+    struct RuntimeSnapshot: Sendable {
+        let stamp: String
+        let components: [String: Component]
+
+        struct Component: Sendable {
+            let revision: String
+            let binaries: [String]
+        }
+
+        func changedComponents(in bundleURL: URL) -> [String] {
+            let recorded = (try? String(contentsOf: markerURL(in: bundleURL), encoding: .utf8)) ?? ""
+            let lines = Set(recorded.split(separator: "\n").map(String.init))
+            let sameBuild = lines.contains(stamp)
+            let frameworks = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
+            return components.keys.sorted().filter { name in
+                guard let component = components[name] else { return false }
+                return !(sameBuild || lines.contains(componentLine(name, component)))
+                    || !component.binaries.allSatisfy {
+                        FileManager.default.fileExists(atPath: frameworks.appendingPathComponent($0).path)
+                    }
+            }
+        }
+
+        func writeMarker(in bundleURL: URL) throws {
+            let entries = components.sorted { $0.key < $1.key }.map { componentLine($0.key, $0.value) }
+            let marker = ["pearhost", stamp, "preparer=\(preparerVersion)"] + entries
+            try Data((marker.joined(separator: "\n") + "\n").utf8)
+                .write(to: markerURL(in: bundleURL), options: .atomic)
+        }
+
+        private func componentLine(_ name: String, _ component: Component) -> String {
+            "component=\(name):\(component.revision)"
+        }
+    }
+
+    /// Tracks bundled host images, including independently rebuilt overlays and ANGLE.
+    static func runtimeSnapshot(_ hostDir: URL) -> RuntimeSnapshot? {
+        let files = hostBinaryPaths(hostDir)
+        guard files.contains("UIKit.framework/UIKit") else { return nil }
+        var entries: [String] = []
+        var grouped: [String: [(path: String, entry: String)]] = [:]
+        for file in files {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: hostDir.appendingPathComponent(file).path),
+                  let size = attrs[.size] as? NSNumber,
+                  let date = attrs[.modificationDate] as? Date else { return nil }
+            let entry = "\(file):\(size.int64Value):\(date.timeIntervalSince1970)"
+            entries.append(entry)
+            let component = file.split(separator: "/", maxSplits: 1).first.map(String.init) ?? file
+            grouped[component, default: []].append((file, entry))
+        }
+        func hash(_ entries: [String]) -> String {
+            String(describing: SHA256.hash(data: Data(entries.joined(separator: "\n").utf8)))
+        }
+        return RuntimeSnapshot(stamp: "host=\(hash(entries))", components: grouped.mapValues {
+            RuntimeSnapshot.Component(revision: hash($0.map(\.entry)), binaries: $0.map(\.path))
+        })
+    }
+
     @discardableResult
     static func refreshHostFrameworksIfStale(bundleURL: URL, hostDir: URL) throws -> Bool {
-        let marker = markerURL(in: bundleURL)
-        let recorded = (try? String(contentsOf: marker, encoding: .utf8)) ?? ""
-        let current = hostStamp(hostDir)
-        guard !current.isEmpty, !recorded.contains(current) else { return false }
-        let frameworksDir = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
-        try installHostFrameworks(into: frameworksDir, from: hostDir)
-        try writeMarker(in: bundleURL, hostDir: hostDir)
+        guard let runtime = runtimeSnapshot(hostDir) else { return false }
+        let components = runtime.changedComponents(in: bundleURL)
+        guard !components.isEmpty else { return false }
+        try refreshHostFrameworks(bundleURL: bundleURL, hostDir: hostDir, runtime: runtime, components: components)
         return true
     }
 
-    /// Identifies a PearHost build: size and modification time of its UIKit image.
-    static func hostStamp(_ hostDir: URL) -> String {
-        let uikit = hostDir.appendingPathComponent("UIKit.framework/UIKit")
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: uikit.path),
-              let size = attrs[.size] as? NSNumber,
-              let date = attrs[.modificationDate] as? Date else { return "" }
-        return "host=\(size.int64Value):\(Int64(date.timeIntervalSince1970 * 1000))"
+    static func refreshHostFrameworks(
+        bundleURL: URL, hostDir: URL, runtime: RuntimeSnapshot, components: [String]
+    ) throws {
+        let frameworksDir = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
+        try installHostFrameworks(into: frameworksDir, from: hostDir, components: components)
+        try runtime.writeMarker(in: bundleURL)
     }
 
-    private static func writeMarker(in bundleURL: URL, hostDir: URL) throws {
-        try Data("pearhost\n\(hostStamp(hostDir))\npreparer=\(preparerVersion)\n".utf8).write(to: markerURL(in: bundleURL), options: .atomic)
+    static func hostFrameworksAreCurrent(bundleURL: URL, hostDir: URL) -> Bool {
+        guard let runtime = runtimeSnapshot(hostDir) else { return false }
+        return runtime.changedComponents(in: bundleURL).isEmpty
+    }
+
+    private static func hostBinaryPaths(_ hostDir: URL) -> [String] {
+        let angle = hostDir.appendingPathComponent("PearANGLE", isDirectory: true)
+        let angleLibraries = ((try? FileManager.default.contentsOfDirectory(atPath: angle.path)) ?? [])
+            .filter { $0.hasSuffix(".dylib") }.map { "PearANGLE/\($0)" }
+        return (hostFrameworks(in: hostDir).map { "\($0).framework/\($0)" } + hostLibraries + angleLibraries)
+            .filter { FileManager.default.fileExists(atPath: hostDir.appendingPathComponent($0).path) }
+            .sorted()
+    }
+
+    static func hostStamp(_ hostDir: URL) -> String {
+        runtimeSnapshot(hostDir)?.stamp ?? ""
     }
 
     /// Clones/copies PearHost frameworks, PearANGLE and PearHost's libraries into
     /// `<app>/Frameworks`. Preserves ad-hoc signatures from `hostDir` via `clonefile`/`copyItem`
     /// and only signs or retargets items that are unsigned or non-macOS.
-    private static func installHostFrameworks(into frameworksDir: URL, from hostDir: URL) throws {
+    private static func installHostFrameworks(into frameworksDir: URL, from hostDir: URL, components: [String]? = nil) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: frameworksDir, withIntermediateDirectories: true)
         let host = hostFrameworks(in: hostDir)
-        let items = host.map { "\($0).framework" } + ["PearANGLE"] + hostLibraries
+        let items = components ?? (host.map { "\($0).framework" } + ["PearANGLE"] + hostLibraries)
         let existingItems = items.filter { fm.fileExists(atPath: hostDir.appendingPathComponent($0).path) }
         try parallelForEach(existingItems) { item in
             let src = hostDir.appendingPathComponent(item)
@@ -193,14 +264,14 @@ enum PearHostPreparer {
 
         // Retarget libswiftUIKit.dylib only if not already macOS-platform.
         let overlay = frameworksDir.appendingPathComponent("libswiftUIKit.dylib")
-        if fm.fileExists(atPath: overlay.path),
+        if existingItems.contains("libswiftUIKit.dylib"), fm.fileExists(atPath: overlay.path),
            (try? BinaryPatcher.buildPlatform(at: overlay)) != BinaryPatcher.Platform.macOS {
             try retargetMachO(at: overlay, hostFrameworks: host)
         }
 
         // Only sign copied host Mach-O images if an un-signed build tree was used.
         var unsigned: [URL] = []
-        for fw in host {
+        for fw in host where existingItems.contains("\(fw).framework") {
             let fwBin = frameworksDir.appendingPathComponent("\(fw).framework/\(fw)")
             if fm.fileExists(atPath: fwBin.path),
                let info = readMachOLoadInfo(at: fwBin), !info.hasCodeSignature {
@@ -208,7 +279,7 @@ enum PearHostPreparer {
             }
         }
         let cxx = frameworksDir.appendingPathComponent("libcxxcompat.dylib")
-        if fm.fileExists(atPath: cxx.path),
+        if existingItems.contains("libcxxcompat.dylib"), fm.fileExists(atPath: cxx.path),
            let info = readMachOLoadInfo(at: cxx), !info.hasCodeSignature {
             unsigned.append(cxx)
         }
@@ -266,15 +337,26 @@ enum PearHostPreparer {
         if !currentRpaths.contains("/usr/lib/swift") {
             installNameArgs.append(contentsOf: ["-add_rpath", "/usr/lib/swift"])
         }
+        // Older preparations embedded their original installation path.
+        // After a disk switch or copy that path can still exist, so dyld can
+        // pick an older runtime before reaching the bundle's relative path.
+        for path in Set(currentRpaths).sorted() where path.hasPrefix("/") {
+            let components = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+            if components.count >= 2, components.last == "Frameworks",
+               components[components.count - 2].hasSuffix(".app") {
+                installNameArgs.append(contentsOf: ["-delete_rpath", path])
+            }
+        }
         // PearHost frameworks are reached through @rpath; apps built without
         // embedded frameworks (older titles) carry no such rpath.
         if mainExecutable && !currentRpaths.contains("@executable_path/Frameworks") {
             installNameArgs.append(contentsOf: ["-add_rpath", "@executable_path/Frameworks"])
         }
 
-        var updatedLoadCommands = false
         if !installNameArgs.isEmpty {
-            updatedLoadCommands = runTool("/usr/bin/install_name_tool", installNameArgs + [url.path]) == 0
+            guard runTool("/usr/bin/install_name_tool", installNameArgs + [url.path]) == 0 else {
+                throw PearError.invalidPackage("Could not update library paths in \(url.lastPathComponent)")
+            }
         }
 
         // dyld gathers interposers at launch. Games that dlopen UnityFramework
@@ -285,7 +367,7 @@ enum PearHostPreparer {
             addedUIKit = try BinaryPatcher.addLoadDylib(at: url, path: uikit, allowMacOS: true)
         }
 
-        let modified = deduped || removedRuntime || platformPatched || updatedLoadCommands || addedUIKit
+        let modified = deduped || removedRuntime || platformPatched || !installNameArgs.isEmpty || addedUIKit
         if modified || info?.hasCodeSignature == false {
             _ = runTool("/usr/bin/codesign", ["-f", "-s", "-", url.path])
         }

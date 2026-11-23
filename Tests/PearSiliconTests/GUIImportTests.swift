@@ -24,6 +24,54 @@ final class GUIImportTests: XCTestCase {
         XCTAssertFalse(state.isBusy)
     }
 
+    func testUniversalImportRoutesMixedItemsIndependentlyOfSelectedPlatform() async throws {
+        let fixture = try ManagedAppTestFixture()
+        defer { fixture.remove() }
+        let mac = try fixture.macBundle()
+        try FileManager.default.createDirectory(at: fixture.library, withIntermediateDirectories: true)
+        let engine = try WineEngineStore(rootURL: fixture.library.appendingPathComponent("Engines")).registerLocalEngine(
+            from: fixture.engineFolder(), id: "test-wine", name: "Test", version: "1",
+            executablePath: "bin/wine64", distribution: .metalSharp, licenseConfirmed: true
+        )
+        let exe = fixture.imports.appendingPathComponent("Setup.EXE")
+        try fixture.write(ManagedAppTestFixture.pe(), to: exe)
+        let archive = fixture.imports.appendingPathComponent("Archive.IPA")
+        try fixture.write(Data(), to: archive)
+        let iosBundle = fixture.library.appendingPathComponent("ios-apps/com.pearsilicon.iosfixture.app")
+        let info = ["CFBundleIdentifier": "com.pearsilicon.iosfixture", "CFBundleExecutable": "Game"]
+        var archives: [URL] = []
+        let imports = PackageImportOperations(
+            installArchive: { url in
+                archives.append(url)
+                try fixture.write(try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0),
+                                  to: iosBundle.appendingPathComponent("Info.plist"))
+                try fixture.write(ManagedAppTestFixture.machO(platform: 2), to: iosBundle.appendingPathComponent("Game"))
+                return try PackageInstaller(libraryURL: iosBundle.deletingLastPathComponent()).makeInstalledApp(fromBundleAt: iosBundle)
+            },
+            installBundle: { _ in throw GUIImportFailure.unexpectedBundle }
+        )
+        let state = AppState(storageRootURL: fixture.library, packageImports: imports, observesWorkspace: false)
+        try await state.refreshLibrary()
+        let availableEngine = try XCTUnwrap(state.wineEngines.first)
+        XCTAssertEqual(availableEngine.id, engine.id)
+        state.platform = .wine
+
+        await state.importItems(at: [mac, exe, archive]) { _, _ in
+            XCTFail("Individual files should never present a folder executable chooser")
+            return nil
+        }
+
+        XCTAssertEqual(archives, [archive])
+        XCTAssertEqual(state.platform, .iOS)
+        XCTAssertEqual(state.selectedApp?.id, "com.pearsilicon.iosfixture")
+        let macEntry = try XCTUnwrap(state.managedEntries.first { $0.platform == .macOS })
+        XCTAssertEqual(macEntry.manifest.id, "com.pearsilicon.fixture")
+        let wineEntry = try XCTUnwrap(state.managedEntries.first { $0.platform == .wine })
+        XCTAssertEqual(wineEntry.manifest.wineEngineID, engine.id)
+        XCTAssertEqual(wineEntry.manifest.wineInstallState, "pending")
+        XCTAssertFalse(state.isRunning(wineEntry))
+    }
+
     func testOverlappingImportsStayFIFOAndBusyUntilTheLastRequestFinishes() async throws {
         let fixture = try GUIImportFixture()
         defer { fixture.remove() }

@@ -4,6 +4,7 @@ import SwiftUI
 struct AppDetailView: View {
     @EnvironmentObject private var state: AppState
     let app: InstalledApp
+    let availableWidth: CGFloat
 
     enum Tab: String, CaseIterable, Identifiable {
         case overview = "Overview"
@@ -16,90 +17,84 @@ struct AppDetailView: View {
     @Namespace private var tabNamespace
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header
-            tabBar
-
-            switch tab {
-            case .overview:
-                ScrollView { overview }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .keymap:
-                KeymapEditorView(app: app)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header
+                detailControls
+                switch tab {
+                case .overview: overview
+                case .keymap: KeymapEditorView(app: app, availableWidth: min(1120, availableWidth) - 40)
+                }
             }
+            .padding(20)
+            .frame(maxWidth: 1120)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .defaultScrollAnchor(.top)
     }
 
     // MARK: - Header
 
-    private var compatibility: AppCompatibility {
-        state.compatibility(for: app)
-    }
-
     private var header: some View {
-        GlassCard(cornerRadius: 24) {
-            HStack(alignment: .center, spacing: 18) {
-                appIcon
-
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 9) {
-                        Text(app.displayName)
-                            .font(.system(.title, design: .rounded).weight(.bold))
-                            .lineLimit(1)
-                        statusPill
-                        if state.isLegacy32Bit(app) {
-                            Text("32-bit")
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(.blue.opacity(0.18)))
-                                .foregroundStyle(.blue)
-                        }
-                    }
-                    Text(app.id)
-                        .font(.subheadline.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    HStack(spacing: 7) {
-                        metaBadge("v\(app.shortVersion) (\(app.bundleVersion))", symbol: "shippingbox")
-                        if let minimum = app.minimumOSVersion {
-                            metaBadge("iOS \(minimum)+", symbol: "iphone")
-                        }
-                    }
+        GlassCard(cornerRadius: 28) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 18) {
+                    appIcon
+                    gameTitle.frame(minWidth: 240, maxWidth: .infinity, alignment: .leading)
+                    launchControl
                 }
-
-                Spacer(minLength: 12)
-
-                HStack(spacing: 8) {
-                    if state.isRunning(app) {
-                        Button(role: .destructive) {
-                            state.stop(app)
-                        } label: {
-                            Label("Stop", systemImage: "stop.fill")
-                                .padding(.horizontal, 6)
-                        }
-                        .buttonStyle(.glass)
-                        .tint(.red)
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(spacing: 14) {
+                        appIcon
+                        gameTitle
                     }
-
-                    Button {
-                        Task { await state.launch(app) }
-                    } label: {
-                        Label(L10n.launch, systemImage: "play.fill")
-                            .padding(.horizontal, 8)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(state.iOSAppsLockedForRuntimeRefresh)
-                    .help(state.iOSAppsLockedForRuntimeRefresh
-                          ? "iOS apps are being updated to the new runtime. They can be opened when it finishes." : "")
+                    launchControl
                 }
-                .fixedSize()
             }
         }
+    }
+
+    private var gameTitle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(app.displayName)
+                .font(.title.weight(.semibold))
+                .lineLimit(2)
+            Text(app.id)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 7) {
+                    statusPill
+                    if app.shortVersion != "—" {
+                        metaBadge("v\(app.shortVersion)", symbol: "shippingbox")
+                    }
+                }
+                statusPill
+            }
+        }
+    }
+
+    private var launchControl: some View {
+        Group {
+            if state.isRunning(app) {
+                Button(role: .destructive) { state.stop(app) } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .buttonStyle(.glass)
+            } else {
+                Button {
+                    Task { await state.launch(app) }
+                } label: {
+                    Label(L10n.launch, systemImage: "play.fill")
+                }
+                .buttonStyle(.glassProminent)
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(state.isBusy || state.iOSAppsLockedForRuntimeRefresh)
+            }
+        }
+        .fixedSize()
     }
 
     private var statusPill: some View {
@@ -126,7 +121,7 @@ struct AppDetailView: View {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 84, height: 84)
+                .frame(width: 68, height: 68)
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -136,12 +131,63 @@ struct AppDetailView: View {
         } else {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(.quaternary)
-                .frame(width: 84, height: 84)
+                .frame(width: 68, height: 68)
                 .overlay(Image(systemName: "app.dashed").font(.title).foregroundStyle(.secondary))
         }
     }
 
     // MARK: - Tabs
+
+    private var detailControls: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                tabBar
+                Spacer(minLength: 2)
+                fileActions.fixedSize()
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                tabBar
+                ViewThatFits(in: .horizontal) {
+                    fileActions.fixedSize()
+                    fileActions.labelStyle(.iconOnly)
+                }
+            }
+        }
+    }
+
+    private var fileActions: some View {
+        HStack(spacing: 6) {
+            fileAction(L10n.revealInFinder, symbol: "folder") {
+                NSWorkspace.shared.activateFileViewerSelecting([app.bundleURL])
+            }
+            if state.isLegacy32Bit(app) {
+                fileAction("Save Data", symbol: "externaldrive") {
+                    let folder = AppPaths.legacySandboxDirectory(for: app.id)
+                    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    NSWorkspace.shared.activateFileViewerSelecting([folder])
+                }
+            } else {
+                fileAction("ODR packs", symbol: "shippingbox") {
+                    let folder = AppPaths.odrDirectory(for: app.id)
+                    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    NSWorkspace.shared.activateFileViewerSelecting([folder])
+                }
+            }
+            fileAction(L10n.uninstall, symbol: "trash", role: .destructive) {
+                state.uninstall(app)
+            }
+            .disabled(state.isBusy || state.iOSAppsLockedForRuntimeRefresh || state.isRunning(app))
+        }
+        .controlSize(.small)
+        .buttonStyle(.glass)
+    }
+
+    private func fileAction(_ title: String, symbol: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
+        Button(role: role, action: action) {
+            Label(title, systemImage: symbol)
+        }
+        .help(title)
+    }
 
     private var tabBar: some View {
         HStack(spacing: 4) {
@@ -163,12 +209,11 @@ struct AppDetailView: View {
                         }
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(tab == item ? .isSelected : [])
                 .foregroundStyle(tab == item ? .primary : .secondary)
             }
-            Spacer(minLength: 0)
         }
         .padding(4)
-        .frame(maxWidth: 330, alignment: .leading)
         .glassEffect(.regular, in: Capsule())
         .overlay(Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 1))
     }
@@ -176,17 +221,11 @@ struct AppDetailView: View {
     // MARK: - Overview
 
     private var overview: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(spacing: 16) {
-                detailsCard
-                compatibilityCard
-            }
-            .frame(maxWidth: .infinity)
-
-            VStack(spacing: 16) {
-                actionsCard
-            }
-            .frame(maxWidth: .infinity)
+        let wide = availableWidth >= 720
+        let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 16)) : AnyLayout(VStackLayout(spacing: 16))
+        return layout {
+            actionsCard.frame(maxWidth: .infinity, alignment: .topLeading)
+            detailsCard.frame(maxWidth: wide ? min(320, availableWidth * 0.37) : .infinity, alignment: .topLeading)
         }
         .padding(.bottom, 4)
     }
@@ -203,222 +242,69 @@ struct AppDetailView: View {
                         ? "32-bit iOS (PearLegacyEngine)"
                         : "64-bit iOS (Native Apple Silicon)"
                 )
-                infoRow(L10n.version, "\(app.shortVersion) (\(app.bundleVersion))")
+                infoRow(L10n.version, app.shortVersion)
                 infoRow(L10n.minimumOS, app.minimumOSVersion ?? "—")
                 infoRow(L10n.path, app.bundleURL.path, selectable: true)
             }
         }
     }
 
-    private var compatibilityCard: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    SectionTitle(text: "Compatibility")
-                    Spacer()
-                    StatusPill(text: "Automatic", tone: .neutral, symbol: "sparkles")
-                }
-
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: compatibility.isLegacyRuntime
-                          ? "wrench.and.screwdriver.fill" : "checkmark.seal.fill")
-                        .font(.title3)
-                        .foregroundStyle(compatibility.isLegacyRuntime ? Color.orange : Color.green)
-                        .frame(width: 24)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(compatibility.summary)
-                            .font(.callout.weight(.medium))
-                        Text(compatibility.detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                Divider().opacity(0.45)
-
-                bridgeRow("Window bridge", enabled: state.isLegacyBridgeEnabled(for: app))
-                bridgeRow("Mouse → touch", enabled: state.isMouseTouchFallbackEnabled(for: app))
-
-                if state.hasCompatibilityOverride(for: app) {
-                    Divider().opacity(0.45)
-                    HStack(spacing: 8) {
-                        Text("Manual override active")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Use automatic") {
-                            withAnimation(.snappy(duration: 0.2)) {
-                                state.clearCompatibilityOverrides(for: app)
-                            }
-                        }
-                        .buttonStyle(.glass)
-                        .controlSize(.small)
-                    }
-                }
-
-                Text("Applied automatically on launch. Overrides are available from the command line.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private func bridgeRow(_ title: String, enabled: Bool) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: enabled ? "checkmark.circle.fill" : "minus.circle")
-                .foregroundStyle(enabled ? Color.green : Color.secondary)
-            Text(title).font(.callout)
-            Spacer()
-            Text(enabled ? "On" : "Off")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private var actionsCard: some View {
         GlassCard {
-            VStack(alignment: .leading, spacing: 14) {
-                SectionTitle(text: "Actions")
+            VStack(alignment: .leading, spacing: 10) {
+                SectionTitle(text: "Game settings")
 
-                Button {
-                    Task { await state.launch(app) }
-                } label: {
-                    Label(L10n.launch, systemImage: "play.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.glassProminent)
-                .disabled(state.iOSAppsLockedForRuntimeRefresh)
-                if state.iOSAppsLockedForRuntimeRefresh {
-                    Text("Updating this app to the new runtime. You can open it when the update in the status bar finishes.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 9) {
+                    GridRow {
+                        Text("Game Mode")
+                        Toggle("Game Mode", isOn: Binding(
+                            get: { state.isGameModeEnabled(for: app) },
+                            set: { state.setGameModeEnabled($0, for: app) }
+                        ))
+                        .labelsHidden()
+                        .help("Enable low-latency tuning. Changes apply on relaunch.")
+                        .gridColumnAlignment(.trailing)
+                    }
 
-                if state.isLegacy32Bit(app) {
-                    legacy32Settings
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Toggle("Game Mode", isOn: Binding(
-                        get: { state.isGameModeEnabled(for: app) },
-                        set: { state.setGameModeEnabled($0, for: app) }
-                    ))
-                    .toggleStyle(.switch)
-                    Text("Keeps the game on Apple silicon's performance cores and turns off App Nap and timer coalescing. macOS Game Mode engages in full screen. Relaunch to apply.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Picker("Render Resolution", selection: Binding(
-                        get: { state.renderScale(for: app) },
-                        set: { state.setRenderScale($0, for: app) }
-                    )) {
-                        ForEach(AppSettings.renderScaleChoices, id: \.value) { choice in
-                            Text(choice.title).tag(choice.value)
+                    GridRow {
+                        Text("Render Resolution")
+                        Picker("Render Resolution", selection: Binding(
+                            get: { state.renderScale(for: app) },
+                            set: { state.setRenderScale($0, for: app) }
+                        )) {
+                            ForEach(AppSettings.renderScaleChoices, id: \.value) { choice in
+                                Text(choice.title).tag(choice.value)
+                            }
                         }
+                        .labelsHidden()
+                        .help("Lower the internal resolution to reduce GPU load. Changes apply on relaunch.")
                     }
-                    Text("Internal resolution follows the window size. Native renders every Retina pixel; lower settings save GPU time. Relaunch to apply.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Toggle("Performance HUD (FPS)", isOn: Binding(
-                        get: { state.isMetalHUDEnabled(for: app) },
-                        set: { state.setMetalHUDEnabled($0, for: app) }
-                    ))
-                    .toggleStyle(.switch)
-                    Text("Shows Apple's Metal HUD (FPS, GPU time, frame intervals) for every game, including OpenGL ES titles. Relaunch to apply.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Toggle("Allow pointer lock", isOn: Binding(
-                        get: { state.isPointerLockAllowed(for: app) },
-                        set: { state.setPointerLockAllowed($0, for: app) }
-                    ))
-                    .toggleStyle(.switch)
-                    Text("Needed for mouse-look cameras. Turn it off if the cursor gets trapped.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Label("PearHost (native macOS, no iOSSupport)", systemImage: "cpu")
-                        .font(.subheadline.weight(.medium))
-                    Text("64-bit apps run directly on PearRuntime's Rust UIKit, MetalKit and Metal-only frameworks without Mac Catalyst.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Divider().opacity(0.45)
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
-                    actionButton(L10n.revealInFinder, symbol: "folder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([app.bundleURL])
+                    GridRow {
+                        Text("Performance HUD (FPS)")
+                        Toggle("Performance HUD (FPS)", isOn: Binding(
+                            get: { state.isMetalHUDEnabled(for: app) },
+                            set: { state.setMetalHUDEnabled($0, for: app) }
+                        ))
+                        .labelsHidden()
+                        .help("Show frame rate and Metal performance metrics. Changes apply on relaunch.")
                     }
-                    if state.isLegacy32Bit(app) {
-                        actionButton("Save Data", symbol: "externaldrive") {
-                            let folder = AppPaths.legacySandboxDirectory(for: app.id)
-                            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                            NSWorkspace.shared.activateFileViewerSelecting([folder])
-                        }
-                    } else {
-                        actionButton("ODR packs", symbol: "shippingbox") {
-                            let folder = AppPaths.odrDirectory(for: app.id)
-                            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                            NSWorkspace.shared.activateFileViewerSelecting([folder])
-                        }
-                    }
-                    actionButton(L10n.uninstall, symbol: "trash", destructive: true) {
-                        state.uninstall(app)
+
+                    GridRow {
+                        Text("Allow pointer lock")
+                        Toggle("Allow pointer lock", isOn: Binding(
+                            get: { state.isPointerLockAllowed(for: app) },
+                            set: { state.setPointerLockAllowed($0, for: app) }
+                        ))
+                        .labelsHidden()
+                        .help("Allow mouse-look controls to capture the pointer.")
                     }
                 }
+                .font(.callout)
+                .controlSize(.small)
+                .toggleStyle(.switch)
             }
         }
-    }
-
-    /// Settings that only exist for 32-bit iOS titles running on
-    /// PearLegacyEngine. Kept separate so the 64-bit path stays unchanged.
-    private var legacy32Settings: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("PearLegacyEngine")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Toggle("Large Window", isOn: Binding(
-                get: { state.legacyLargeWindow(for: app) },
-                set: { state.setLegacyLargeWindow($0, for: app) }
-            ))
-            .toggleStyle(.switch)
-
-            Toggle("Start Fullscreen", isOn: Binding(
-                get: { state.isLegacyFullscreen(for: app) },
-                set: { state.setLegacyFullscreen($0, for: app) }
-            ))
-            .toggleStyle(.switch)
-        }
-    }
-
-    private func actionButton(
-        _ title: String,
-        symbol: String,
-        destructive: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(role: destructive ? .destructive : nil, action: action) {
-            Label(title, systemImage: symbol)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.glass)
     }
 
     private func infoRow(_ label: String, _ value: String, selectable: Bool = false) -> some View {

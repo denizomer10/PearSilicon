@@ -164,13 +164,11 @@ enum CLI {
             throw CLIError.message("usage: pearsilicon refresh-runtime <bundle-id|name>")
         }
         let app = try resolveApp(query)
-        guard let runtime = AppLauncher.runtimeLibraryURL() else {
+        guard let source = RuntimeRefreshSource.locate() else {
             throw CLIError.message("PearSilicon runtime was not found")
         }
         let installer = PackageInstaller(libraryURL: CLIPaths.shared.library)
-        let changed = try installer.refreshRuntimeIfNeeded(
-            for: app, sourceRuntimeDirectory: runtime.deletingLastPathComponent()
-        )
+        let changed = try installer.refreshRuntimeIfNeeded(for: app, source: source)
         print(changed ? "refreshed runtime for \(app.displayName)" : "runtime already current for \(app.displayName)")
         return 0
     }

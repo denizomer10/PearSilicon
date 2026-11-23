@@ -143,6 +143,8 @@ final class AppState: ObservableObject {
     private lazy var updater = AppUpdateService()
 
     @Published private(set) var wineReleaseCheck: WineReleaseCheck?
+    @Published private(set) var metalSharpUpdate: WineDistributionInstaller.Asset?
+    @Published private(set) var wineUpdateStatus: String?
 
     /// Managed launches are tracked by entry directory, never by a caller-supplied
     /// PID. Detached Wine helpers can outlive the direct child.
@@ -174,7 +176,7 @@ final class AppState: ObservableObject {
     /// The app whose launch is still being confirmed. A process that dies during
     /// startup (a crash or a missing runtime component) must not leave the
     /// status bar showing "Launching …" forever.
-    private var launchingAppID: String?
+    private var pendingIOSLaunch: (id: String, message: String)?
 
     // MARK: - Lifecycle
 
@@ -219,6 +221,8 @@ final class AppState: ObservableObject {
         storageRootURL = base
         portableLibrary = PortableLibrary(rootURL: base)
         wineApps = WineAppService(engines: WineEngineStore(rootURL: base.appendingPathComponent("Engines", isDirectory: true)))
+        metalSharpUpdate = nil
+        wineUpdateStatus = nil
         previousStorageRootURL = storageStore.previousRootURL
         libraryURL = base.appendingPathComponent(PortableLibrary.iOSFolder, isDirectory: true)
         packageInstaller = PackageInstaller(libraryURL: libraryURL)
@@ -226,7 +230,7 @@ final class AppState: ObservableObject {
         launcher = AppLauncher(libraryURL: libraryURL)
         iosApps = IOSAppService(launcher: launcher, installer: packageInstaller)
         keymapStore = KeymapStore(baseURL: base.appendingPathComponent("Keymaps", isDirectory: true))
-        currentKeymap = selectedApp.flatMap { try? keymapStore.load(for: $0.id) }
+        currentKeymap = selectedApp.flatMap { try? keymapStore.loadManual(for: $0.id) }
     }
 
     // MARK: - Running apps
@@ -342,6 +346,7 @@ final class AppState: ObservableObject {
     /// Running apps belong to the current library, so they must stop first.
     func selectStorageLocation(_ option: StorageLocationOption) async {
         guard option.rootURL.standardizedFileURL != storageRootURL.standardizedFileURL else { return }
+        guard !iOSAppsLockedForRuntimeRefresh else { return reportIOSAppsLocked() }
         guard !isBusy else { return }
         guard runningGames.isEmpty, runningManagedEntries.isEmpty else {
             statusMessage = L10n.error("Stop every running app before switching storage")
@@ -391,9 +396,9 @@ final class AppState: ObservableObject {
 
         // A launch is only "pending" until the app shows up as running. Once it
         // does, clear the transient status; the app is now the user's focus.
-        if let launching = launchingAppID, map[launching] != nil {
-            launchingAppID = nil
-            if statusMessage.hasPrefix("Launching ") { statusMessage = L10n.ready }
+        if let launch = pendingIOSLaunch, map[launch.id] != nil {
+            pendingIOSLaunch = nil
+            if statusMessage == launch.message { statusMessage = L10n.ready }
         }
 
         // Drop the transient "Stopping …" status once those apps are gone.
@@ -468,8 +473,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    private var libraryScanGeneration = 0
+
     func refreshLibrary() async throws {
-        let snapshot = portableLibrary.scan()
+        libraryScanGeneration += 1
+        let generation = libraryScanGeneration
+        let library = portableLibrary
+        let snapshot = await Task.detached(priority: .userInitiated) {
+            library.scan()
+        }.value
+        guard generation == libraryScanGeneration, library.rootURL == portableLibrary.rootURL else { return }
         self.installedApps = snapshot.iosApps
         self.managedEntries = snapshot.macEntries + snapshot.wineEntries
         self.libraryWarnings = snapshot.warnings
@@ -531,7 +544,15 @@ final class AppState: ObservableObject {
     /// (input translation is decided when the process starts).
     func setKeymapperEnabled(_ enabled: Bool, for app: InstalledApp) {
         AppSettings.defaults.set(enabled, forKey: "keymapper.enabled." + app.id)
-        if enabled { keymapperEnabledApps.insert(app.id) } else { keymapperEnabledApps.remove(app.id) }
+        if enabled {
+            keymapperEnabledApps.insert(app.id)
+            if let running = runningApps[app.id], !running.isTerminated {
+                attachKeymapper(for: app, pid: running.processIdentifier)
+            }
+        } else {
+            keymapperEnabledApps.remove(app.id)
+            overlays.removeValue(forKey: app.id)?.detach()
+        }
     }
 
     // MARK: - Metal HUD
@@ -575,25 +596,7 @@ final class AppState: ObservableObject {
     // MARK: - PearLegacyEngine (32-bit iOS runtime) options
 
     func isLegacy32Bit(_ app: InstalledApp) -> Bool {
-        AppLauncher.isLegacy32BitApp(app)
-    }
-
-    func legacyLargeWindow(for app: InstalledApp) -> Bool {
-        AppSettings.legacyLargeWindow(for: app.id)
-    }
-
-    func setLegacyLargeWindow(_ enabled: Bool, for app: InstalledApp) {
-        objectWillChange.send()
-        AppSettings.setLegacyLargeWindow(enabled, for: app.id)
-    }
-
-    func isLegacyFullscreen(for app: InstalledApp) -> Bool {
-        AppSettings.legacyFullscreen(for: app.id)
-    }
-
-    func setLegacyFullscreen(_ fullscreen: Bool, for app: InstalledApp) {
-        objectWillChange.send()
-        AppSettings.setLegacyFullscreen(fullscreen, for: app.id)
+        app.isLegacy32Bit
     }
 
     // MARK: - Game Mode and render resolution
@@ -671,7 +674,7 @@ final class AppState: ObservableObject {
     func select(_ app: InstalledApp?) {
         selection = app?.id
         selectedManagedEntryID = nil
-        currentKeymap = app.flatMap { try? keymapStore.load(for: $0.id) }
+        currentKeymap = app.flatMap { try? keymapStore.loadManual(for: $0.id) }
     }
 
     func select(_ entry: LibraryEntry?) {
@@ -955,7 +958,9 @@ final class AppState: ObservableObject {
 
     /// Download, verify and register `distribution`. The caller holds the busy
     /// flag; progress is published for the status bar.
-    private func performWineEngineInstall(_ distribution: WineDistribution) async -> WineEngine? {
+    private func performWineEngineInstall(
+        _ distribution: WineDistribution, checkedAsset: WineDistributionInstaller.Asset? = nil
+    ) async -> WineEngine? {
         // Do not download an x86_64 engine that cannot start on this Mac.
         guard distribution.nativeArm64 || WineDistribution.isRosettaInstalled else {
             statusMessage = L10n.error(
@@ -981,7 +986,7 @@ final class AppState: ObservableObject {
                     self.wineEngineInstall = progress
                 }
             }) {
-                try await installer.install(distribution, store: store) { [weak self] message in
+                try await installer.install(distribution, store: store, checkedAsset: checkedAsset) { [weak self] message in
                     Task { @MainActor in
                         guard let self else { return }
                         self.statusMessage = message
@@ -1229,7 +1234,8 @@ final class AppState: ObservableObject {
         statusMessage = L10n.error("Could not open Privacy & Security settings")
     }
 
-    private func updateManifest(_ entry: LibraryEntry, change: (inout LibraryManifest) -> Void) {
+    @discardableResult
+    private func updateManifest(_ entry: LibraryEntry, change: (inout LibraryManifest) -> Void) -> Bool {
         do {
             var manifest = entry.manifest
             change(&manifest)
@@ -1239,8 +1245,10 @@ final class AppState: ObservableObject {
             if let index = managedEntries.firstIndex(where: { $0.id == entry.id }) {
                 managedEntries[index] = LibraryEntry(manifest: manifest, directoryURL: entry.directoryURL)
             }
+            return true
         } catch {
             statusMessage = L10n.error("Could not update \(entry.displayName): \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -1428,63 +1436,65 @@ final class AppState: ObservableObject {
     /// While set, iOS apps cannot be launched, installed over, removed or
     /// re-prepared: their bundles may be mid-swap. Everything else stays usable.
     @Published private(set) var runtimeRefresh: RuntimeRefreshProgress?
+    @Published private(set) var runtimeRefreshStatus: String?
 
     var iOSAppsLockedForRuntimeRefresh: Bool { runtimeRefresh != nil }
 
     private static let refreshedRuntimeKey = "runtime.refreshedFingerprint"
 
-    private var bundledRuntimeDirectory: URL? {
-        AppLauncher.runtimeLibraryURL()?.deletingLastPathComponent()
-    }
-
     /// Called at startup. When the runtime bundled with this PearSilicon build
     /// differs from the one last pushed to the installed iOS apps (that is,
     /// after an update), refresh them in the background.
     func refreshRuntimesIfPearSiliconWasUpdated() {
-        guard runtimeRefresh == nil, let source = bundledRuntimeDirectory else { return }
+        guard runtimeRefresh == nil, let source = RuntimeRefreshSource.locate() else { return }
         Task { @MainActor [weak self] in
             let current = await Task.detached(priority: .utility) {
-                try? RuntimeRevision.fingerprint(in: source)
+                try? source.fingerprint()
             }.value
             guard let self, let current else { return }
             let stored = AppSettings.defaults.string(forKey: Self.refreshedRuntimeKey)
             guard stored != current else { return }
-            await self.runRuntimeRefresh(automatic: true, fingerprint: current)
+            await self.runRuntimeRefresh(source: source, automatic: true, fingerprint: current)
         }
     }
 
     /// Manual "Refresh iOS Runtimes": the same background refresh, always run.
     func refreshInstalledRuntimes() async {
-        guard let source = bundledRuntimeDirectory else {
-            statusMessage = L10n.error("No runtime was found next to PearSilicon")
+        guard let source = RuntimeRefreshSource.locate() else {
+            setRuntimeRefreshStatus(L10n.error("No runtime was found next to PearSilicon"))
             return
         }
         let fingerprint = await Task.detached(priority: .utility) {
-            try? RuntimeRevision.fingerprint(in: source)
+            try? source.fingerprint()
         }.value
-        await runRuntimeRefresh(automatic: false, fingerprint: fingerprint)
+        await runRuntimeRefresh(source: source, automatic: false, fingerprint: fingerprint)
     }
 
     /// Pushes the bundled runtime into every installed iOS app whose runtime
     /// differs. Each app is prepared and re-signed in a staged copy off the main
     /// thread, under that app's launch lease (so the CLI cannot start it
     /// either). Running apps are skipped and retried on the next launch.
-    private func runRuntimeRefresh(automatic: Bool, fingerprint: String?) async {
-        guard runtimeRefresh == nil, let source = bundledRuntimeDirectory else { return }
+    private func runRuntimeRefresh(source: RuntimeRefreshSource, automatic: Bool, fingerprint: String?) async {
+        guard runtimeRefresh == nil else { return }
         let apps = installedApps
         guard !apps.isEmpty else {
             if let fingerprint { AppSettings.defaults.set(fingerprint, forKey: Self.refreshedRuntimeKey) }
+            if !automatic { setRuntimeRefreshStatus("Runtime refresh complete: no iOS apps installed") }
             return
         }
         let installer = packageInstaller
         let library = libraryURL
         runtimeRefresh = RuntimeRefreshProgress(total: apps.count, done: 0, current: "")
+        let hostRuntime = await Task.detached(priority: .utility) {
+            if case .pearHost(let host) = source { return PearHostPreparer.runtimeSnapshot(host) }
+            return nil
+        }.value
         var changed = 0, current = 0
         var failures: [String] = []
         var skippedRunning: [String] = []
         for app in apps {
             runtimeRefresh?.current = app.displayName
-            if runningApps[app.id] != nil || runningGames.contains(where: { $0.id == app.id }) {
+            if isRunning(app) {
                 skippedRunning.append(app.displayName)
                 runtimeRefresh?.done += 1
                 continue
@@ -1494,7 +1504,7 @@ final class AppState: ObservableObject {
                     let lease = try AppLaunchLease.acquire(appID: app.id, libraryURL: library)
                     defer { lease.release() }
                     return .success(try installer.refreshRuntimeIfNeeded(
-                        for: app, sourceRuntimeDirectory: source, launchLease: lease
+                        for: app, source: source, launchLease: lease, hostRuntime: hostRuntime
                     ))
                 } catch {
                     return .failure(error)
@@ -1513,17 +1523,22 @@ final class AppState: ObservableObject {
         }
         let prefix = automatic ? "iOS runtime updated after the PearSilicon update" : "Runtime refresh complete"
         if !failures.isEmpty {
-            statusMessage = L10n.error(
+            setRuntimeRefreshStatus(L10n.error(
                 "Runtime refresh: \(changed) updated, \(current) current, \(failures.count) failed. "
                 + failures.prefix(2).joined(separator: " | ")
-            )
+            ))
         } else if !skippedRunning.isEmpty {
-            statusMessage = "\(prefix): \(changed) updated. Close \(skippedRunning.joined(separator: ", ")) and relaunch PearSilicon to update it."
+            setRuntimeRefreshStatus("\(prefix): \(changed) updated. Close \(skippedRunning.joined(separator: ", ")) and relaunch PearSilicon to update it.")
         } else if automatic && changed == 0 {
             statusMessage = L10n.ready
         } else {
-            statusMessage = "\(prefix): \(changed) updated, \(current) already current"
+            setRuntimeRefreshStatus("\(prefix): \(changed) updated, \(current) already current")
         }
+    }
+
+    private func setRuntimeRefreshStatus(_ message: String) {
+        runtimeRefreshStatus = message
+        statusMessage = message
     }
 
     /// Shown when an iOS action waits for the background runtime refresh.
@@ -1534,12 +1549,67 @@ final class AppState: ObservableObject {
 
     // MARK: - Install
 
-    func install(packageURLs: [URL]) async {
+    func importItems(
+        at urls: [URL],
+        chooseExecutable: (URL, [WineExecutableCandidate]) async -> String?
+    ) async {
+        for url in urls {
+            guard !Task.isCancelled else { return }
+            var directory: ObjCBool = false
+            guard url.isFileURL, FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) else {
+                statusMessage = L10n.error("Could not open \(url.lastPathComponent)")
+                continue
+            }
+
+            switch url.pathExtension.lowercased() {
+            case "ipa" where !directory.boolValue, "app" where directory.boolValue:
+                await install(packageURLs: [url], revealImported: true)
+            case "exe" where !directory.boolValue:
+                guard validateWindowsImport(url), let engine = await ensureDefaultWineEngine() else { continue }
+                await importWindowsExecutable(at: url, engineID: engine.id, launchInstaller: false)
+            default:
+                if directory.boolValue, !["ipa", "app", "exe"].contains(url.pathExtension.lowercased()) {
+                    let candidates = await Task.detached(priority: .userInitiated) {
+                        WineExecutableDiscovery.candidates(in: url)
+                    }.value
+                    guard let first = candidates.first else {
+                        if let existing = wineEntry(withID: url.lastPathComponent) {
+                            platform = .wine
+                            select(existing)
+                            statusMessage = "Already in your library: \(existing.displayName)"
+                        } else {
+                            statusMessage = L10n.error("No Windows .exe found in \(url.lastPathComponent)")
+                        }
+                        continue
+                    }
+                    let executable = candidates.count == 1 ? first.path : await chooseExecutable(url, candidates)
+                    guard let executable, validateWindowsImport(url.appendingPathComponent(executable)),
+                          let engine = await ensureDefaultWineEngine() else { continue }
+                    await importWindowsFolder(at: url, executablePath: executable, engineID: engine.id, launchInstaller: false)
+                } else {
+                    statusMessage = L10n.error("Choose an .ipa, .app, .exe, or Windows program folder: \(url.lastPathComponent)")
+                }
+            }
+        }
+    }
+
+    private func validateWindowsImport(_ executable: URL) -> Bool {
+        do {
+            try ManagedExecutable.validatePE(executable)
+            return true
+        } catch {
+            statusMessage = L10n.error("\(executable.lastPathComponent): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    func install(packageURLs: [URL], revealImported: Bool = false) async {
         guard !packageURLs.isEmpty else { return }
-        guard !iOSAppsLockedForRuntimeRefresh else { return reportIOSAppsLocked() }
         guard await acquireImportSlot() else { return }
         defer { releaseImportSlot() }
 
+        var importedMac: LibraryEntry?
+        var importedIOS: InstalledApp?
         for url in packageURLs {
             // Cancellation applies to this request only, and stops the remaining
             // packages in its batch. It never cancels the active predecessor.
@@ -1557,6 +1627,8 @@ final class AppState: ObservableObject {
                         atPath: url.appendingPathComponent("Contents/Info.plist").path
                     )) {
                     let entry = try await importMacApp(entry: url)
+                    importedMac = entry
+                    importedIOS = nil
                     if Quarantine.isQuarantined(entry.payloadURL) {
                         quarantinedMacEntryIDs.insert(entry.id)
                         if autoApproveImportedMacApps {
@@ -1578,13 +1650,13 @@ final class AppState: ObservableObject {
                     continue
                 }
 
-                let app = try await packageImports.install(at: url)
-
-                // Auto-generate a starting keymap if the app has none yet.
-                if try keymapStore.load(for: app.id) == nil {
-                    try keymapStore.save(KeymapGenerator.generate(for: app))
+                guard !iOSAppsLockedForRuntimeRefresh else {
+                    reportIOSAppsLocked()
+                    continue
                 }
-
+                let app = try await packageImports.install(at: url)
+                importedIOS = app
+                importedMac = nil
                 statusMessage = L10n.installed(app.displayName)
             } catch {
                 statusMessage = L10n.error("\(url.lastPathComponent): \(error.localizedDescription)")
@@ -1592,6 +1664,15 @@ final class AppState: ObservableObject {
         }
 
         try? await refreshLibrary()
+        if revealImported {
+            if let importedMac {
+                platform = .macOS
+                select(importedMac)
+            } else if let importedIOS {
+                platform = .iOS
+                select(importedIOS)
+            }
+        }
     }
 
     /// Runs the copy-only Mac importer off the main thread; a large bundle copy
@@ -1604,7 +1685,7 @@ final class AppState: ObservableObject {
         }.value
     }
 
-    func importWindowsFolder(at url: URL, executablePath: String, engineID: String) async {
+    func importWindowsFolder(at url: URL, executablePath: String, engineID: String, launchInstaller: Bool = true) async {
         guard await acquireImportSlot() else { return }
         defer { releaseImportSlot() }
         do {
@@ -1619,15 +1700,15 @@ final class AppState: ObservableObject {
             }.value
             try await refreshLibrary()
             platform = .wine
-            selectedManagedEntryID = entry.id
+            select(entry)
             statusMessage = "Installed Windows game: \(entry.displayName)"
-            if entry.manifest.wineInstaller == true { Task { await self.launch(entry) } }
+            if launchInstaller, entry.manifest.wineInstaller == true { Task { await self.launch(entry) } }
         } catch {
             statusMessage = L10n.error("\(url.lastPathComponent): \(error.localizedDescription)")
         }
     }
 
-    func importWindowsExecutable(at url: URL, engineID: String) async {
+    func importWindowsExecutable(at url: URL, engineID: String, launchInstaller: Bool = true) async {
         guard await acquireImportSlot() else { return }
         defer { releaseImportSlot() }
         do {
@@ -1641,9 +1722,9 @@ final class AppState: ObservableObject {
             }.value
             try await refreshLibrary()
             platform = .wine
-            selectedManagedEntryID = entry.id
+            select(entry)
             statusMessage = "Installed Windows program: \(entry.displayName) — \(ManagedAppService.windowsExecutableOnlyImportHint)"
-            if entry.manifest.wineInstaller == true { Task { await self.launch(entry) } }
+            if launchInstaller, entry.manifest.wineInstaller == true { Task { await self.launch(entry) } }
         } catch {
             statusMessage = L10n.error("\(url.lastPathComponent): \(error.localizedDescription)")
         }
@@ -1717,7 +1798,11 @@ final class AppState: ObservableObject {
         // Gamepad mode owns the input path, so the touch keymap is not passed.
         let virtualGamepad = isVirtualGamepadEnabled(for: app)
         let enabled = isKeymapperEnabled(for: app) && !virtualGamepad
-        let keymapURL = enabled ? keymapStore.fileURL(for: app.id) : nil
+        let keymapURL = enabled && (try? keymapStore.loadManual(for: app.id)) != nil
+            ? keymapStore.fileURL(for: app.id) : nil
+        let message = L10n.launching(app.displayName)
+        pendingIOSLaunch = (app.id, message)
+        statusMessage = message
 
         do {
             let running = try await iosApps.launch(
@@ -1729,34 +1814,27 @@ final class AppState: ObservableObject {
                 virtualGamepad: virtualGamepad,
                 virtualGamepadMapping: virtualGamepadMapping(for: app)
             )
-            statusMessage = L10n.launching(app.displayName)
-            launchingAppID = app.id
-
             // Reconcile a launch that never becomes visible: if the process is
             // not running a few seconds later, say so instead of leaving the
             // status bar stuck on "Launching".
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
-                guard let self, self.launchingAppID == app.id else { return }
+                guard let self, self.pendingIOSLaunch?.id == app.id else { return }
                 self.refreshRunningApps()
-                if self.launchingAppID == app.id {
-                    self.launchingAppID = nil
-                    if self.statusMessage.hasPrefix("Launching ") {
+                if self.pendingIOSLaunch?.id == app.id {
+                    self.pendingIOSLaunch = nil
+                    if self.statusMessage == message {
                         self.statusMessage = L10n.error("\(app.displayName) exited during launch")
                     }
                 }
             }
 
-            // Own the keymapper UI from here: a small overlay button + editor over
-            // the game window. The game process stays free of added UI.
-            overlays[app.id]?.detach()
-            if enabled, let pid = running?.processIdentifier {
-                let overlay = GameKeymapperOverlay(bundleID: app.id, keymapStore: keymapStore)
-                overlay.attach(pid: pid)
-                overlays[app.id] = overlay
+            if isKeymapperEnabled(for: app), let pid = running?.processIdentifier {
+                attachKeymapper(for: app, pid: pid)
             }
             refreshRunningApps()
         } catch {
+            if pendingIOSLaunch?.id == app.id { pendingIOSLaunch = nil }
             statusMessage = L10n.error("Launch failed: \(error.localizedDescription)")
         }
     }
@@ -1795,20 +1873,10 @@ final class AppState: ObservableObject {
 
     // MARK: - Keymap
 
-    func generateKeymap(for app: InstalledApp) {
-        do {
-            let keymap = KeymapGenerator.generate(for: app)
-            try keymapStore.save(keymap)
-            currentKeymap = keymap
-            statusMessage = "Keymap generated for \(app.displayName)"
-        } catch {
-            statusMessage = L10n.error("Keymap generation failed: \(error.localizedDescription)")
-        }
-    }
-
     func saveKeymap(_ keymap: Keymap) {
         do {
             try keymapStore.save(keymap)
+            overlays[keymap.bundleID]?.updateKeymap(keymap)
             currentKeymap = keymap
             statusMessage = "Keymap saved"
         } catch {
@@ -1818,21 +1886,69 @@ final class AppState: ObservableObject {
 
     // MARK: - Overlay
 
-    /// Shows the keymapper overlay over `app` if it is currently running. Lets the
-    /// UI be opened for a game launched outside the app (or after a relaunch).
-    func openOverlay(for app: InstalledApp) {
-        guard let running = AppLauncher.runningApplication(for: app.id),
-              !running.isTerminated else {
-            statusMessage = L10n.error("\(app.displayName) is not running")
-            return
+    private func attachKeymapper(for app: InstalledApp, pid: pid_t) {
+        let store = keymapStore
+        let overlay = overlays[app.id] ?? GameKeymapperOverlay(bundleID: app.id, keymapStore: store) { [weak self] keymap in
+            try store.save(keymap)
+            if self?.selection == app.id { self?.currentKeymap = keymap }
+            self?.statusMessage = "Keymap saved"
         }
-        let overlay = overlays[app.id] ?? GameKeymapperOverlay(bundleID: app.id, keymapStore: keymapStore)
-        overlay.attach(pid: running.processIdentifier)
+        overlay.attach(pid: pid)
         overlays[app.id] = overlay
-        statusMessage = "Keymapper overlay: \(app.displayName)"
     }
 
     // MARK: - Wine engines
+
+    func checkForMetalSharpUpdate() async {
+        guard !isBusy,
+              case .githubRelease(let repository, let pattern) = WineDistribution.metalSharp.source else { return }
+        isBusy = true
+        metalSharpUpdate = nil
+        wineUpdateStatus = "Checking for Wine updates…"
+        defer { finishBusyWork() }
+        do {
+            let asset = try await WineDistributionInstaller.latestAsset(repository: repository, pattern: pattern)
+            reloadEngines()
+            if let installed = wineEngines.first,
+               WineDistribution.compareVersions(asset.version, installed.version) != .orderedDescending {
+                wineUpdateStatus = "Wine \(installed.version) is up to date."
+            } else {
+                metalSharpUpdate = asset
+                wineUpdateStatus = "MetalSharp Wine \(asset.version) is available."
+            }
+        } catch {
+            wineUpdateStatus = L10n.error(error.localizedDescription)
+        }
+    }
+
+    func applyMetalSharpUpdate() async {
+        guard !isBusy, let asset = metalSharpUpdate else { return }
+        guard !runningManagedEntries.contains(where: { $0.platform == .wine }) else {
+            wineUpdateStatus = "Stop Windows games before updating Wine."
+            return
+        }
+        let previousIDs = Set(wineEngines.filter {
+            WineDistribution.compareVersions($0.version, asset.version) == .orderedAscending
+        }.map(\.id))
+        let games = managedEntries.filter {
+            $0.platform == .wine && $0.manifest.wineEngineID.map(previousIDs.contains) == true
+        }
+        isBusy = true
+        wineUpdateStatus = "Installing MetalSharp Wine \(asset.version)…"
+        defer { finishBusyWork() }
+        guard let engine = await performWineEngineInstall(.metalSharp, checkedAsset: asset) else {
+            wineUpdateStatus = statusMessage
+            return
+        }
+        var linked = 0
+        for game in games where !isRunning(game) {
+            if updateManifest(game, change: { $0.wineEngineID = engine.id }) { linked += 1 }
+        }
+        metalSharpUpdate = nil
+        wineUpdateStatus = linked == games.count
+            ? "Installed MetalSharp Wine \(engine.version)."
+            : "Installed MetalSharp Wine \(engine.version). Switched \(linked) of \(games.count) games."
+    }
 
     func engine(id: String?) -> WineEngine? {
         guard let id else { return nil }

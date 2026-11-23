@@ -82,7 +82,8 @@ final class AppLauncher: @unchecked Sendable {
             extraEnvironment: extraEnvironment,
             nativeContainer: nativeContainer,
             sandboxed: sandboxed,
-            activate: activate
+            activate: activate,
+            launchLease: lease
         )
     }
 
@@ -485,26 +486,19 @@ final class AppLauncher: @unchecked Sendable {
         extraEnvironment: [String: String],
         nativeContainer: Bool,
         sandboxed: Bool = false,
-        activate: Bool
+        activate: Bool,
+        launchLease: AppLaunchLease
     ) async throws -> NSRunningApplication? {
         if sandboxed {
             throw PearError.launchFailed("sandbox-exec launch is retired; PearHost runs directly on macOS.")
         }
         let bundleURL = app.bundleURL
-        let executableName = app.executableName
+        let installer = PackageInstaller(libraryURL: libraryURL)
         try await Task.detached(priority: .userInitiated) {
-            if !PearHostPreparer.isPrepared(bundleURL) || PearHostPreparer.needsPreparation(bundleURL) {
-                guard let hostDir = PearHostPreparer.locateHostFrameworks() else {
-                    throw PearError.missingRuntimeComponent("PearHost frameworks (run runtime/host/build-host.sh)")
-                }
-                try PearHostPreparer.prepare(
-                    bundleURL: bundleURL,
-                    executableName: executableName,
-                    hostDir: hostDir
-                )
-            } else if let hostDir = PearHostPreparer.locateHostFrameworks() {
-                // A rebuilt PearHost replaces the copies inside the bundle.
-                try PearHostPreparer.refreshHostFrameworksIfStale(bundleURL: bundleURL, hostDir: hostDir)
+            if let host = PearHostPreparer.locateHostFrameworks() {
+                _ = try installer.refreshRuntimeIfNeeded(for: app, source: .pearHost(host), launchLease: launchLease)
+            } else if !PearHostPreparer.isPrepared(bundleURL) || PearHostPreparer.needsPreparation(bundleURL) {
+                throw PearError.missingRuntimeComponent("PearHost frameworks (run runtime/host/build-host.sh)")
             }
         }.value
 
@@ -574,13 +568,7 @@ final class AppLauncher: @unchecked Sendable {
             resourceDir: resourceDir
         )
 
-        var args = [app.bundleURL.path]
-        if AppSettings.legacyLargeWindow(for: app.id) {
-            args.append("--large-window")
-        }
-        if AppSettings.legacyFullscreen(for: app.id) {
-            args.append("--fullscreen")
-        }
+        var args = [app.bundleURL.path, "--large-window"]
         // The engine renders through ANGLE on Metal, so Apple's Metal HUD works
         // for 32-bit games and shows more (FPS, GPU time, frame intervals).
         // The engine's own segment overlay is never enabled as well, so only

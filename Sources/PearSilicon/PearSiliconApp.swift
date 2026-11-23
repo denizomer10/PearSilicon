@@ -8,12 +8,12 @@ struct PearSiliconApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
-                .frame(minWidth: 960, minHeight: 600)
+                .frame(minWidth: 640, minHeight: 420)
                 .task {
                     await appState.bootstrap()
                 }
         }
-        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1100, height: 720)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appInfo) {

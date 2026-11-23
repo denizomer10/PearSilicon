@@ -42,28 +42,6 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: "updates.automatic") }
     }
 
-    // MARK: - PearLegacyEngine (32-bit iOS runtime) options
-
-    /// Whether to open the 32-bit iOS app with an enlarged, resizable window
-    /// (`--large-window`). Defaults to true when unset.
-    static func legacyLargeWindow(for bundleID: String) -> Bool {
-        let key = "legacy32.largeWindow." + bundleID
-        return defaults.object(forKey: key) == nil ? true : defaults.bool(forKey: key)
-    }
-
-    static func setLegacyLargeWindow(_ enabled: Bool, for bundleID: String) {
-        defaults.set(enabled, forKey: "legacy32.largeWindow." + bundleID)
-    }
-
-    /// Whether to start the 32-bit iOS app in fullscreen mode (`--fullscreen`).
-    static func legacyFullscreen(for bundleID: String) -> Bool {
-        defaults.bool(forKey: "legacy32.fullscreen." + bundleID)
-    }
-
-    static func setLegacyFullscreen(_ fullscreen: Bool, for bundleID: String) {
-        defaults.set(fullscreen, forKey: "legacy32.fullscreen." + bundleID)
-    }
-
     // MARK: - Game Mode and render resolution (iOS and 32-bit iOS games)
 
     /// Game Mode is on for every game unless the user turned it off for that

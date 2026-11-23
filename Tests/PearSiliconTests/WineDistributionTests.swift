@@ -81,16 +81,18 @@ final class WineDistributionTests: XCTestCase {
 
     func testInstalledEnginesAreOrderedMetalSharpFirst() {
         let root = URL(fileURLWithPath: "/tmp")
-        func engine(_ id: String, _ distribution: WineEngine.Distribution) -> WineEngine {
-            WineEngine(id: id, name: id, version: "1", rootURL: root, executablePath: "Runtime/bin/wine",
+        func engine(_ id: String, _ distribution: WineEngine.Distribution, version: String = "1") -> WineEngine {
+            WineEngine(id: id, name: id, version: version, rootURL: root, executablePath: "Runtime/bin/wine",
                        distribution: distribution)
         }
         let ordered = WineDistribution.ordered([
             engine("wine-staging-11.21", .wineHQ),
             engine("custom", .community),
-            engine("pearwine-1.0.1", .metalSharp),
+            engine("metalsharp-6.9", .metalSharp, version: "6.9"),
+            engine("metalsharp-6.10", .metalSharp, version: "6.10 (Wine 11)"),
         ])
-        XCTAssertEqual(ordered.map(\.id), ["pearwine-1.0.1"])
+        XCTAssertEqual(ordered.map(\.id), ["metalsharp-6.10", "metalsharp-6.9"])
+        XCTAssertEqual(WineDistribution.compareVersions("v6.10", "6.10-arm64 (Wine 11)"), .orderedSame)
     }
 }
 

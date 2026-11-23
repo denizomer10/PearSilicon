@@ -76,10 +76,18 @@ final class InstallerIntegrityTests: XCTestCase {
         armv7.append(Data(count: 256 - armv7.count))
         try armv7.write(to: fixture.source.appendingPathComponent("Game"))
 
+        let infoURL = fixture.source.appendingPathComponent("Info.plist")
+        var info = try XCTUnwrap(NSDictionary(contentsOf: infoURL) as? [String: Any])
+        info["CFBundleVersion"] = "1.1.4"
+        try PropertyListSerialization.data(fromPropertyList: info, format: .binary, options: 0).write(to: infoURL)
+
         let installer = fixture.installer()
         try installer.validateBundleForPreparation(at: fixture.source)
         let installed = try await installer.installBundle(at: fixture.source, mode: .compatibility)
         XCTAssertEqual(installed.bundleURL, fixture.destination)
+        XCTAssertEqual(installed.shortVersion, "1.1.4")
+        XCTAssertEqual(installed.bundleVersion, "1.1.4")
+        XCTAssertEqual(PortableLibrary(rootURL: fixture.support).scan().iosApps.first?.shortVersion, "1.1.4")
         XCTAssertEqual(try Data(contentsOf: installed.executableURL), armv7)
         XCTAssertTrue(AppLauncher.isLegacy32BitApp(installed))
         XCTAssertFalse(FileManager.default.fileExists(

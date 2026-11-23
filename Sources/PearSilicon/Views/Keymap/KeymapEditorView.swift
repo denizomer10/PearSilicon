@@ -1,194 +1,122 @@
+import AppKit
+import GameController
 import SwiftUI
 
 /// Editor for a single app's keymap.
 struct KeymapEditorView: View {
     @EnvironmentObject private var state: AppState
     let app: InstalledApp
+    let availableWidth: CGFloat
 
+    @StateObject private var controllerCapture = ControllerCaptureMonitor()
     @State private var draft: Keymap = .empty(bundleID: "")
-    @State private var hasLoaded = false
-    @State private var confirmDeleteAll = false
     @State private var inputSource: KeymapInputSource = .keyboard
-    @Namespace private var glassNamespace
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                toolbar
-                enableToggle
-                if state.isLegacy32Bit(app) {
-                    legacyInputNote
-                } else {
-                    virtualGamepadSection
-                }
-
-                HStack(alignment: .top, spacing: 16) {
-                    KeymapCanvasView(keymap: $draft)
-                        .frame(minWidth: 320, minHeight: 260)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                    bindingList
-                        .frame(width: 340)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .task(id: app.id) { load() }
-    }
-
-    // MARK: - 32-bit note
-
-    /// 32-bit titles run inside PearLegacyEngine, which replays the touch
-    /// keymapper's bindings itself; the host controller bridge is an arm64
-    /// runtime dylib and cannot be loaded into an emulated app.
-    private var legacyInputNote: some View {
-        Label(
-            "32-bit games run in PearLegacyEngine, so the bindings above are replayed as real touches. The virtual gamepad is not available here.",
-            systemImage: "info.circle"
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    // MARK: - Keyboard/mouse → gamepad
-
-    /// A second, independent input path. It stays separate from the touch
-    /// keymapper: the game sees a real (hidden) controller, and every control
-    /// below can be rebound to a key or mouse button.
-    private var virtualGamepadSection: some View {
-        let enabled = state.isVirtualGamepadEnabled(for: app)
-        let running = state.isRunning(app)
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Toggle("Keyboard Mouse to Gamepad Inputs", isOn: Binding(
-                    get: { enabled },
-                    set: { state.setVirtualGamepadEnabled($0, for: app) }
-                ))
-                .toggleStyle(.switch)
-
-                Spacer()
-
-                if running && enabled {
-                    Button {
-                        Task { await state.launch(app) }
-                    } label: {
-                        Label("Relaunch to apply", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.glass)
-                    .controlSize(.small)
-                }
-            }
-
-            Text("For games with controller support. The game receives a hidden virtual controller instead of touch input; click the game to capture the mouse, then move it to drive the right stick. Escape releases the mouse.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if enabled {
-                Divider()
+        VStack(alignment: .leading, spacing: 14) {
+            toolbar
+            inputModes
+            if !state.isLegacy32Bit(app), virtualGamepadEnabled {
                 VirtualGamepadMappingEditor(mapping: Binding(
                     get: { state.virtualGamepadMapping(for: app) },
                     set: { state.setVirtualGamepadMapping($0, for: app) }
                 ))
+                .padding(14)
+                .glassEffect(.regular, in: .rect(cornerRadius: 14))
+            }
 
-                if state.isKeymapperEnabled(for: app) {
-                    Label(
-                        "The touch keymapper stays enabled, but its bindings are not used while gamepad mode is on.",
-                        systemImage: "info.circle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
+            let wide = availableWidth >= 670
+            let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 16))
+                : AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            layout {
+                bindingList
+                    .frame(minWidth: wide ? 310 : 0, maxWidth: wide ? 310 : .infinity, alignment: .leading)
+                KeymapCanvasView(keymap: $draft, source: activeSource)
+                    .aspectRatio(1, contentMode: .fit)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 14))
+                    .frame(maxWidth: 520)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("Touch layout")
             }
         }
-        .padding(14)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    // MARK: - Enable toggle
-
-    /// Input translation is opt-in and default OFF. Toggling takes effect on the
-    /// next launch (the decision is made when the game process starts).
-    private var enableToggle: some View {
-        let enabled = state.isKeymapperEnabled(for: app)
-        let running = state.isRunning(app)
-        return HStack(spacing: 10) {
-            Toggle("Enable keymapper", isOn: Binding(
-                get: { enabled },
-                set: { state.setKeymapperEnabled($0, for: app) }
-            ))
-            .toggleStyle(.switch)
-
-            Text(enabled ? "On" : "Off — the game runs with no input translation")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            if running && enabled {
-                Button {
-                    Task { await state.launch(app) }
-                } label: {
-                    Label("Relaunch to apply", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.glass)
-                .controlSize(.small)
-            }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: app.id) {
+            load()
+            controllerCapture.refreshConnection()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidConnect).receive(on: RunLoop.main)) { _ in
+            controllerCapture.refreshConnection()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidDisconnect).receive(on: RunLoop.main)) { note in
+            controllerCapture.refreshConnection(excluding: note.object as? GCController)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            controllerCapture.stop()
+        }
+        .onChange(of: controllerCapture.deviceName) { _, name in
+            if name == nil { inputSource = .keyboard }
+        }
+        .onChange(of: inputSource) { _, _ in controllerCapture.stop() }
+        .onChange(of: state.currentKeymap) { _, incoming in
+            if let incoming, incoming.bundleID == app.id { draft = incoming }
+        }
+        .onDisappear { controllerCapture.stop() }
     }
 
-    // MARK: - Toolbar
+    private var activeSource: KeymapInputSource {
+        controllerCapture.deviceName == nil ? .keyboard : inputSource
+    }
+
+    private var virtualGamepadEnabled: Bool { state.isVirtualGamepadEnabled(for: app) }
+
+    private var inputModes: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { modeButtons }
+                .fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 8) { modeButtons }
+        }
+        .toggleStyle(.button)
+        .buttonStyle(.glass)
+        .controlSize(.small)
+    }
+
+    @ViewBuilder
+    private var modeButtons: some View {
+        let keymapperEnabled = state.isKeymapperEnabled(for: app)
+        Toggle(isOn: Binding(
+            get: { keymapperEnabled },
+            set: { state.setKeymapperEnabled($0, for: app) }
+        )) {
+            Label("Enable keymapper", systemImage: keymapperEnabled ? "checkmark.circle.fill" : "keyboard")
+        }
+        .tint(keymapperEnabled ? .accentColor : nil)
+
+        if !state.isLegacy32Bit(app) {
+            Toggle(isOn: Binding(
+                get: { virtualGamepadEnabled },
+                set: { state.setVirtualGamepadEnabled($0, for: app) }
+            )) {
+                Label("Keyboard Mouse to Gamepad Inputs",
+                      systemImage: virtualGamepadEnabled ? "checkmark.circle.fill" : "gamecontroller")
+            }
+            .tint(virtualGamepadEnabled ? .accentColor : nil)
+            .help("Use the keyboard and mouse as a virtual controller for games with controller support. Escape releases the mouse.")
+        }
+    }
 
     private var toolbar: some View {
-        HStack(spacing: 12) {
-            Text(L10n.keymap)
-                .font(.title3.weight(.semibold))
-            Spacer()
-
-            if draft.isAutoGenerated {
-                Text("Auto-generated")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
+        HStack(spacing: 8) {
             Button {
-                state.generateKeymap(for: app)
-                load()
+                controllerCapture.stop()
+                draft.resetBindings()
+                state.saveKeymap(draft)
             } label: {
-                Label(L10n.generateKeymap, systemImage: "wand.and.stars")
+                Label("Reset", systemImage: "arrow.counterclockwise")
             }
             .buttonStyle(.glass)
 
             Button {
-                draft = KeymapGenerator.generate(for: app)
-            } label: {
-                Label(L10n.resetKeymap, systemImage: "arrow.counterclockwise")
-            }
-            .buttonStyle(.glass)
-
-            Button {
-                state.openOverlay(for: app)
-            } label: {
-                Label("Overlay", systemImage: "rectangle.on.rectangle")
-            }
-            .buttonStyle(.glass)
-
-            Button(role: .destructive) {
-                confirmDeleteAll = true
-            } label: {
-                Label("Delete All", systemImage: "trash")
-            }
-            .buttonStyle(.glass)
-            .disabled(draft.bindings.isEmpty)
-
-            Button {
+                controllerCapture.stop()
                 draft.isAutoGenerated = false
                 state.saveKeymap(draft)
             } label: {
@@ -196,27 +124,26 @@ struct KeymapEditorView: View {
             }
             .buttonStyle(.glassProminent)
         }
-        .alert("Delete all bindings?", isPresented: $confirmDeleteAll) {
-            Button("Delete All", role: .destructive) {
-                draft.isAutoGenerated = false
-                draft.bindings.removeAll()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This removes every key mapping for this app. You can generate a template again afterwards.")
-        }
+        .controlSize(.small)
     }
 
     // MARK: - Binding list
 
     private var bindingList: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("Input", selection: $inputSource) {
-                ForEach(KeymapInputSource.allCases) { source in
-                    Label(source.title, systemImage: source.symbol).tag(source)
+            if let deviceName = controllerCapture.deviceName {
+                SectionTitle(text: "Input")
+                Picker("Input", selection: $inputSource) {
+                    Text(KeymapInputSource.keyboard.title).tag(KeymapInputSource.keyboard)
+                    Text(deviceName).tag(KeymapInputSource.controller)
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .help(deviceName)
+            } else {
+                Label("Keyboard Input", systemImage: "keyboard")
+                    .font(.callout.weight(.semibold))
             }
-            .pickerStyle(.segmented)
 
             HStack {
                 SectionTitle(text: "Bindings")
@@ -237,60 +164,84 @@ struct KeymapEditorView: View {
                 .help("Add a tap, hold, joystick, mouse-look or swipe binding")
             }
 
-            if draft.bindings.allSatisfy({ $0.source != inputSource }) {
-                Text("No \(inputSource.title.lowercased()) bindings yet. Use + to add one.")
+            if let prompt = controllerCapture.prompt {
+                HStack {
+                    Label(prompt, systemImage: "record.circle")
+                    Spacer(minLength: 4)
+                    Button("Cancel", action: controllerCapture.stop)
+                        .buttonStyle(.plain)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            if draft.bindings.allSatisfy({ $0.source != activeSource }), controllerCapture.prompt == nil {
+                Text("Use + to add a binding.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
-            } else {
-                ScrollView {
-                    VStack(spacing: 6) {
-                        ForEach($draft.bindings) { $binding in
-                            if binding.source == inputSource {
-                                BindingRow(binding: $binding, source: inputSource) {
-                                    draft.isAutoGenerated = false
-                                    draft.bindings.removeAll { $0.id == binding.id }
-                                }
-                            }
+                    .padding(.vertical, 6)
+            }
+
+            LazyVStack(spacing: 6) {
+                ForEach($draft.bindings) { $binding in
+                    if binding.source == activeSource {
+                        let id = binding.id
+                        BindingRow(
+                            binding: $binding,
+                            isRecording: controllerCapture.recordingID == id,
+                            onRecord: { recordControllerBinding(id: id, action: binding.action.kind) },
+                            onControllerActionChange: { recordControllerBinding(id: id, action: $0) }
+                        ) {
+                            if controllerCapture.recordingID == id { controllerCapture.stop() }
+                            draft.isAutoGenerated = false
+                            draft.bindings.removeAll { $0.id == id }
                         }
                     }
                 }
             }
         }
-        .padding(14)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(12)
+        .glassEffect(.regular, in: .rect(cornerRadius: 14))
     }
 
     private func addBinding(_ kind: KeymapActionKind) {
-        draft.isAutoGenerated = false
-        let binding: KeymapBinding
-        switch (inputSource, kind) {
-        case (.controller, .joystick):
-            binding = KeymapBinding(key: ControllerKey.leftStick.rawValue, source: .controller,
-                                    action: .make(kind))
-        case (.controller, .mouseLook):
-            binding = KeymapBinding(key: ControllerKey.rightStick.rawValue, source: .controller,
-                                    action: .make(kind))
-        case (.controller, _):
-            binding = KeymapBinding(key: ControllerKey.buttonA.rawValue, source: .controller,
-                                    action: .make(kind))
-        case (.keyboard, .joystick):
-            binding = KeymapBinding(key: "wasd", action: .make(kind))
-        case (.keyboard, .mouseLook):
-            binding = KeymapBinding(key: "mouse", action: .make(kind))
-        case (.keyboard, _):
-            binding = KeymapBinding(key: "x", action: .make(kind))
+        if activeSource == .controller {
+            let id = UUID()
+            controllerCapture.start(id: id, action: kind) { key in
+                draft.isAutoGenerated = false
+                draft.bindings.append(KeymapBinding(id: id, key: key.rawValue, source: .controller, action: .make(kind)))
+            }
+            return
         }
-        draft.bindings.append(binding)
+        draft.isAutoGenerated = false
+        let key: String
+        switch kind {
+        case .joystick: key = "wasd"
+        case .mouseLook: key = "mouse"
+        default: key = "x"
+        }
+        draft.bindings.append(KeymapBinding(key: key, action: .make(kind)))
+    }
+
+    private func recordControllerBinding(id: UUID, action: KeymapActionKind) {
+        controllerCapture.start(id: id, action: action) { key in
+            guard let index = draft.bindings.firstIndex(where: { $0.id == id }) else { return }
+            draft.bindings[index].key = key.rawValue
+            if draft.bindings[index].action.kind != action {
+                draft.bindings[index].action = draft.bindings[index].action.converted(to: action)
+            }
+            draft.isAutoGenerated = false
+        }
     }
 
     // MARK: - Loading
 
     private func load() {
-        if let stored = try? state.keymapStore.load(for: app.id) {
+        controllerCapture.stop()
+        if let stored = try? state.keymapStore.loadManual(for: app.id) {
             draft = stored
         } else {
-            draft = KeymapGenerator.generate(for: app)
+            draft = .empty(bundleID: app.id)
         }
         state.currentKeymap = draft
     }
@@ -299,14 +250,23 @@ struct KeymapEditorView: View {
 /// A single editable binding row.
 private struct BindingRow: View {
     @Binding var binding: KeymapBinding
-    let source: KeymapInputSource
+    let isRecording: Bool
+    let onRecord: () -> Void
+    let onControllerActionChange: (KeymapActionKind) -> Void
     let onDelete: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                if source == .controller {
-                    ControllerCaptureField(key: $binding.key)
+                if binding.source == .controller {
+                    Button(action: onRecord) {
+                        Label(isRecording ? "Listening…" : binding.displayKey,
+                              systemImage: isRecording ? "record.circle" : "gamecontroller")
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                    .help("Record a physical controller input")
                 } else {
                     KeyCaptureField(key: $binding.key)
                 }
@@ -369,19 +329,20 @@ private struct BindingRow: View {
         Binding(
             get: { binding.action.kind },
             set: { newKind in
+                if binding.source == .controller {
+                    if let key = ControllerKey(rawValue: binding.key), ControllerPressTracker.accepts(key, for: newKind) {
+                        binding.action = binding.action.converted(to: newKind)
+                    } else {
+                        onControllerActionChange(newKind)
+                    }
+                    return
+                }
                 binding.action = binding.action.converted(to: newKind)
                 switch newKind {
-                case .joystick:
-                    binding.key = source == .controller ? ControllerKey.leftStick.rawValue : "wasd"
-                case .mouseLook:
-                    binding.key = source == .controller ? ControllerKey.rightStick.rawValue : "mouse"
+                case .joystick: binding.key = "wasd"
+                case .mouseLook: binding.key = "mouse"
                 default:
-                    let reserved = ["wasd", "mouse", ControllerKey.leftStick.rawValue,
-                                    ControllerKey.rightStick.rawValue]
-                    if reserved.contains(binding.key) {
-                        binding.key = source == .controller
-                            ? ControllerKey.buttonA.rawValue : "x"
-                    }
+                    if binding.usesReservedInput { binding.key = "x" }
                 }
             }
         )

@@ -114,8 +114,8 @@ enum BinaryPatcher {
     /// Malformed, unsupported or encrypted selected images throw invalidPackage;
     /// file I/O errors propagate. Unselected slices are structurally checked but
     /// their platform/encryption metadata does not affect preparation.
-    static func validateForPreparation(at url: URL) throws {
-        _ = try preparationImage(Data(contentsOf: url), name: url.lastPathComponent)
+    static func validateForPreparation(at url: URL, allowMacOS: Bool = false) throws {
+        _ = try preparationImage(Data(contentsOf: url), name: url.lastPathComponent, allowMacOS: allowMacOS)
     }
 
     /// Returns true when the Mach-O image is a legacy 32-bit ARM (armv6/armv7/armv7s)
@@ -128,8 +128,17 @@ enum BinaryPatcher {
     }
 
     static func fileIsLegacy32BitARM(_ url: URL) -> Bool {
-        guard let data = try? Data(contentsOf: url) else { return false }
-        return isLegacy32BitARM(data)
+        guard let file = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? file.close() }
+        guard let header = try? file.read(upToCount: MachO.headerSize), header.count >= 4 else { return false }
+        let magic = readBeU32(header, 0)
+        if magic == MachO.fatMagic || magic == MachO.fatMagic64 {
+            // The slice headers may be at arbitrary file offsets. Use the full
+            // structural checks for universal binaries.
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
+            return isLegacy32BitARM(data)
+        }
+        return isLegacy32BitARM(header)
     }
 
     /// Validates a legacy 32-bit ARM iOS Mach-O image for PearLegacyEngine execution:

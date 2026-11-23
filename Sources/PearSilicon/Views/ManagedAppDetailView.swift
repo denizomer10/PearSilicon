@@ -48,6 +48,7 @@ struct ManagedAppRowView: View {
 struct ManagedAppDetailView: View {
     @EnvironmentObject private var state: AppState
     let entry: LibraryEntry
+    let availableWidth: CGFloat
     @State private var confirmingQuarantine = false
     @State private var showingExecutablePicker = false
 
@@ -57,17 +58,19 @@ struct ManagedAppDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
-                HStack(alignment: .top, spacing: 18) {
-                    infoCard
-                    actionCard
-                        .frame(width: 280)
+                let wide = availableWidth >= 650
+                let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 18)) : AnyLayout(VStackLayout(spacing: 18))
+                layout {
+                    actionCard.frame(maxWidth: wide ? 280 : .infinity, alignment: .topLeading)
+                    infoCard.frame(maxWidth: .infinity, alignment: .topLeading)
                 }
                 DisclosureGroup("Advanced details") { isolationNote }
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             .padding(22)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(maxWidth: 1120)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
         .confirmationDialog(
             "Remove the quarantine flag from this managed copy?",

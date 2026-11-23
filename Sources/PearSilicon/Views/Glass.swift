@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A padded container with a Liquid Glass background and rounded corners.
+/// A content surface. Interactive controls supply their own Liquid Glass.
 struct GlassCard<Content: View>: View {
     var cornerRadius: CGFloat
     var content: Content
@@ -14,7 +14,11 @@ struct GlassCard<Content: View>: View {
         content
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .background(.regularMaterial, in: .rect(cornerRadius: cornerRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(.primary.opacity(0.08))
+                    .allowsHitTesting(false)
+            }
     }
 }
 
@@ -23,10 +27,8 @@ struct SectionTitle: View {
     let text: String
 
     var body: some View {
-        Text(text.uppercased())
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .kerning(0.6)
+        Text(text)
+            .font(.headline)
     }
 }
 

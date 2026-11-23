@@ -6,8 +6,10 @@ final class PearHostPreparerTests: XCTestCase {
     private var root: URL!
 
     override func setUpWithError() throws {
-        root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PearHostPreparerTests-\(UUID().uuidString)", isDirectory: true)
+        let base = ProcessInfo.processInfo.environment["PEAR_RUNTIME_TEST_ROOT"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? FileManager.default.temporaryDirectory
+        root = base.appendingPathComponent("PearHostPreparerTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
 
@@ -27,6 +29,17 @@ final class PearHostPreparerTests: XCTestCase {
         XCTAssertTrue(try PearHostPreparer.refreshHostFrameworksIfStale(bundleURL: bundle, hostDir: host))
         XCTAssertEqual(try uikitCopy(in: bundle), "build-1")
         XCTAssertTrue(PearHostPreparer.isPrepared(bundle))
+        XCTAssertFalse(try PearHostPreparer.refreshHostFrameworksIfStale(bundleURL: bundle, hostDir: host))
+
+        let metal = "MetalKit.framework/MetalKit"
+        try Data("updated MetalKit".utf8).write(to: host.appendingPathComponent(metal))
+        let changed = try XCTUnwrap(PearHostPreparer.runtimeSnapshot(host)).changedComponents(in: bundle)
+        XCTAssertEqual(changed, ["MetalKit.framework"])
+        XCTAssertTrue(try PearHostPreparer.refreshHostFrameworksIfStale(bundleURL: bundle, hostDir: host))
+        let installedMetal = frameworks.appendingPathComponent(metal)
+        XCTAssertEqual(try String(contentsOf: installedMetal, encoding: .utf8), "updated MetalKit")
+        try FileManager.default.removeItem(at: installedMetal)
+        XCTAssertTrue(try PearHostPreparer.refreshHostFrameworksIfStale(bundleURL: bundle, hostDir: host))
         XCTAssertFalse(try PearHostPreparer.refreshHostFrameworksIfStale(bundleURL: bundle, hostDir: host))
 
         // The runtime is rebuilt: the bundle picks the new PearHost up.
@@ -61,7 +74,9 @@ final class PearHostPreparerTests: XCTestCase {
         let mainSource = root.appendingPathComponent("main.c")
         try "int pear_gl_probe(void);\nint main(void) { return pear_gl_probe() == 7 ? 0 : 1; }\n"
             .write(to: mainSource, atomically: true, encoding: .utf8)
-        try run(clang, ["-target", "arm64-apple-ios14.0-macabi", mainSource.path, shim.path, "-Wl,-headerpad,0x1000", "-o", exe.path])
+        let oldFrameworkPath = "/Volumes/OldLibrary/Game.app/Frameworks"
+        try run(clang, ["-target", "arm64-apple-ios14.0-macabi", mainSource.path, shim.path,
+                        "-Wl,-headerpad,0x1000", "-Wl,-rpath,\(oldFrameworkPath)", "-o", exe.path])
         let runtime = frameworks.appendingPathComponent("libPearRuntime.dylib")
         XCTAssertTrue(try BinaryPatcher.addLoadDylib(at: exe, path: runtime.path))
         XCTAssertTrue(BinaryPatcher.hasLoadDylib(at: exe, containing: "libPearRuntime"))
@@ -75,6 +90,9 @@ final class PearHostPreparerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: runtime.path))
         XCTAssertTrue(PearHostPreparer.isPrepared(bundle))
         XCTAssertEqual(try BinaryPatcher.buildPlatform(at: exe), BinaryPatcher.Platform.macOS)
+        let commands = try String(decoding: toolOutput("/usr/bin/otool", ["-l", exe.path]), as: UTF8.self)
+        XCTAssertFalse(commands.contains(oldFrameworkPath))
+        XCTAssertTrue(commands.contains("@executable_path/Frameworks"))
         XCTAssertTrue(try String(decoding: toolOutput("/usr/bin/vtool", ["-show-build", exe.path]), as: UTF8.self)
             .contains("minos 26.0"))
 
@@ -205,8 +223,30 @@ final class PearHostPreparerTests: XCTestCase {
                                    "-framework", "WebKit", "-framework", "MetalKit", "-Wl,-headerpad,0x2000",
                                    source.path, "-o", exe.path])
 
-        try PearHostPreparer.prepare(bundleURL: bundle, executableName: "E2E", hostDir: host)
+        let info: [String: Any] = [
+            "CFBundleIdentifier": "com.pearsilicon.tests.pearhost",
+            "CFBundleExecutable": "E2E",
+            "CFBundlePackageType": "APPL",
+            "CFBundleName": "PearHost E2E"
+        ]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: bundle.appendingPathComponent("Info.plist"))
+        var signingCommands: [[String]] = []
+        let tools = PackageInstaller.PreparationTools(run: { tool, arguments in
+            if tool == "/usr/bin/codesign", arguments.contains("--sign") { signingCommands.append(arguments) }
+            return try Shell.run(tool, arguments)
+        })
+        let installer = PackageInstaller(libraryURL: root, preparationTools: tools)
+        let app = try installer.makeInstalledApp(fromBundleAt: bundle)
+        XCTAssertTrue(try installer.refreshRuntimeIfNeeded(for: app, source: .pearHost(host)))
         XCTAssertTrue(PearHostPreparer.isPrepared(bundle))
+        XCTAssertFalse(try installer.refreshRuntimeIfNeeded(for: app, source: .pearHost(host)))
+        signingCommands.removeAll()
+        try FileManager.default.removeItem(at: bundle.appendingPathComponent("Frameworks/MetalKit.framework"))
+        XCTAssertTrue(try installer.refreshRuntimeIfNeeded(for: app, source: .pearHost(host)))
+        XCTAssertFalse(try installer.refreshRuntimeIfNeeded(for: app, source: .pearHost(host)))
+        XCTAssertTrue(signingCommands.contains { $0.last?.hasSuffix("/MetalKit.framework") == true })
+        XCTAssertFalse(signingCommands.contains { $0.last?.hasSuffix("/UIKit.framework") == true })
 
         let proc = Process()
         proc.executableURL = exe

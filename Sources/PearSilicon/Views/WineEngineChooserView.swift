@@ -8,6 +8,7 @@ struct WineDistributionList: View {
     /// launch it installs (if needed), links the game and starts it.
     let action: (WineDistribution) -> Void
     let actionTitle: (WineDistribution, Bool) -> String
+    var allowsInstalledSelection = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -67,11 +68,11 @@ struct WineDistributionList: View {
             } else if distribution.recommended {
                 Button(actionTitle(distribution, engine != nil)) { action(distribution) }
                     .buttonStyle(.glassProminent)
-                    .disabled(state.isBusy)
+                .disabled(state.isBusy || (engine != nil && !allowsInstalledSelection))
             } else {
                 Button(actionTitle(distribution, engine != nil)) { action(distribution) }
                     .buttonStyle(.glass)
-                    .disabled(state.isBusy)
+                .disabled(state.isBusy || (engine != nil && !allowsInstalledSelection))
             }
         }
         .padding(10)

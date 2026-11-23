@@ -64,8 +64,20 @@ struct WineDistribution: Identifiable, Hashable, Sendable {
             return index
         }
         return engines.filter { $0.distribution == .metalSharp }.sorted {
-            (rank($0), $0.name, $0.version) < (rank($1), $1.name, $1.version)
+            if rank($0) != rank($1) { return rank($0) < rank($1) }
+            let versionOrder = compareVersions($0.version, $1.version)
+            if versionOrder != .orderedSame { return versionOrder == .orderedDescending }
+            return $0.id < $1.id
         }
+    }
+
+    static func compareVersions(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        func release(_ version: String) -> String {
+            let name = version.split(separator: " ", maxSplits: 1).first.map(String.init) ?? version
+            let label = name.hasSuffix("-arm64") ? String(name.dropLast("-arm64".count)) : name
+            return label.hasPrefix("v") ? String(label.dropFirst()) : label
+        }
+        return release(lhs).compare(release(rhs), options: [.numeric, .caseInsensitive])
     }
 }
 
@@ -107,7 +119,7 @@ struct WineDistributionInstaller: Sendable {
     }
 
     func install(
-        _ distribution: WineDistribution, store: WineEngineStore,
+        _ distribution: WineDistribution, store: WineEngineStore, checkedAsset: Asset? = nil,
         progress: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> WineEngine {
         switch distribution.source {
@@ -116,8 +128,13 @@ struct WineDistributionInstaller: Sendable {
             return try await releases.install(check, store: store, progress: progress)
 
         case .githubRelease(let repository, let pattern):
-            progress("Looking up \(distribution.name)…")
-            let asset = try await Self.latestAsset(repository: repository, pattern: pattern)
+            let asset: Asset
+            if let checkedAsset {
+                asset = checkedAsset
+            } else {
+                progress("Looking up \(distribution.name)…")
+                asset = try await Self.latestAsset(repository: repository, pattern: pattern)
+            }
             return try await releases.installArchive(
                 from: asset.url, assetName: asset.name, sha256: asset.sha256,
                 engineID: "\(distribution.id)-\(Self.safeComponent(asset.version))",

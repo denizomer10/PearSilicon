@@ -12,7 +12,7 @@ enum LibraryPlatform: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .iOS: "iOS Apps"
         case .macOS: "Mac Apps"
-        case .wine: "Wine Games"
+        case .wine: "Wine Apps"
         }
     }
     var symbol: String {

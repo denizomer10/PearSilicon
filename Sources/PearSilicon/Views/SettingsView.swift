@@ -29,11 +29,9 @@ struct SettingsView: View {
             library.tabItem { Label("Library", systemImage: "square.stack.3d.up") }
             wine.tabItem { Label("Wine", systemImage: "gamecontroller") }
             updates.tabItem { Label("Updates", systemImage: "arrow.down.circle") }
-            keymapper.tabItem { Label("Keymapper", systemImage: "keyboard") }
             about.tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 700, height: 580)
-        .padding()
+        .frame(minWidth: 460, idealWidth: 620, minHeight: 380, idealHeight: 540)
         .sheet(isPresented: $showingEngineSheet) { engineSheet }
         .alert(
             "Remove Wine engine?",
@@ -57,6 +55,49 @@ struct SettingsView: View {
 
     private var general: some View {
         Form {
+            Section("Input") {
+                Toggle("Enable keymapper for new games by default", isOn: $state.keymapperDefaultEnabled)
+            }
+
+            Section("Downloaded Mac apps") {
+                Toggle("Automatically allow imported Mac apps", isOn: $state.autoApproveImportedMacApps)
+                Text("Off by default. When enabled, PearSilicon removes the macOS download quarantine flag from each imported Mac app copy. This is the same one-time approval macOS asks for in Privacy & Security, but it is applied automatically to apps you import. It does not notarize the app, and absolute host paths remain reachable. Only enable it for sources you trust.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Open Privacy & Security") {
+                    state.openPrivacySecuritySettings()
+                }
+            }
+        }
+        .formStyle(.grouped)
+
+    }
+
+    private func chooseStorageFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Move Storage Here"
+        panel.message = "Choose a destination folder. The previous copy is kept for rollback."
+        panel.directoryURL = state.storageRootURL.deletingLastPathComponent()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await state.changeStorageLocation(to: url) }
+    }
+
+    // MARK: - Library
+
+    private var library: some View {
+        Form {
+            Section("Use an existing library") {
+                Button("Open Existing Library…") { chooseExistingLibrary() }
+                    .disabled(state.isBusy)
+                Text("Select a PearSilicon folder (or a disk containing one) to open its apps, games and saves in place. Nothing is copied. A folder is only accepted when it carries the .pear-storage-root marker.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Storage folder") {
                 LabeledContent("Root") {
                     Text(state.storageRootURL.path)
@@ -95,19 +136,28 @@ struct SettingsView: View {
                 Text("Deletes all apps, saves, downloads, retained saves, Wine engines and prefixes in the current library. The external disk and files outside this library are preserved. Close all apps first.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Portable layout") {
-                Text("ios-apps, mac-apps and wine-apps are created only when the matching platform has its first item. Existing apps in the older Applications folder are still listed and keep working.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Section("iOS runtimes") {
+                Button("Refresh iOS Runtimes Now") {
+                    Task { await state.refreshInstalledRuntimes() }
+                }
+                .buttonStyle(.glass)
+                .disabled(state.isBusy || state.iOSAppsLockedForRuntimeRefresh)
+                if let progress = state.runtimeRefresh {
+                    ProgressView(value: progress.fraction) {
+                        Text("Refreshing \(progress.current) (\(progress.done)/\(progress.total))")
+                    }
+                } else if let result = state.runtimeRefreshStatus {
+                    Text(result).font(.caption).textSelection(.enabled)
+                }
+                Text("PearHost is refreshed automatically after a PearSilicon update.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("Downloaded Mac apps") {
-                Toggle("Automatically allow imported Mac apps", isOn: $state.autoApproveImportedMacApps)
-                Text("Off by default. When enabled, PearSilicon removes the macOS download quarantine flag from each imported Mac app copy. This is the same one-time approval macOS asks for in Privacy & Security, but it is applied automatically to apps you import. It does not notarize the app, and absolute host paths remain reachable. Only enable it for sources you trust.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Open Privacy & Security") {
-                    state.openPrivacySecuritySettings()
+            if !state.libraryWarnings.isEmpty {
+                Section("Library warnings") {
+                    ForEach(Array(state.libraryWarnings.enumerated()), id: \.offset) { _, warning in
+                        Text(warning).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                    }
                 }
             }
         }
@@ -129,47 +179,6 @@ struct SettingsView: View {
         }
     }
 
-    private func chooseStorageFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Move Storage Here"
-        panel.message = "Choose a destination folder. The previous copy is kept for rollback."
-        panel.directoryURL = state.storageRootURL.deletingLastPathComponent()
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await state.changeStorageLocation(to: url) }
-    }
-
-    // MARK: - Library
-
-    private var library: some View {
-        Form {
-            Section("Use an existing library") {
-                Button("Open Existing Library…") { chooseExistingLibrary() }
-                    .disabled(state.isBusy)
-                Text("Select a PearSilicon folder (or a disk containing one) to open its apps, games and saves in place. Nothing is copied. A folder is only accepted when it carries the .pear-storage-root marker.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Library warnings") {
-                if state.libraryWarnings.isEmpty {
-                    Text("No warnings.").foregroundStyle(.secondary)
-                } else {
-                    ForEach(state.libraryWarnings, id: \.self) { warning in
-                        Text(warning)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                            .textSelection(.enabled)
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-
     private func chooseExistingLibrary() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -186,12 +195,34 @@ struct SettingsView: View {
 
     private var wine: some View {
         Form {
+            Section("Wine updates") {
+                if let installed = state.wineEngines.first {
+                    LabeledContent("Installed version", value: installed.version)
+                }
+                Button("Check for Wine Updates") {
+                    Task { await state.checkForMetalSharpUpdate() }
+                }
+                .buttonStyle(.glass)
+                .disabled(state.isBusy)
+                if let update = state.metalSharpUpdate {
+                    Button(state.wineEngines.isEmpty ? "Install \(update.version)" : "Update to \(update.version)") {
+                        Task { await state.applyMetalSharpUpdate() }
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(state.isBusy || state.runningManagedEntries.contains { $0.platform == .wine })
+                }
+                if let status = state.wineUpdateStatus {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
             Section("Wine engines for Apple silicon") {
                 WineDistributionList(
                     action: { distribution in
                         Task { _ = await state.installWineDistribution(distribution) }
                     },
-                    actionTitle: { _, installed in installed ? "Reinstall" : "Install" }
+                    actionTitle: { _, installed in installed ? "Installed" : "Install" },
+                    allowsInstalledSelection: false
                 )
                 Text("Windows games use MetalSharp Wine. PearSilicon installs it automatically when you add your first Windows game.")
                     .font(.caption)
@@ -255,11 +286,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("How games are stored") {
-                Text("Each Windows game gets Payload, Data and Prefix directories. Saves stay with the game and are included in its backup. Host root drive mappings are removed; a g: drive exposes only this game's own program folder. Wine runs as a direct native process because a nested sandbox breaks Rosetta/wineserver; this is not a virtual machine and cannot run kernel-level anti-cheat.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+
         }
         .formStyle(.grouped)
     }
@@ -317,13 +344,6 @@ struct SettingsView: View {
         .frame(width: 600, height: 520)
     }
 
-    private static var appVersionString: String {
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "—"
-        let build = info?["CFBundleVersion"] as? String ?? "—"
-        return "\(version) (\(build))"
-    }
-
     private func chooseEngineFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -352,7 +372,7 @@ struct SettingsView: View {
         Form {
             Section("Updates") {
                 LabeledContent("Current version", value: "Development Beta")
-                LabeledContent("Version", value: Self.appVersionString)
+                LabeledContent("Version", value: Self.appVersion)
                 Button("Check for Updates") {
                     Task { await state.checkForUpdates() }
                 }
@@ -402,46 +422,7 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Runtime updates") {
-                Text("After installing a new PearSilicon build, iOS apps keep their own runtime copy. This action checks every stopped iOS app and updates only those whose runtime fingerprint differs. Each bundle is prepared and re-signed in a staged copy first.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Refresh iOS Runtimes Now") {
-                    Task { await state.refreshInstalledRuntimes() }
-                }
-                .disabled(state.isBusy || state.iOSAppsLockedForRuntimeRefresh)
-                Text("After a PearSilicon update this runs automatically in the background; the status bar shows its progress and iOS apps open again when it finishes.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-    }
 
-    // MARK: - Keymapper
-
-    private var keymapper: some View {
-        Form {
-            Section {
-                Toggle("Enable keymapper for new games by default",
-                       isOn: $state.keymapperDefaultEnabled)
-                Text("Keyboard/mouse keymapping is off unless enabled. Each iOS app has "
-                     + "its own switch in the Keymap tab; changing it takes effect "
-                     + "on the next launch. Mac and Wine games do not use the iOS keymapper.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                Text("Repeat-rate protection: always on")
-                    .font(.body.weight(.medium))
-                Text("The keymapper drops presses less than 120 ms apart for the same key "
-                     + "or 40 ms apart across keys. Releases are not rate-limited. "
-                     + "This limits rapid repeats; it does not detect or prevent macros. "
-                     + "The limits are not configurable.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
     }
@@ -449,77 +430,43 @@ struct SettingsView: View {
     // MARK: - About
 
     private var about: some View {
-        VStack(spacing: 16) {
-            PearBrand.logo
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 128, height: 128)
-                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.28), radius: 20, y: 8)
-
-            VStack(spacing: 4) {
-                Text("PearSilicon")
-                    .font(.system(size: 28, weight: .semibold, design: .rounded))
-                Text("Version \(Self.appVersion) (build \(Self.appBuild))")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            Text("Run iOS and Mac Catalyst games on Apple silicon with a native, "
-                 + "Liquid Glass interface.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-
-            VStack(alignment: .leading, spacing: 10) {
-                aboutRow("wand.and.stars", "Compatibility",
-                         "Legacy window bridging and mouse-to-touch input are detected "
-                         + "automatically for each game. Open the Compatibility card on a "
-                         + "game to review or override it.")
-                aboutRow("keyboard", "Input",
-                         "Per-game keymapper and virtual gamepad, including full axis and "
-                         + "button remapping.")
-                aboutRow("sparkles", "Design",
-                         "Built entirely with Liquid Glass materials that follow the "
-                         + "system appearance and accessibility settings.")
-            }
-            .padding(18)
-            .frame(maxWidth: 460)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-            Spacer(minLength: 0)
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func aboutRow(_ symbol: String, _ title: String, _ detail: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: symbol)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold))
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
+        PearAboutView(version: Self.appVersion)
     }
 
     private static var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.8"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
+}
+
+struct PearAboutView: View {
+    let version: String
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 15) {
+                PearBrand.logo
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 88, height: 88)
+                    .clipShape(.rect(cornerRadius: 22))
+                VStack(spacing: 6) {
+                    Text("PearSilicon").font(.largeTitle.weight(.semibold))
+                    Text(version).font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Text("iOS, Mac and Windows games on Apple silicon")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(36)
+            .frame(maxWidth: 440)
+            .glassEffect(.regular, in: .rect(cornerRadius: 32))
+            .padding(30)
+            .frame(maxWidth: .infinity)
+        }
+        .defaultScrollAnchor(.center)
+        .frame(maxHeight: .infinity)
     }
 
-    private static var appBuild: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "19"
-    }
 }

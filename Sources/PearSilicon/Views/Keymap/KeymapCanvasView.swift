@@ -4,6 +4,7 @@ import SwiftUI
 /// Markers can be dragged; the bound keymap is updated in place.
 struct KeymapCanvasView: View {
     @Binding var keymap: Keymap
+    let source: KeymapInputSource
 
     var body: some View {
         GeometryReader { geo in
@@ -12,8 +13,9 @@ struct KeymapCanvasView: View {
                     .fill(.black.opacity(0.30))
 
                 grid(size: geo.size)
+                    .accessibilityHidden(true)
 
-                ForEach(keymap.bindings) { binding in
+                ForEach(keymap.bindings.filter { $0.source == source }) { binding in
                     if case .joystick(let center, let radius) = binding.action {
                         // Show the area the finger sweeps: radius is normalized, so
                         // the on-screen shape is an ellipse on non-square canvases.
@@ -33,6 +35,7 @@ struct KeymapCanvasView: View {
                     }
                 }
             }
+            .coordinateSpace(name: "keymapCanvas")
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -70,8 +73,9 @@ struct KeymapCanvasView: View {
             .glassEffect(.regular.tint(.accentColor).interactive(), in: Capsule())
             .position(x: x, y: y)
             .gesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 0, coordinateSpace: .named("keymapCanvas"))
                     .onChanged { value in
+                        guard size.width > 0, size.height > 0 else { return }
                         let nx = min(max(value.location.x / size.width, 0), 1)
                         let ny = min(max(value.location.y / size.height, 0), 1)
                         update(binding.id, to: NormalizedPoint(nx, ny))
