@@ -31,7 +31,7 @@ struct IOSAppService {
         }
         // The virtual pad captures the cursor itself, so native pointer lock is
         // not requested in that mode. Leaving it off also prevents the game
-        // from hiding the cursor before the first click arms the pad.
+        // from hiding the cursor before the player engages virtual mouse look.
         if pointerLockAllowed && !virtualGamepad { extra["PEAR_ALLOW_POINTER_LOCK"] = "1" }
 
         if virtualGamepad {

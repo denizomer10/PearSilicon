@@ -14,9 +14,16 @@ let package = Package(
         .package(path: "runtime/debug")
     ],
     targets: [
+        .target(
+            name: "PearControllerHID",
+            path: "runtime/host/controller-hid",
+            cSettings: [.unsafeFlags(["-fobjc-arc"])],
+            linkerSettings: [.linkedFramework("GameController"), .linkedFramework("IOKit")]
+        ),
         .executableTarget(
             name: "PearSilicon",
             dependencies: [
+                "PearControllerHID",
                 .product(name: "PearDebugKit", package: "debug")
             ],
             path: "Sources/PearSilicon",

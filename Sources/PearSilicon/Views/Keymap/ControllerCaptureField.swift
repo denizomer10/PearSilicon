@@ -1,4 +1,5 @@
 import GameController
+import PearControllerHID
 import SwiftUI
 
 /// Resolves fresh presses so an input held before recording does not win.
@@ -32,18 +33,29 @@ final class ControllerCaptureMonitor: ObservableObject {
     @Published private(set) var prompt: String?
 
     private var controller: GCController?
-    private var previousHandler: GCExtendedGamepadValueChangedHandler?
+    private let hidMonitor = PearHIDGamepadMonitor()
+    private var hidMonitoring = false
+    private var hidGamepad: PearHIDGamepad?
+    private var previousHandler: ((GCPhysicalInputProfile, GCControllerElement) -> Void)?
     private var recordingSession: UUID?
     private var tracker = ControllerPressTracker()
 
     func refreshConnection(excluding disconnected: GCController? = nil) {
+        if !hidMonitoring {
+            hidMonitor.connectionChanged = { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.refreshConnection() }
+            }
+            hidMonitoring = hidMonitor.start()
+        }
         let connected = GCController.controllers().filter {
             $0 !== disconnected && !$0.isSnapshot && $0.extendedGamepad != nil
         }
         if let controller, connected.contains(where: { $0 === controller }) { return }
+        if connected.isEmpty, let hidGamepad, hidMonitor.gamepads.contains(where: { $0 === hidGamepad }) { return }
         stop()
-        controller = connected.first
-        deviceName = controller.map { device in
+        hidGamepad = connected.isEmpty ? hidMonitor.gamepads.first : nil
+        controller = connected.first ?? hidGamepad?.controller
+        deviceName = hidGamepad?.name ?? controller.map { device in
             if let name = device.vendorName, !name.isEmpty { return name }
             return device.productCategory
         }
@@ -51,34 +63,51 @@ final class ControllerCaptureMonitor: ObservableObject {
 
     func start(id: UUID, action: KeymapActionKind, onCapture: @escaping (ControllerKey) -> Void) {
         stop()
-        guard let pad = controller?.extendedGamepad else { return }
+        guard let controller, let pad = controller.extendedGamepad else { return }
         let session = UUID()
         tracker = ControllerPressTracker(held: Self.pressedKeys(on: pad))
-        let handler = pad.valueChangedHandler
-        previousHandler = handler
+        let profile = controller.physicalInputProfile
         recordingSession = session
         recordingID = id
         prompt = action == .joystick || action == .mouseLook ? "Move a stick to bind it." : "Press a controller button to bind it."
-        pad.valueChangedHandler = { [weak self] pad, element in
-            handler?(pad, element)
+        if let hidGamepad {
+            hidMonitor.inputChanged = { [weak self, weak hidGamepad] gamepad, _ in
+                guard gamepad === hidGamepad, let pad = gamepad.controller.extendedGamepad else { return }
+                MainActor.assumeIsolated {
+                    self?.capture(Self.pressedKeys(on: pad), session: session, action: action, onCapture: onCapture)
+                }
+            }
+            return
+        }
+        let handler = profile.valueDidChangeHandler
+        previousHandler = handler
+        profile.valueDidChangeHandler = { [weak self, weak pad] profile, element in
+            handler?(profile, element)
+            guard let pad else { return }
             let pressed = Self.pressedKeys(on: pad)
             Task { @MainActor [weak self] in
-                guard let self, self.recordingSession == session,
-                      let key = self.tracker.nextKey(in: pressed, for: action) else { return }
-                self.stop()
-                onCapture(key)
+                self?.capture(pressed, session: session, action: action, onCapture: onCapture)
             }
         }
     }
 
     func stop() {
-        if recordingSession != nil {
-            controller?.extendedGamepad?.valueChangedHandler = previousHandler
+        if recordingSession != nil, hidGamepad == nil {
+            controller?.physicalInputProfile.valueDidChangeHandler = previousHandler
         }
+        hidMonitor.inputChanged = nil
         previousHandler = nil
         recordingSession = nil
         recordingID = nil
         prompt = nil
+    }
+
+    private func capture(
+        _ pressed: [ControllerKey], session: UUID, action: KeymapActionKind, onCapture: (ControllerKey) -> Void
+    ) {
+        guard recordingSession == session, let key = tracker.nextKey(in: pressed, for: action) else { return }
+        stop()
+        onCapture(key)
     }
 
     private nonisolated static func pressedKeys(on pad: GCExtendedGamepad) -> [ControllerKey] {

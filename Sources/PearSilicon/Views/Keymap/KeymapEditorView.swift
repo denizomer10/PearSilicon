@@ -100,7 +100,7 @@ struct KeymapEditorView: View {
                       systemImage: virtualGamepadEnabled ? "checkmark.circle.fill" : "gamecontroller")
             }
             .tint(virtualGamepadEnabled ? .accentColor : nil)
-            .help("Use the keyboard and mouse as a virtual controller for games with controller support. Escape releases the mouse.")
+            .help("Use the keyboard and mouse as a virtual controller for games with controller support. Press Control-Option-M to capture the mouse for camera control. Escape releases the mouse.")
         }
     }
 

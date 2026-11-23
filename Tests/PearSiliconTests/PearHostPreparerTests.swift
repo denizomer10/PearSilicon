@@ -111,7 +111,9 @@ final class PearHostPreparerTests: XCTestCase {
             throw XCTSkip("Set PEAR_HOST_E2E=1 (needs runtime/build/host and the iPhoneOS SDK)")
         }
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let host = repo.appendingPathComponent("runtime/build/host", isDirectory: true)
+        let host = ProcessInfo.processInfo.environment["PEAR_CONTROLLER_TEST_HOST_DIR"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? repo.appendingPathComponent("runtime/build/host", isDirectory: true)
         guard FileManager.default.fileExists(atPath: host.appendingPathComponent("UIKit.framework/UIKit").path) else {
             throw XCTSkip("run runtime/host/build-host.sh first")
         }
@@ -260,6 +262,162 @@ final class PearHostPreparerTests: XCTestCase {
         proc.waitUntilExit()
         let diagnostics = errors.fileHandleForReading.readDataToEndOfFile()
         XCTAssertEqual(proc.terminationStatus, 0, String(decoding: diagnostics, as: UTF8.self))
+    }
+
+    func testPearHostControllerCallsAndKeyboardButtonDelivery() throws {
+        guard let path = ProcessInfo.processInfo.environment["PEAR_CONTROLLER_TEST_HOST_DIR"] else {
+            throw XCTSkip("Set PEAR_CONTROLLER_TEST_HOST_DIR to a built PearHost runtime")
+        }
+        let host = URL(fileURLWithPath: path, isDirectory: true)
+        let bundle = root.appendingPathComponent("ControllerProbe.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let executable = bundle.appendingPathComponent("ControllerProbe")
+        let source = root.appendingPathComponent("controller-probe.m")
+        try """
+        #import <UIKit/UIKit.h>
+        #import <GameController/GameController.h>
+        #import <objc/message.h>
+        static BOOL receivedTouch;
+        @interface ProbeTouchView : UIView
+        @end
+        @implementation ProbeTouchView
+        - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { receivedTouch = YES; }
+        @end
+        @interface Probe : UIResponder <UIApplicationDelegate>
+        @property(nonatomic, strong) UIWindow *window;
+        @end
+        static void postKey(BOOL down) {
+            Class appClass = NSClassFromString(@"NSApplication"), eventClass = NSClassFromString(@"NSEvent");
+            id app = ((id (*)(id, SEL))objc_msgSend)(appClass, NSSelectorFromString(@"sharedApplication"));
+            id keyWindow = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"keyWindow"));
+            NSInteger number = ((NSInteger (*)(id, SEL))objc_msgSend)(keyWindow, NSSelectorFromString(@"windowNumber"));
+            typedef id (*MakeEvent)(id, SEL, NSUInteger, CGPoint, NSUInteger, double, NSInteger, id, NSString *, NSString *, BOOL, unsigned short);
+            SEL make = NSSelectorFromString(@"keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:");
+            id event = ((MakeEvent)objc_msgSend)(eventClass, make, down ? 10 : 11, CGPointZero, 0,
+                NSProcessInfo.processInfo.systemUptime, number, nil, @"q", @"q", NO, 12);
+            ((void (*)(id, SEL, id, BOOL))objc_msgSend)(app, NSSelectorFromString(@"postEvent:atStart:"), event, NO);
+        }
+        static void postMouse(BOOL down) {
+            Class appClass = NSClassFromString(@"NSApplication"), eventClass = NSClassFromString(@"NSEvent");
+            id app = ((id (*)(id, SEL))objc_msgSend)(appClass, NSSelectorFromString(@"sharedApplication"));
+            id keyWindow = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"keyWindow"));
+            NSInteger number = ((NSInteger (*)(id, SEL))objc_msgSend)(keyWindow, NSSelectorFromString(@"windowNumber"));
+            typedef id (*MakeMouse)(id, SEL, NSUInteger, CGPoint, NSUInteger, double, NSInteger, id, NSInteger, NSInteger, float);
+            SEL make = NSSelectorFromString(@"mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:");
+            id event = ((MakeMouse)objc_msgSend)(eventClass, make, down ? 1 : 2, CGPointMake(30, 30), 0,
+                NSProcessInfo.processInfo.systemUptime, number, nil, 1, 1, down ? 1 : 0);
+            ((void (*)(id, SEL, id, BOOL))objc_msgSend)(app, NSSelectorFromString(@"postEvent:atStart:"), event, NO);
+        }
+        @implementation Probe
+        - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)options {
+            self.window = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 360, 240)];
+            self.window.rootViewController = [UIViewController new];
+            UIView *root = self.window.rootViewController.view;
+            UIView *menu = [[ProbeTouchView alloc] initWithFrame:self.window.bounds];
+            menu.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [root addSubview:menu];
+            [self.window makeKeyAndVisible];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                GCController *virtual = nil;
+                for (GCController *pad in GCController.controllers) if (pad.isSnapshot) virtual = pad;
+                NSBundle *framework = [NSBundle bundleWithPath:@"/System/Library/Frameworks/GameController.framework"];
+                if (!virtual || [framework classNamed:@"GCController"] != GCController.class ||
+                    ![virtual.vendorName isEqualToString:@"DualSense Wireless Controller"] ||
+                    ![virtual.productCategory isEqualToString:GCProductCategoryDualSense]) {
+                    NSLog(@"Controller discovery or identity failed: %@ %@ %@", virtual, virtual.vendorName, virtual.productCategory);
+                    exit(2);
+                }
+                GCController *hotPlug = [GCController controllerWithExtendedGamepad];
+                [NSNotificationCenter.defaultCenter postNotificationName:GCControllerDidConnectNotification object:hotPlug];
+                if (![hotPlug.productCategory isEqualToString:GCProductCategoryDualSense]) exit(3);
+
+                __block BOOL replayed = NO;
+                id observer = [NSNotificationCenter.defaultCenter addObserverForName:GCControllerDidConnectNotification
+                    object:virtual queue:nil usingBlock:^(NSNotification *note) { replayed = YES; }];
+                __block BOOL sawPress = NO;
+                __block BOOL sawProfilePress = NO;
+                __block BOOL sawProfileRelease = NO;
+                __block BOOL sawProfileTrigger = NO;
+                __block BOOL sawProfileStick = NO;
+                __block BOOL sawProfileStickRelease = NO;
+                virtual.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *pad, GCControllerElement *element) {
+                    if (element == pad.buttonA) {
+                        if (pad.buttonA.isPressed) sawProfilePress = YES;
+                        else sawProfileRelease = YES;
+                    }
+                    if (element == pad.rightTrigger && pad.rightTrigger.isPressed) sawProfileTrigger = YES;
+                    if (element == pad.leftThumbstick) {
+                        if (pad.leftThumbstick.yAxis.value == 1) sawProfileStick = YES;
+                        else if (pad.leftThumbstick.yAxis.value == 0) sawProfileStickRelease = YES;
+                    }
+                };
+                virtual.extendedGamepad.buttonA.pressedChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+                    sawPress |= pressed;
+                };
+                postKey(YES);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                    if (!replayed || !sawProfilePress || !sawProfileStick ||
+                        !virtual.extendedGamepad.buttonA.isPressed || !virtual.extendedGamepad.buttonX.isPressed) {
+                        NSLog(@"Input failed: replay=%d element=%d profile=%d A=%f X=%f", replayed, sawPress, sawProfilePress,
+                            virtual.extendedGamepad.buttonA.value, virtual.extendedGamepad.buttonX.value);
+                        exit(4);
+                    }
+                    postKey(NO);
+                    postMouse(YES);
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                        if (!sawPress || !sawProfileRelease || !sawProfileStickRelease ||
+                            !sawProfileTrigger || virtual.extendedGamepad.buttonA.isPressed ||
+                            virtual.extendedGamepad.buttonX.isPressed || !virtual.extendedGamepad.rightTrigger.isPressed) {
+                            NSLog(@"Key release or mouse press failed: trigger=%f", virtual.extendedGamepad.rightTrigger.value);
+                            exit(5);
+                        }
+                        postMouse(NO);
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                            [NSNotificationCenter.defaultCenter removeObserver:observer];
+                            if (virtual.extendedGamepad.rightTrigger.isPressed || !receivedTouch) {
+                                NSLog(@"Mouse release or UI click failed: trigger=%f UI=%d",
+                                    virtual.extendedGamepad.rightTrigger.value, receivedTouch);
+                                exit(6);
+                            }
+                            exit(0);
+                        });
+                    });
+                });
+            });
+            return YES;
+        }
+        @end
+        int main(int argc, char **argv) {
+            @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(Probe.class)); }
+        }
+        """.write(to: source, atomically: true, encoding: .utf8)
+        try run("/usr/bin/xcrun", ["--sdk", "iphoneos", "clang", "-fobjc-arc", "-target", "arm64-apple-ios17.0",
+                                   "-framework", "UIKit", "-framework", "GameController", "-framework", "CoreGraphics", "-Wl,-headerpad,0x2000",
+                                   source.path, "-o", executable.path])
+        let info = ["CFBundleIdentifier": "com.pearsilicon.tests.controllerprobe",
+                    "CFBundleExecutable": "ControllerProbe", "CFBundlePackageType": "APPL"]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: bundle.appendingPathComponent("Info.plist"))
+        let installer = PackageInstaller(libraryURL: root)
+        let app = try installer.makeInstalledApp(fromBundleAt: bundle)
+        XCTAssertTrue(try installer.refreshRuntimeIfNeeded(for: app, source: .pearHost(host)))
+
+        let process = Process()
+        process.executableURL = executable
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "PEAR_VIRTUAL_GAMEPAD": "1", "PEAR_CONTROLLER_NATIVE": "0",
+            "PEAR_CONTROLLER_COMPAT": "1", "PEAR_CONTROLLER_REPLAY": "1",
+            "PEAR_VIRTUAL_GAMEPAD_MAP": #"{"buttons":{"q":["a","x"]},"leftStick":{"up":"q"}}"#
+        ]) { _, probe in probe }
+        let errors = Pipe()
+        process.standardError = errors
+        try process.run()
+        let deadline = Date().addingTimeInterval(15)
+        while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if process.isRunning { process.terminate(); XCTFail("PearHost controller probe timed out") }
+        process.waitUntilExit()
+        let diagnostics = errors.fileHandleForReading.readDataToEndOfFile()
+        XCTAssertEqual(process.terminationStatus, 0, String(decoding: diagnostics, as: UTF8.self))
     }
 
     // MARK: - Helpers

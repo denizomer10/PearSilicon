@@ -523,7 +523,8 @@ enum CLI {
         environment.removeValue(forKey: "PEAR_ALLOW_POINTER_LOCK")
         if pointerLock { environment["PEAR_ALLOW_POINTER_LOCK"] = "1" }
 
-        if AppSettings.defaults.bool(forKey: "virtualGamepad.enabled." + app.id) {
+        if environment["PEAR_VIRTUAL_GAMEPAD"] == nil,
+           AppSettings.defaults.bool(forKey: "virtualGamepad.enabled." + app.id) {
             environment["PEAR_VIRTUAL_GAMEPAD"] = "1"
         }
         if environment["PEAR_VIRTUAL_GAMEPAD"] == "1" {
@@ -576,7 +577,7 @@ enum CLI {
         print("  performance HUD: \(hudEnabled ? "on" : "off")")
         print("  pointer lock: \(launchEnvironment["PEAR_ALLOW_POINTER_LOCK"] == "1" ? "allowed" : "disabled")")
         if launchEnvironment["PEAR_VIRTUAL_GAMEPAD"] == "1" {
-            print("  virtual gamepad: on (mouse capture is armed by the first click)")
+            print("  virtual gamepad: on (press Control-Option-M for mouse look, Escape to release)")
         }
         if AppLauncher.isLegacy32BitApp(app) {
             print("  mode: PearLegacyEngine (32-bit iOS compatibility layer)")

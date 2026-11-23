@@ -44,6 +44,10 @@ Use **Settings → Library → Refresh iOS Runtimes Now** to refresh installed c
 
 For touch controls, enable the keymapper in a game's **Keymap** tab or set the default in **Settings → General**. Add keyboard and mouse bindings manually. Connect a supported gamepad to see its name in the input selector, then press a physical button or move a stick to record a controller binding. The in-game editor opens in the upper-right corner when keymapping is enabled. **Reset** clears all keyboard and controller bindings and saves the empty layout for that game. Use **Save** to keep other edits.
 
+PearHost reports physical controllers to games as DualSense Wireless Controllers. It accepts macOS GameController devices and reads compatible HID gamepads when GameController does not recognize them. Joy-Con 2 controllers exposed as HID gamepads by Finally the Controller Works use this path. Keymap shows the device’s own name.
+
+**Keyboard Mouse to Gamepad Inputs** exposes a virtual controller using your per-game keyboard and mouse bindings. Click normally in menus. Use Control-Option-M to capture the mouse for camera control and Escape to release it.
+
 ### Mac
 
 Native Mac apps are imported as managed copies. PearSilicon redirects the app's home and temporary files into the library when it launches. These copies still have the filesystem access of a regular Mac app.
