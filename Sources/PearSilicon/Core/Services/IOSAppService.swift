@@ -50,10 +50,6 @@ struct IOSAppService {
         defer { launchLease.release() }
         try AppLauncher.requireStopped(app)
 
-        let mode: PreparationMode = installer.currentPreparationMode(for: app) == .compatibilityEnvironment
-            ? .compatibilityEnvironment : .compatibility
-        try installer.setPreparationMode(mode, for: app, launchLease: launchLease)
-
         return try await launcher.launch(
             app,
             keymapURL: virtualGamepad ? nil : keymapURL,

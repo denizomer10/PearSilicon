@@ -78,6 +78,7 @@ final class AppLauncher: @unchecked Sendable {
         // Catalyst or /System/iOSSupport.
         return try await launchPearHost(
             app,
+            keymapURL: keymapURL,
             extraEnvironment: extraEnvironment,
             nativeContainer: nativeContainer,
             sandboxed: sandboxed,
@@ -213,7 +214,9 @@ final class AppLauncher: @unchecked Sendable {
         env.removeValue(forKey: "PEAR_ANGLE_LIB_DIR")
         env.removeValue(forKey: "PEAR_VIRTUAL_GAMEPAD")
         env.removeValue(forKey: "PEAR_VIRTUAL_GAMEPAD_MAP")
+        env.removeValue(forKey: "PEAR_KEYMAP")
         env.removeValue(forKey: "PEAR_FPS_HUD")
+        env.removeValue(forKey: "MTL_HUD_ENABLED")
         for key in ["PEAR_LEGACY_ATTACH_LAYER", "PEAR_LEGACY_WINDOW_LAYER_ONLY", "PEAR_LEGACY_LOGICAL_SIZE", "PEAR_DIRECT_LEGACY_TOUCH"] {
             env.removeValue(forKey: key)
         }
@@ -478,6 +481,7 @@ final class AppLauncher: @unchecked Sendable {
 
     private func launchPearHost(
         _ app: InstalledApp,
+        keymapURL: URL?,
         extraEnvironment: [String: String],
         nativeContainer: Bool,
         sandboxed: Bool = false,
@@ -486,21 +490,28 @@ final class AppLauncher: @unchecked Sendable {
         if sandboxed {
             throw PearError.launchFailed("sandbox-exec launch is retired; PearHost runs directly on macOS.")
         }
-        if !PearHostPreparer.isPrepared(app.bundleURL) || PearHostPreparer.needsPreparation(app.bundleURL) {
-            guard let hostDir = PearHostPreparer.locateHostFrameworks() else {
-                throw PearError.missingRuntimeComponent("PearHost frameworks (run runtime/host/build-host.sh)")
+        let bundleURL = app.bundleURL
+        let executableName = app.executableName
+        try await Task.detached(priority: .userInitiated) {
+            if !PearHostPreparer.isPrepared(bundleURL) || PearHostPreparer.needsPreparation(bundleURL) {
+                guard let hostDir = PearHostPreparer.locateHostFrameworks() else {
+                    throw PearError.missingRuntimeComponent("PearHost frameworks (run runtime/host/build-host.sh)")
+                }
+                try PearHostPreparer.prepare(
+                    bundleURL: bundleURL,
+                    executableName: executableName,
+                    hostDir: hostDir
+                )
+            } else if let hostDir = PearHostPreparer.locateHostFrameworks() {
+                // A rebuilt PearHost replaces the copies inside the bundle.
+                try PearHostPreparer.refreshHostFrameworksIfStale(bundleURL: bundleURL, hostDir: hostDir)
             }
-            try PearHostPreparer.prepare(
-                bundleURL: app.bundleURL,
-                executableName: app.executableName,
-                hostDir: hostDir
-            )
-        } else if let hostDir = PearHostPreparer.locateHostFrameworks() {
-            // A rebuilt PearHost replaces the copies inside the bundle.
-            try PearHostPreparer.refreshHostFrameworksIfStale(bundleURL: app.bundleURL, hostDir: hostDir)
-        }
+        }.value
 
-        var env = buildEnvironment(app: app, keymapURL: nil, extra: extraEnvironment, nativeContainer: nativeContainer)
+        var env = buildEnvironment(app: app, keymapURL: keymapURL, extra: extraEnvironment, nativeContainer: nativeContainer)
+        if env["MTL_HUD_ENABLED"] == nil && AppSettings.defaults.bool(forKey: "metalHUD.enabled." + app.id) {
+            env["MTL_HUD_ENABLED"] = "1"
+        }
         if let home = env["PEAR_HOME_DIR"] {
             let homeURL = URL(fileURLWithPath: home, isDirectory: true)
             try? fileManager.createDirectory(at: homeURL, withIntermediateDirectories: true)

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Prepares an installed ARM64 iOS `.app` bundle to run on PearHost (native macOS
@@ -7,6 +8,49 @@ enum PearHostPreparer {
     /// Libraries PearHost builds next to its frameworks and installs into
     /// every prepared bundle (macOS builds replacing the app's Catalyst ones).
     private static let hostLibraries = ["libcxxcompat.dylib", "libswiftUIKit.dylib"]
+
+    private final class ErrorBox: @unchecked Sendable {
+        private let lock = NSLock()
+        var error: Error?
+        func setIfEmpty(_ err: Error) {
+            lock.lock()
+            if error == nil { error = err }
+            lock.unlock()
+        }
+    }
+
+    private struct MachOLoadInfo {
+        let dependencies: [String]
+        let rpaths: [String]
+        let hasCodeSignature: Bool
+    }
+
+    /// Runs `body` in parallel across Apple silicon cores. Throws the first error encountered.
+    private static func parallelForEach<T: Sendable>(_ items: [T], _ body: @Sendable (T) throws -> Void) throws {
+        guard !items.isEmpty else { return }
+        if items.count == 1 {
+            try body(items[0])
+            return
+        }
+        let box = ErrorBox()
+        DispatchQueue.concurrentPerform(iterations: items.count) { index in
+            do {
+                try body(items[index])
+            } catch {
+                box.setIfEmpty(error)
+            }
+        }
+        if let err = box.error { throw err }
+    }
+
+    private static func cloneOrCopy(from src: URL, to dst: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
+        if Darwin.clonefile(src.path, dst.path, 0) == 0 {
+            return
+        }
+        try fm.copyItem(at: src, to: dst)
+    }
 
     /// Every framework PearHost built (runtime/host/build-host.sh): its own
     /// UIKit, OpenGLES and MetalKit, stand-ins for iOS-only frameworks
@@ -75,12 +119,13 @@ enum PearHostPreparer {
 
         try installHostFrameworks(into: frameworksDir, from: hostDir)
 
-        // Retarget executable + app-bundled frameworks to macOS platform.
+        // Retarget executable + app-bundled frameworks to macOS platform in parallel.
         let host = hostFrameworks(in: hostDir)
         let exeURL = bundleURL.appendingPathComponent(executableName)
         try retargetMachO(at: exeURL, hostFrameworks: host, mainExecutable: true)
 
         if let items = try? fm.contentsOfDirectory(at: frameworksDir, includingPropertiesForKeys: nil) {
+            var targets: [URL] = []
             for item in items {
                 let name = item.lastPathComponent
                 if host.contains(where: { name == "\($0).framework" }) || name == "PearANGLE" || hostLibraries.contains(name) {
@@ -89,11 +134,14 @@ enum PearHostPreparer {
                 if name.hasSuffix(".framework") {
                     let fwBin = item.appendingPathComponent(String(name.dropLast(".framework".count)))
                     if fm.fileExists(atPath: fwBin.path) {
-                        try? retargetMachO(at: fwBin, hostFrameworks: host)
+                        targets.append(fwBin)
                     }
                 } else if name.hasSuffix(".dylib") {
-                    try? retargetMachO(at: item, hostFrameworks: host)
+                    targets.append(item)
                 }
+            }
+            try parallelForEach(targets) { url in
+                try? retargetMachO(at: url, hostFrameworks: host)
             }
         }
 
@@ -128,53 +176,70 @@ enum PearHostPreparer {
         try Data("pearhost\n\(hostStamp(hostDir))\npreparer=\(preparerVersion)\n".utf8).write(to: markerURL(in: bundleURL), options: .atomic)
     }
 
-    /// Copies the PearHost frameworks, PearANGLE and PearHost's libraries into
-    /// <app>/Frameworks and signs them.
+    /// Clones/copies PearHost frameworks, PearANGLE and PearHost's libraries into
+    /// `<app>/Frameworks`. Preserves ad-hoc signatures from `hostDir` via `clonefile`/`copyItem`
+    /// and only signs or retargets items that are unsigned or non-macOS.
     private static func installHostFrameworks(into frameworksDir: URL, from hostDir: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: frameworksDir, withIntermediateDirectories: true)
         let host = hostFrameworks(in: hostDir)
-        for item in host.map({ "\($0).framework" }) + ["PearANGLE"] + hostLibraries {
+        let items = host.map { "\($0).framework" } + ["PearANGLE"] + hostLibraries
+        let existingItems = items.filter { fm.fileExists(atPath: hostDir.appendingPathComponent($0).path) }
+        try parallelForEach(existingItems) { item in
             let src = hostDir.appendingPathComponent(item)
             let dst = frameworksDir.appendingPathComponent(item)
-            guard fm.fileExists(atPath: src.path) else { continue }
-            if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
-            try fm.copyItem(at: src, to: dst)
+            try cloneOrCopy(from: src, to: dst)
         }
-        // The UIKit Swift overlay is a Mac Catalyst build: retarget it like
-        // the app's own images.
+
+        // Retarget libswiftUIKit.dylib only if not already macOS-platform.
         let overlay = frameworksDir.appendingPathComponent("libswiftUIKit.dylib")
-        if fm.fileExists(atPath: overlay.path) {
+        if fm.fileExists(atPath: overlay.path),
+           (try? BinaryPatcher.buildPlatform(at: overlay)) != BinaryPatcher.Platform.macOS {
             try retargetMachO(at: overlay, hostFrameworks: host)
         }
+
+        // Only sign copied host Mach-O images if an un-signed build tree was used.
+        var unsigned: [URL] = []
         for fw in host {
             let fwBin = frameworksDir.appendingPathComponent("\(fw).framework/\(fw)")
-            if fm.fileExists(atPath: fwBin.path) {
-                _ = runTool("/usr/bin/codesign", ["-f", "-s", "-", fwBin.path])
+            if fm.fileExists(atPath: fwBin.path),
+               let info = readMachOLoadInfo(at: fwBin), !info.hasCodeSignature {
+                unsigned.append(fwBin)
             }
         }
         let cxx = frameworksDir.appendingPathComponent("libcxxcompat.dylib")
-        if fm.fileExists(atPath: cxx.path) {
-            _ = runTool("/usr/bin/codesign", ["-f", "-s", "-", cxx.path])
+        if fm.fileExists(atPath: cxx.path),
+           let info = readMachOLoadInfo(at: cxx), !info.hasCodeSignature {
+            unsigned.append(cxx)
+        }
+        try parallelForEach(unsigned) { bin in
+            _ = runTool("/usr/bin/codesign", ["-f", "-s", "-", bin.path])
         }
     }
 
     private static func retargetMachO(at url: URL, hostFrameworks host: [String], mainExecutable: Bool = false) throws {
         // A bundle prepared earlier can name CoreServices twice (an older
         // PearHost preparation mapped MobileCoreServices to it); dyld refuses that.
-        try dedupeDylibs(at: url)
+        let deduped = try dedupeDylibs(at: url)
+        var removedRuntime = false
         // Undo a Catalyst preparation of the same bundle (while the image is
         // still iOS/Catalyst, which is what BinaryPatcher edits): its runtime
         // dylib is removed above, and its load command is the last one
         // PackageInstaller appended, so dropping it keeps every bind ordinal.
         if BinaryPatcher.hasLoadDylib(at: url, containing: "libPearRuntime") {
-            _ = try BinaryPatcher.removeLoadDylib(at: url, containing: "libPearRuntime")
+            removedRuntime = try BinaryPatcher.removeLoadDylib(at: url, containing: "libPearRuntime")
         }
-        _ = try BinaryPatcher.patchFile(at: url, targetPlatform: BinaryPatcher.Platform.macOS)
+        let platformPatched = try BinaryPatcher.patchFile(at: url, targetPlatform: BinaryPatcher.Platform.macOS)
+
+        let info = readMachOLoadInfo(at: url)
+        let deps = info?.dependencies ?? dependencies(of: url)
+        let currentRpaths = info?.rpaths ?? rpaths(of: url)
+        var installNameArgs: [String] = []
+
         // OpenGLES dependencies pointed at the Catalyst ANGLE shim go to
         // PearHost's OpenGLES.framework.
         let iosSupport = "/System/iOSSupport/System/Library/Frameworks/"
-        for dep in dependencies(of: url) {
+        for dep in deps {
             var target: String?
             if dep.contains("libPearOpenGLES") {
                 target = "@rpath/OpenGLES.framework/OpenGLES"
@@ -195,41 +260,103 @@ enum PearHostPreparer {
                 }
             }
             if let target, target != dep {
-                _ = runTool("/usr/bin/install_name_tool", ["-change", dep, target, url.path])
+                installNameArgs.append(contentsOf: ["-change", dep, target])
             }
         }
-        let rpaths = rpaths(of: url)
-        if !rpaths.contains("/usr/lib/swift") {
-            _ = runTool("/usr/bin/install_name_tool", ["-add_rpath", "/usr/lib/swift", url.path])
+        if !currentRpaths.contains("/usr/lib/swift") {
+            installNameArgs.append(contentsOf: ["-add_rpath", "/usr/lib/swift"])
         }
         // PearHost frameworks are reached through @rpath; apps built without
         // embedded frameworks (older titles) carry no such rpath.
-        if mainExecutable && !rpaths.contains("@executable_path/Frameworks") {
-            _ = runTool("/usr/bin/install_name_tool", ["-add_rpath", "@executable_path/Frameworks", url.path])
+        if mainExecutable && !currentRpaths.contains("@executable_path/Frameworks") {
+            installNameArgs.append(contentsOf: ["-add_rpath", "@executable_path/Frameworks"])
         }
+
+        var updatedLoadCommands = false
+        if !installNameArgs.isEmpty {
+            updatedLoadCommands = runTool("/usr/bin/install_name_tool", installNameArgs + [url.path]) == 0
+        }
+
         // dyld gathers interposers at launch. Games that dlopen UnityFramework
         // may load UIKit too late for its app-local Keychain implementation.
+        var addedUIKit = false
         let uikit = "@rpath/UIKit.framework/UIKit"
         if mainExecutable, host.contains("UIKit"), !BinaryPatcher.hasLoadDylib(at: url, containing: uikit) {
-            try BinaryPatcher.addLoadDylib(at: url, path: uikit, allowMacOS: true)
+            addedUIKit = try BinaryPatcher.addLoadDylib(at: url, path: uikit, allowMacOS: true)
         }
-        _ = runTool("/usr/bin/codesign", ["-f", "-s", "-", url.path])
+
+        let modified = deduped || removedRuntime || platformPatched || updatedLoadCommands || addedUIKit
+        if modified || info?.hasCodeSignature == false {
+            _ = runTool("/usr/bin/codesign", ["-f", "-s", "-", url.path])
+        }
+    }
+
+    /// Reads thin 64-bit Mach-O load commands (`LC_LOAD_*`, `LC_RPATH`, `LC_CODE_SIGNATURE`)
+    /// directly in memory, avoiding `otool` subprocess overhead. Returns `nil` for non-thin-64 images.
+    private static func readMachOLoadInfo(at url: URL) -> MachOLoadInfo? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let header = try? handle.read(upToCount: 32), header.count == 32 else { return nil }
+        func u32(_ data: Data, _ offset: Int) -> UInt32 {
+            data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) }
+        }
+        guard u32(header, 0) == 0xFEED_FACF else { return nil }
+        let ncmds = Int(u32(header, 16))
+        let sizeofcmds = Int(u32(header, 20))
+        guard ncmds >= 0, sizeofcmds > 0, sizeofcmds <= 4 * 1024 * 1024 else {
+            return MachOLoadInfo(dependencies: [], rpaths: [], hasCodeSignature: false)
+        }
+        guard let cmds = try? handle.read(upToCount: sizeofcmds), cmds.count == sizeofcmds else { return nil }
+
+        let dylibCommands: Set<UInt32> = [0xC, 0x8000_0018, 0x8000_001F, 0x20, 0x8000_0023]
+        var deps: [String] = []
+        var rpaths: [String] = []
+        var hasSig = false
+        var offset = 0
+
+        for _ in 0..<ncmds {
+            guard offset + 8 <= cmds.count else { break }
+            let cmd = u32(cmds, offset)
+            let size = Int(u32(cmds, offset + 4))
+            guard size >= 8, offset + size <= cmds.count else { break }
+
+            if dylibCommands.contains(cmd), size >= 12 {
+                let strOffset = Int(u32(cmds, offset + 8))
+                if strOffset >= 12, strOffset < size {
+                    let start = offset + strOffset
+                    let end = cmds[start..<(offset + size)].firstIndex(of: 0) ?? (offset + size)
+                    deps.append(String(decoding: cmds[start..<end], as: UTF8.self))
+                }
+            } else if cmd == 0x8000_001C, size >= 12 { // LC_RPATH
+                let strOffset = Int(u32(cmds, offset + 8))
+                if strOffset >= 12, strOffset < size {
+                    let start = offset + strOffset
+                    let end = cmds[start..<(offset + size)].firstIndex(of: 0) ?? (offset + size)
+                    rpaths.append(String(decoding: cmds[start..<end], as: UTF8.self))
+                }
+            } else if cmd == 0x1D { // LC_CODE_SIGNATURE
+                hasSig = true
+            }
+            offset += size
+        }
+        return MachOLoadInfo(dependencies: deps, rpaths: rpaths, hasCodeSignature: hasSig)
     }
 
     /// Points the later of two load commands naming the same dylib at a
     /// PearHost framework re-exporting that library, in place (both keep their
     /// ordinals, so every import still binds).
-    static func dedupeDylibs(at url: URL) throws {
+    @discardableResult
+    static func dedupeDylibs(at url: URL) throws -> Bool {
         let replacements = [
             "/System/Library/Frameworks/CoreServices.framework/CoreServices":
                 "@rpath/MobileCoreServices.framework/MobileCoreServices",
         ]
         var data = try Data(contentsOf: url)
-        guard data.count > 32 else { return }
+        guard data.count > 32 else { return false }
         func u32(_ offset: Int) -> UInt32 {
             data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) }
         }
-        guard u32(0) == 0xFEED_FACF else { return }  // thin 64-bit images only
+        guard u32(0) == 0xFEED_FACF else { return false }  // thin 64-bit images only
         let dylibCommands: Set<UInt32> = [0xC, 0x8000_0018, 0x8000_001F, 0x8000_0023, 0x8000_0020]
         var offset = 32
         var seen = Set<String>()
@@ -251,6 +378,7 @@ enum PearHostPreparer {
             offset += size
         }
         if changed { try data.write(to: url) }  // in place: keeps the mode bits
+        return changed
     }
 
     private static func toolOutput(_ path: String, _ args: [String]) -> String {
