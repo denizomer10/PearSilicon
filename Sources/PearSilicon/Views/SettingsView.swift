@@ -26,6 +26,7 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             general.tabItem { Label("General", systemImage: "gearshape") }
+            ControllerSettingsView().tabItem { Label("Controllers", systemImage: "gamecontroller.fill") }
             library.tabItem { Label("Library", systemImage: "square.stack.3d.up") }
             wine.tabItem { Label("Wine", systemImage: "gamecontroller") }
             updates.tabItem { Label("Updates", systemImage: "arrow.down.circle") }

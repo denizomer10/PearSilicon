@@ -1,3 +1,4 @@
+import Combine
 import GameController
 import PearControllerHID
 import SwiftUI
@@ -36,11 +37,25 @@ final class ControllerCaptureMonitor: ObservableObject {
     private let hidMonitor = PearHIDGamepadMonitor()
     private var hidMonitoring = false
     private var hidGamepad: PearHIDGamepad?
+    private let rustBridge = RustControllerBridge()
+    private var rustStarted = false
+    private var rustCancellable: AnyCancellable?
+    private var rustCaptureCancellable: AnyCancellable?
+    private var rustDevice: RustControllerDevice?
     private var previousHandler: ((GCPhysicalInputProfile, GCControllerElement) -> Void)?
     private var recordingSession: UUID?
     private var tracker = ControllerPressTracker()
 
     func refreshConnection(excluding disconnected: GCController? = nil) {
+        if !rustStarted {
+            rustStarted = true
+            rustBridge.start(with: ControllerSettings.load(), interval: 1.0 / 15.0)
+            rustCancellable = rustBridge.$devices
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in
+                    self?.refreshConnection()
+                }
+        }
         if !hidMonitoring {
             hidMonitor.connectionChanged = { [weak self] _, _ in
                 MainActor.assumeIsolated { self?.refreshConnection() }
@@ -50,12 +65,15 @@ final class ControllerCaptureMonitor: ObservableObject {
         let connected = GCController.controllers().filter {
             $0 !== disconnected && !$0.isSnapshot && $0.extendedGamepad != nil
         }
+        let activeRust = rustBridge.devices.first(where: { $0.connected && $0.enabled })
         if let controller, connected.contains(where: { $0 === controller }) { return }
         if connected.isEmpty, let hidGamepad, hidMonitor.gamepads.contains(where: { $0 === hidGamepad }) { return }
+        if connected.isEmpty, hidMonitor.gamepads.isEmpty, let rustDevice, activeRust?.id == rustDevice.id { return }
         stop()
         hidGamepad = connected.isEmpty ? hidMonitor.gamepads.first : nil
         controller = connected.first ?? hidGamepad?.controller
-        deviceName = hidGamepad?.name ?? controller.map { device in
+        rustDevice = (controller == nil) ? activeRust : nil
+        deviceName = rustDevice?.name ?? hidGamepad?.name ?? controller.map { device in
             if let name = device.vendorName, !name.isEmpty { return name }
             return device.productCategory
         }
@@ -63,6 +81,21 @@ final class ControllerCaptureMonitor: ObservableObject {
 
     func start(id: UUID, action: KeymapActionKind, onCapture: @escaping (ControllerKey) -> Void) {
         stop()
+        if let rustDev = rustDevice {
+            let session = UUID()
+            let initial = Self.pressedKeys(on: rustDev.state)
+            tracker = ControllerPressTracker(held: initial)
+            recordingSession = session
+            recordingID = id
+            prompt = action == .joystick || action == .mouseLook ? "Move a stick to bind it." : "Press a controller button to bind it."
+            rustCaptureCancellable = rustBridge.$devices
+                .receive(on: RunLoop.main)
+                .sink { [weak self] devs in
+                    guard let self, let current = devs.first(where: { $0.id == rustDev.id }) else { return }
+                    self.capture(Self.pressedKeys(on: current.state), session: session, action: action, onCapture: onCapture)
+                }
+            return
+        }
         guard let controller, let pad = controller.extendedGamepad else { return }
         let session = UUID()
         tracker = ControllerPressTracker(held: Self.pressedKeys(on: pad))
@@ -92,14 +125,44 @@ final class ControllerCaptureMonitor: ObservableObject {
     }
 
     func stop() {
-        if recordingSession != nil, hidGamepad == nil {
+        if recordingSession != nil, hidGamepad == nil, rustDevice == nil {
             controller?.physicalInputProfile.valueDidChangeHandler = previousHandler
         }
+        rustCaptureCancellable?.cancel()
+        rustCaptureCancellable = nil
         hidMonitor.inputChanged = nil
         previousHandler = nil
         recordingSession = nil
         recordingID = nil
         prompt = nil
+    }
+
+    private nonisolated static func pressedKeys(on state: RustControllerDeviceState) -> [ControllerKey] {
+        var pressed: [ControllerKey] = []
+        for name in state.buttons {
+            switch name {
+            case "A": pressed.append(.buttonA)
+            case "B": pressed.append(.buttonB)
+            case "X": pressed.append(.buttonX)
+            case "Y": pressed.append(.buttonY)
+            case "L1": pressed.append(.leftShoulder)
+            case "R1": pressed.append(.rightShoulder)
+            case "L2": pressed.append(.leftTrigger)
+            case "R2": pressed.append(.rightTrigger)
+            case "Up": pressed.append(.dpadUp)
+            case "Down": pressed.append(.dpadDown)
+            case "Left": pressed.append(.dpadLeft)
+            case "Right": pressed.append(.dpadRight)
+            case "Menu": pressed.append(.menu)
+            case "Options": pressed.append(.options)
+            default: break
+            }
+        }
+        if state.l2 > 0.5 && !pressed.contains(.leftTrigger) { pressed.append(.leftTrigger) }
+        if state.r2 > 0.5 && !pressed.contains(.rightTrigger) { pressed.append(.rightTrigger) }
+        if abs(state.leftX) > 0.55 || abs(state.leftY) > 0.55 { pressed.append(.leftStick) }
+        if abs(state.rightX) > 0.55 || abs(state.rightY) > 0.55 { pressed.append(.rightStick) }
+        return pressed
     }
 
     private func capture(

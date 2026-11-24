@@ -215,6 +215,7 @@ final class AppLauncher: @unchecked Sendable {
         env.removeValue(forKey: "PEAR_ANGLE_LIB_DIR")
         env.removeValue(forKey: "PEAR_VIRTUAL_GAMEPAD")
         env.removeValue(forKey: "PEAR_VIRTUAL_GAMEPAD_MAP")
+        env.removeValue(forKey: "PEAR_CONTROLLER_CONFIG")
         env.removeValue(forKey: "PEAR_KEYMAP")
         env.removeValue(forKey: "PEAR_FPS_HUD")
         env.removeValue(forKey: "MTL_HUD_ENABLED")
@@ -503,6 +504,9 @@ final class AppLauncher: @unchecked Sendable {
         }.value
 
         var env = buildEnvironment(app: app, keymapURL: keymapURL, extra: extraEnvironment, nativeContainer: nativeContainer)
+        if env["PEAR_CONTROLLER_CONFIG"] == nil, let cfgJSON = ControllerSettings.load().encodedJSON() {
+            env["PEAR_CONTROLLER_CONFIG"] = cfgJSON
+        }
         if env["MTL_HUD_ENABLED"] == nil && AppSettings.defaults.bool(forKey: "metalHUD.enabled." + app.id) {
             env["MTL_HUD_ENABLED"] = "1"
         }

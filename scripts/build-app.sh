@@ -72,7 +72,7 @@ cp "$ROOT/runtime/LICENSE" "$HOST_OUT/LICENSE.PearRuntime"
 for fw in "$BUILD_DIR/host"/*.framework; do
   [[ -d "$fw" ]] && cp -R "$fw" "$HOST_OUT/"
 done
-for lib in libcxxcompat.dylib libswiftUIKit.dylib libPearHostPlaceholder.dylib; do
+for lib in libcxxcompat.dylib libswiftUIKit.dylib libPearHostPlaceholder.dylib libpear_controller.dylib; do
   [[ -f "$BUILD_DIR/host/$lib" ]] && cp "$BUILD_DIR/host/$lib" "$HOST_OUT/"
 done
 if [[ -d "$BUILD_DIR/host/PearANGLE" ]]; then
@@ -220,6 +220,7 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSBluetoothAlwaysUsageDescription</key><string>PearSilicon uses Bluetooth Low Energy to detect and connect Nintendo Switch 2 Joy-Con and Pro controllers.</string>
 $ICON_KEY
 </dict>
 </plist>
