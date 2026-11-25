@@ -155,6 +155,14 @@ final class PearHostPreparerTests: XCTestCase {
           UIGraphicsEndImageContext();
           imageView.transform = CGAffineTransformMakeTranslation(12, 8);
           [vc.view addSubview:imageView];
+          UIButton *button = [[UIButton alloc] initWithFrame:CGRectMake(320, 40, 120, 35)];
+          [button setTitle:@"Continue" forState:UIControlStateNormal];
+          [vc.view addSubview:button];
+          UITextField *field = [[UITextField alloc] initWithFrame:CGRectMake(320, 90, 140, 35)];
+          field.attributedPlaceholder = [[NSAttributedString alloc] initWithString:@"Email"];
+          [vc.view addSubview:field];
+          [field insertText:@"abc"];
+          [field deleteBackward];
           NSLayoutConstraint *constraint = [NSLayoutConstraint constraintWithItem:imageView
             attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil
             attribute:NSLayoutAttributeNotAnAttribute multiplier:1 constant:20];
@@ -186,9 +194,28 @@ final class PearHostPreparerTests: XCTestCase {
           metalView.enableSetNeedsDisplay = NO;
           dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             BOOL imageRendered = imageView.image != nil && imageView.layer.contents != nil;
+            UIImageView *snapshot = (UIImageView *)[imageView snapshotViewAfterScreenUpdates:YES];
+            BOOL snapshotWorks = snapshot.image != nil && !snapshot.isUserInteractionEnabled;
+            [app beginIgnoringInteractionEvents];
+            [app beginIgnoringInteractionEvents];
+            [app endIgnoringInteractionEvents];
+            BOOL nestedInteractionCheck = app.isIgnoringInteractionEvents;
+            [app endIgnoringInteractionEvents];
+            BOOL interactionWorks = nestedInteractionCheck && !app.isIgnoringInteractionEvents;
+            BOOL loginControlsWork = [button.titleLabel.text isEqualToString:@"Continue"] &&
+              button.titleLabel.layer.contents != nil && [field.placeholder isEqualToString:@"Email"] &&
+              [field.text isEqualToString:@"ab"];
             BOOL transformApplied = CGRectGetMinX(imageView.frame) == 32 && CGRectGetMinY(imageView.frame) == 108;
             BOOL anchorsLinked = anchorConstraint.isActive && anchorConstraint.firstItem == imageView &&
               anchorConstraint.secondItem == vc.view && anchorConstraint.constant == 100;
+            BOOL marginGuideWorks = NO;
+            if (@available(iOS 26.0, *)) {
+              UIViewLayoutRegion *region = [UIViewLayoutRegion marginsLayoutRegionWithCornerAdaptation:UIViewLayoutRegionAdaptivityAxisHorizontal];
+              UILayoutGuide *guide = [vc.view layoutGuideForLayoutRegion:region];
+              marginGuideWorks = guide.owningView == vc.view && guide.topAnchor != nil &&
+                guide == [vc.view layoutGuideForLayoutRegion:region] &&
+                CGRectGetMinX(guide.layoutFrame) == [vc.view edgeInsetsForLayoutRegion:region].left;
+            }
             BOOL webViewMounted = webView.window != nil && !webView.scrollView.isOpaque &&
               webView.scrollView.backgroundColor == scrollBackground &&
               webConfiguration.allowsInlineMediaPlayback &&
@@ -204,11 +231,12 @@ final class PearHostPreparerTests: XCTestCase {
             void *relativeGLES = dlopen("@rpath/OpenGLES.framework/OpenGLES", RTLD_LAZY);
             if (relativeGLES) dlclose(relativeGLES);
             BOOL success = self.label.layer.contents != nil && self.window.isKeyWindow &&
-              imageRendered && transformApplied && constraint.isActive && anchorsLinked && webViewMounted &&
+              imageRendered && snapshotWorks && interactionWorks && loginControlsWork && transformApplied &&
+              constraint.isActive && anchorsLinked && marginGuideWorks && webViewMounted &&
               dynamicUIKitLoaded && glesLoaded && relativeGLES && self.metalFrames > 1;
-            if (!success) NSLog(@"PearHost checks: label=%d key=%d image=%d transform=%d constraint=%d anchors=%d web=%d UIKit=%d GLES=%d rpath=%d frames=%lu",
-              self.label.layer.contents != nil, self.window.isKeyWindow, imageRendered, transformApplied,
-              constraint.isActive, anchorsLinked, webViewMounted, dynamicUIKitLoaded, glesLoaded,
+            if (!success) NSLog(@"PearHost checks: label=%d key=%d image=%d snapshot=%d interaction=%d controls=%d transform=%d constraint=%d anchors=%d margins=%d web=%d UIKit=%d GLES=%d rpath=%d frames=%lu",
+              self.label.layer.contents != nil, self.window.isKeyWindow, imageRendered, snapshotWorks, interactionWorks, loginControlsWork, transformApplied,
+              constraint.isActive, anchorsLinked, marginGuideWorks, webViewMounted, dynamicUIKitLoaded, glesLoaded,
               relativeGLES != NULL, (unsigned long)self.metalFrames);
             exit(success ? 0 : 3);
           });
